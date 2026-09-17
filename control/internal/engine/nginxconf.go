@@ -92,10 +92,12 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		w("%s}", indent)
 	}
 
+	// The ACME location sits outside every check on purpose: a site whose
+	// certificate has expired still has to be able to renew it, and a block here
+	// would stop the CA from ever reaching the token.
 	acme := func(indent string) {
 		w("%slocation /.well-known/acme-challenge/ {", indent)
-		w("%s    root /var/www/acme;", indent)
-		w("%s    try_files $uri =404;", indent)
+		w("%s    content_by_lua_block { require(\"moswaf.acme\").serve() }", indent)
 		w("%s}", indent)
 	}
 
@@ -131,9 +133,16 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 			w("    add_header Strict-Transport-Security \"max-age=31536000\" always;")
 		}
 		w("")
+		// Validation itself runs over port 80, but a CA is allowed to follow a
+		// redirect to HTTPS, and some do. Answering here as well costs nothing and
+		// avoids a renewal failing for a reason nobody would think to look for.
+		acme("    ")
+		w("")
 		body("    ")
 		w("}")
 	} else {
+		// No certificate yet. The HTTP block still carries the ACME location, which
+		// is how a site with automatic certificates gets its first one.
 		w("server {")
 		w("    listen %d;", opt.HTTPPort)
 		w("    server_name %s;", names)

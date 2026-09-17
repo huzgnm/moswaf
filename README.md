@@ -147,6 +147,30 @@ site.
 Run in **monitor** mode for the first few days to see whether any rule blocks
 legitimate traffic, then switch to **protect**.
 
+## Certificates
+
+Turn on **Get and renew the certificate automatically** when adding a site, give a
+contact email, and MosWAF obtains a Let's Encrypt certificate over ACME HTTP-01 and
+renews it once 30 days are left. Nothing to schedule and no cron job to forget.
+
+Two things have to be true before it can work, because they are what the authority
+checks:
+
+- the domain already resolves to this server
+- port 80 is reachable from the internet
+
+The challenge path `/.well-known/acme-challenge/` is answered ahead of every filter,
+so a site whose certificate has already expired can still renew. Renewal runs every
+six hours; a failed order backs off for an hour and the reason is shown on the site
+row. **Get cert** on that row runs an order immediately and reports what the
+authority said.
+
+While testing, point at the staging endpoint to avoid the production rate limits:
+
+```bash
+MOSWAF_ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
+```
+
 ## Verifying that it actually blocks
 
 After adding a site, fire a batch of common attacks at your own site and compare
@@ -236,8 +260,6 @@ moswaf/
 
 Worth knowing before putting this in front of production traffic:
 
-- No automatic Let's Encrypt yet (`/.well-known/acme-challenge/` is already
-  wired up, but certificates must be pasted into the site form for now).
 - No multi-node clustering — each install is an independent machine.
 - No TLS fingerprinting (JA3/JA4) and no machine learning; detection is
   signature- and rate-based.

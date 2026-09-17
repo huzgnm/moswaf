@@ -87,6 +87,20 @@ configuration to Redis; the proxy container notices the file change and reloads.
 Same body as `POST`. Leave `tls_cert` and `tls_key` empty to keep the certificate
 already in use.
 
+| `acme_enabled` | `false` | obtain and renew the certificate automatically |
+| `acme_email` | — | contact address the certificate authority requires |
+
+With `acme_enabled` set, `tls_cert` and `tls_key` are filled in by MosWAF and should
+be left out of the request. Read-only fields come back on the site: `cert_expires_at`,
+`acme_last_error` and `acme_last_try`.
+
+### `POST /api/sites/{id}/certificate`
+
+Runs an ACME order for the site immediately instead of waiting for the six-hourly
+sweep. Returns the updated site, or `502` with the authority's own complaint when
+validation fails - which is the part worth reading when a domain is not pointed here
+yet.
+
 ### `DELETE /api/sites/{id}`
 
 ---

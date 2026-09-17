@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -13,14 +14,16 @@ import (
 
 const siteCols = `id, name, domains, upstream_scheme, upstream_host, upstream_port,
 	mode, challenge, rate_rps, rate_burst, tls_cert, tls_key, force_https,
-	enabled, rules_off, created_at, updated_at`
+	enabled, rules_off, created_at, updated_at,
+	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try`
 
 func scanSite(row pgx.Row) (*Site, error) {
 	var s Site
 	var domains, rulesOff []byte
 	err := row.Scan(&s.ID, &s.Name, &domains, &s.UpstreamScheme, &s.UpstreamHost, &s.UpstreamPort,
 		&s.Mode, &s.Challenge, &s.RateRPS, &s.RateBurst, &s.TLSCert, &s.TLSKey, &s.ForceHTTPS,
-		&s.Enabled, &rulesOff, &s.CreatedAt, &s.UpdatedAt)
+		&s.Enabled, &rulesOff, &s.CreatedAt, &s.UpdatedAt,
+		&s.AcmeEnabled, &s.AcmeEmail, &s.CertExpiresAt, &s.AcmeLastError, &s.AcmeLastTry)
 	if err != nil {
 		return nil, err
 	}
@@ -127,8 +130,25 @@ func ValidateSite(s *Site) error {
 	if (s.TLSCert == "") != (s.TLSKey == "") {
 		return fmt.Errorf("both the certificate and the private key are required")
 	}
-	if s.ForceHTTPS && s.TLSCert == "" {
+	// With ACME on, the certificate arrives on its own, so forcing HTTPS before the
+	// first one is issued is allowed - it just takes effect when the cert lands.
+	if s.ForceHTTPS && s.TLSCert == "" && !s.AcmeEnabled {
 		return fmt.Errorf("forcing HTTPS requires a certificate")
+	}
+	if s.AcmeEnabled {
+		s.AcmeEmail = strings.TrimSpace(s.AcmeEmail)
+		if s.AcmeEmail == "" {
+			return fmt.Errorf("an email address is required for automatic certificates")
+		}
+		if !strings.Contains(s.AcmeEmail, "@") || hasControlChar(s.AcmeEmail) {
+			return fmt.Errorf("invalid email address: %q", s.AcmeEmail)
+		}
+		for _, d := range s.Domains {
+			// A certificate authority will not validate an address or a private name
+			if net.ParseIP(d) != nil || !strings.Contains(d, ".") {
+				return fmt.Errorf("automatic certificates need a real domain name, not %q", d)
+			}
+		}
 	}
 	if s.RulesOff == nil {
 		s.RulesOff = []string{}
@@ -144,8 +164,9 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO sites (id, name, domains, upstream_scheme, upstream_host, upstream_port,
 		                   mode, challenge, rate_rps, rate_burst, tls_cert, tls_key,
-		                   force_https, enabled, rules_off, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15, now())
+		                   force_https, enabled, rules_off, acme_enabled, acme_email,
+		                   cert_expires_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			domains = EXCLUDED.domains,
@@ -161,10 +182,14 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 			force_https = EXCLUDED.force_https,
 			enabled = EXCLUDED.enabled,
 			rules_off = EXCLUDED.rules_off,
+			acme_enabled = EXCLUDED.acme_enabled,
+			acme_email = EXCLUDED.acme_email,
+			cert_expires_at = EXCLUDED.cert_expires_at,
 			updated_at = now()`,
 		site.ID, site.Name, domains, site.UpstreamScheme, site.UpstreamHost, site.UpstreamPort,
 		site.Mode, site.Challenge, site.RateRPS, site.RateBurst, site.TLSCert, site.TLSKey,
-		site.ForceHTTPS, site.Enabled, rulesOff)
+		site.ForceHTTPS, site.Enabled, rulesOff, site.AcmeEnabled, site.AcmeEmail,
+		site.CertExpiresAt)
 	return err
 }
 
@@ -177,4 +202,28 @@ func (s *Store) DeleteSite(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// StoreCertificate saves an issued certificate and clears the last failure.
+func (s *Store) StoreCertificate(ctx context.Context, id, certPEM, keyPEM string, expires time.Time) error {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE sites SET tls_cert = $2, tls_key = $3, cert_expires_at = $4,
+		                 acme_last_error = '', acme_last_try = now(), updated_at = now()
+		WHERE id = $1`, id, certPEM, keyPEM, expires)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RecordACMEAttempt remembers why an order failed, which both surfaces the reason
+// on the dashboard and drives the back-off before the next attempt.
+func (s *Store) RecordACMEAttempt(ctx context.Context, id, failure string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE sites SET acme_last_error = $2, acme_last_try = now() WHERE id = $1`,
+		id, failure)
+	return err
 }

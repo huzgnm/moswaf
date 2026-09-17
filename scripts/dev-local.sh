@@ -354,6 +354,15 @@ cmd_start() {
   [[ "$SKIP_PROXY" == "1" ]] || start_openresty
   start_control
   seed_site
+
+  # The control plane writes the site configs on startup, which lands after
+  # OpenResty has already read its own. In the container an entrypoint watcher
+  # notices and reloads; here nothing does, so reload explicitly - otherwise the
+  # site (and its ACME location) is missing until something else triggers a reload.
+  if [[ "$SKIP_PROXY" != "1" ]]; then
+    "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -s reload 2>/dev/null || true
+  fi
+
   echo
   echo "${GRN}${BLD}============================================================${NC}"
   echo "${GRN}${BLD}  MosWAF is running on this machine${NC}"

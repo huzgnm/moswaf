@@ -20,15 +20,16 @@ import (
 )
 
 type Server struct {
-	cfg   *config.Config
-	db    *store.Store
-	rdb   *redis.Client
-	pub   *engine.Publisher
-	login *loginGuard
+	cfg       *config.Config
+	db        *store.Store
+	rdb       *redis.Client
+	pub       *engine.Publisher
+	certifier *engine.Certifier
+	login     *loginGuard
 }
 
-func New(cfg *config.Config, db *store.Store, rdb *redis.Client, pub *engine.Publisher) *Server {
-	return &Server{cfg: cfg, db: db, rdb: rdb, pub: pub, login: newLoginGuard()}
+func New(cfg *config.Config, db *store.Store, rdb *redis.Client, pub *engine.Publisher, certifier *engine.Certifier) *Server {
+	return &Server{cfg: cfg, db: db, rdb: rdb, pub: pub, certifier: certifier, login: newLoginGuard()}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -48,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	auth.HandleFunc("GET /api/sites/{id}", s.handleGetSite)
 	auth.HandleFunc("PUT /api/sites/{id}", s.handleUpdateSite)
 	auth.HandleFunc("DELETE /api/sites/{id}", s.handleDeleteSite)
+	auth.HandleFunc("POST /api/sites/{id}/certificate", s.handleIssueCertificate)
 
 	auth.HandleFunc("GET /api/rules", s.handleListRules)
 	auth.HandleFunc("POST /api/rules", s.handleCreateRule)

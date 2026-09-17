@@ -18,6 +18,15 @@ type Site struct {
 	TLSKey         string    `json:"tls_key,omitempty"`
 	HasTLS         bool      `json:"has_tls"`
 	ForceHTTPS     bool      `json:"force_https"`
+
+	// Automatic certificates. When AcmeEnabled is set the control plane obtains a
+	// certificate over ACME HTTP-01 and renews it before CertExpiresAt, filling in
+	// the same TLSCert/TLSKey fields a manually pasted certificate uses.
+	AcmeEnabled   bool       `json:"acme_enabled"`
+	AcmeEmail     string     `json:"acme_email"`
+	CertExpiresAt *time.Time `json:"cert_expires_at,omitempty"`
+	AcmeLastError string     `json:"acme_last_error,omitempty"`
+	AcmeLastTry   *time.Time `json:"acme_last_try,omitempty"`
 	Enabled        bool      `json:"enabled"`
 	RulesOff       []string  `json:"rules_off"`
 	CreatedAt      time.Time `json:"created_at"`

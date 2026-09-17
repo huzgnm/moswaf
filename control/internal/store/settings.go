@@ -95,3 +95,20 @@ func (s *Store) SaveSettings(ctx context.Context, st Settings) error {
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, settingsKey, raw)
 	return err
 }
+
+// GetSetting reads one raw JSON value, returning nil when the key is absent.
+func (s *Store) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	var raw []byte
+	err := s.pool.QueryRow(ctx, `SELECT value FROM settings WHERE key = $1`, key).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return raw, err
+}
+
+func (s *Store) PutSetting(ctx context.Context, key string, raw []byte) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO settings (key, value) VALUES ($1, $2)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, raw)
+	return err
+}

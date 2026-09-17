@@ -105,7 +105,11 @@ func run(cfg *config.Config) error {
 		log.Printf("warning: could not publish the initial configuration: %v", err)
 	}
 
-	// --- thu gom log + don dep ---
+	// --- automatic certificates ---
+	certifier := engine.NewCertifier(db, rdb, cfg.ACMEDirectory, pub.Publish)
+	certifier.Run(ctx)
+
+	// --- event collection and housekeeping ---
 	consumer := engine.NewConsumer(db, rdb)
 	consumer.OnChange = pub.Publish
 	consumer.Run(ctx)
@@ -118,7 +122,7 @@ func run(cfg *config.Config) error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(cfg, db, rdb, pub).Handler(),
+		Handler:           api.New(cfg, db, rdb, pub, certifier).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
