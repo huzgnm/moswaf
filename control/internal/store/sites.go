@@ -144,9 +144,8 @@ func ValidateSite(s *Site) error {
 			return fmt.Errorf("invalid email address: %q", s.AcmeEmail)
 		}
 		for _, d := range s.Domains {
-			// A certificate authority will not validate an address or a private name
-			if net.ParseIP(d) != nil || !strings.Contains(d, ".") {
-				return fmt.Errorf("automatic certificates need a real domain name, not %q", d)
+			if err := checkACMEDomain(d); err != nil {
+				return err
 			}
 		}
 	}
@@ -154,6 +153,55 @@ func ValidateSite(s *Site) error {
 		s.RulesOff = []string{}
 	}
 	return nil
+}
+
+// Domains that can only ever produce a failed order. Every failure counts against
+// the authority's per-domain rate limit, and the sweep would retry each one hourly
+// forever, so they are refused when the site is saved rather than at 3am.
+func checkACMEDomain(d string) error {
+	// "*.example.com" parses as a perfectly good name, but HTTP-01 cannot prove
+	// ownership of a wildcard - that needs DNS-01, which MosWAF does not do.
+	if strings.Contains(d, "*") {
+		return fmt.Errorf("a wildcard like %q needs a DNS challenge, which MosWAF does not support", d)
+	}
+	// "1.2.3.4." is not parsed as an address by net.ParseIP, but it is still one
+	trimmed := strings.TrimSuffix(d, ".")
+	if net.ParseIP(trimmed) != nil {
+		return fmt.Errorf("automatic certificates need a domain name, not the address %q", d)
+	}
+	if !strings.Contains(trimmed, ".") {
+		return fmt.Errorf("automatic certificates need a public domain name, not %q", d)
+	}
+	if len(trimmed) > 253 {
+		return fmt.Errorf("domain name is too long: %q", d)
+	}
+	for _, label := range strings.Split(trimmed, ".") {
+		if label == "" {
+			return fmt.Errorf("domain name has an empty label: %q", d)
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("domain label is too long in %q", d)
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("domain label cannot start or end with a hyphen: %q", d)
+		}
+	}
+	return nil
+}
+
+// ManualIssueWindow is how long the dashboard button waits after an attempt.
+const ManualIssueWindow = 5 * time.Minute
+
+// ManualIssueCooldown returns how long is left before another manual order may be
+// placed, or zero when one may be placed now.
+func ManualIssueCooldown(s *Site, now time.Time) time.Duration {
+	if s.AcmeLastTry == nil {
+		return 0
+	}
+	if elapsed := now.Sub(*s.AcmeLastTry); elapsed < ManualIssueWindow {
+		return ManualIssueWindow - elapsed
+	}
+	return 0
 }
 
 func (s *Store) UpsertSite(ctx context.Context, site *Site) error {

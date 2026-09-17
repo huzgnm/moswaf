@@ -92,11 +92,21 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		w("%s}", indent)
 	}
 
-	// The ACME location sits outside every check on purpose: a site whose
-	// certificate has expired still has to be able to renew it, and a block here
-	// would stop the CA from ever reaching the token.
+	// The ACME location has to be exempt from the engine, and saying so in a comment
+	// is not enough: access_by_lua_block and the limits below are declared at server
+	// level, and nginx inherits them into every location that does not redefine them.
+	// Left inherited, a certificate could not be renewed at the exact moment it
+	// matters most - under-attack mode answers the authority with a JavaScript
+	// challenge it cannot solve, and a site set to challenge every visitor could
+	// never obtain its first certificate at all.
+	//
+	// Exempt does not mean unbounded: the path still carries its own, much smaller
+	// limits, so it cannot become the cheap flood channel the engine exists to stop.
 	acme := func(indent string) {
 		w("%slocation /.well-known/acme-challenge/ {", indent)
+		w("%s    access_by_lua_block { return }", indent)
+		w("%s    limit_req zone=moswaf_hard burst=10 nodelay;", indent)
+		w("%s    limit_conn moswaf_conn 10;", indent)
 		w("%s    content_by_lua_block { require(\"moswaf.acme\").serve() }", indent)
 		w("%s}", indent)
 	}

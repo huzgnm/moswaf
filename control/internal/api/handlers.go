@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -125,6 +126,13 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 
 	in.ID = cur.ID
 	in.CreatedAt = cur.CreatedAt
+	// Certificate state belongs to the renewal loop, not to whoever sends the
+	// request. Accepting cert_expires_at from a client let one PUT push the date
+	// years out, after which NeedsCertificate sees a healthy certificate and never
+	// renews - the real one then expires in silence.
+	in.CertExpiresAt = cur.CertExpiresAt
+	in.AcmeLastError = cur.AcmeLastError
+	in.AcmeLastTry = cur.AcmeLastTry
 	// The UI does not resend the private key -> keep the one already in use
 	if in.TLSCert == "" && in.TLSKey == "" {
 		in.TLSCert, in.TLSKey = cur.TLSCert, cur.TLSKey
@@ -178,6 +186,17 @@ func (s *Server) handleIssueCertificate(w http.ResponseWriter, r *http.Request) 
 	}
 	if !site.AcmeEnabled {
 		writeErr(w, http.StatusBadRequest, "automatic certificates are not enabled for this site")
+		return
+	}
+	// Each call is a real order at the authority, whose rate limits are strict and
+	// counted per domain per week. The hourly back-off the sweep uses would make the
+	// button useless - it exists to retry right after fixing DNS - so this is a
+	// short cooldown instead of no limit at all.
+	if wait := store.ManualIssueCooldown(site, time.Now()); wait > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests, fmt.Sprintf(
+			"the last attempt was less than %s ago; wait %s before asking again",
+			store.ManualIssueWindow, wait.Round(time.Second)))
 		return
 	}
 

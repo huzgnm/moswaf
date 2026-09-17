@@ -5,12 +5,14 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -51,17 +53,33 @@ type acmeAccount struct {
 }
 
 type Certifier struct {
-	db        *store.Store
-	rdb       *redis.Client
-	directory string
-	onIssued  func(context.Context) error
+	db         *store.Store
+	rdb        *redis.Client
+	directory  string
+	httpClient *http.Client
+	onIssued   func(context.Context) error
 }
 
-func NewCertifier(db *store.Store, rdb *redis.Client, directory string, onIssued func(context.Context) error) *Certifier {
+func NewCertifier(db *store.Store, rdb *redis.Client, directory string, insecure bool,
+	onIssued func(context.Context) error) *Certifier {
+
 	if directory == "" {
 		directory = acme.LetsEncryptURL
 	}
-	return &Certifier{db: db, rdb: rdb, directory: directory, onIssued: onIssued}
+	c := &Certifier{db: db, rdb: rdb, directory: directory, onIssued: onIssued}
+	if insecure {
+		// config.acmeInsecure has already refused to set this for anything but a
+		// local test authority, but it is worth one line in the log either way.
+		log.Printf("moswaf: ACME certificate verification is DISABLED for %s "+
+			"(test authority only - never point this at a public CA)", directory)
+		c.httpClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+	return c
 }
 
 // NeedsCertificate reports whether a site should be sent through ACME now, and why.
@@ -278,7 +296,10 @@ func (c *Certifier) client(ctx context.Context, email string) (*acme.Client, err
 		if err != nil {
 			return nil, err
 		}
-		client := &acme.Client{Key: key, DirectoryURL: c.directory, UserAgent: "moswaf"}
+		client := &acme.Client{
+			Key: key, DirectoryURL: c.directory, UserAgent: "moswaf",
+			HTTPClient: c.httpClient,
+		}
 		registered, err := client.Register(ctx, &acme.Account{
 			Contact: []string{"mailto:" + email},
 		}, acme.AcceptTOS)
@@ -307,5 +328,8 @@ func (c *Certifier) client(ctx context.Context, email string) (*acme.Client, err
 	if err != nil {
 		return nil, fmt.Errorf("the stored acme account key is unusable: %w", err)
 	}
-	return &acme.Client{Key: key, DirectoryURL: c.directory, UserAgent: "moswaf"}, nil
+	return &acme.Client{
+		Key: key, DirectoryURL: c.directory, UserAgent: "moswaf",
+		HTTPClient: c.httpClient,
+	}, nil
 }

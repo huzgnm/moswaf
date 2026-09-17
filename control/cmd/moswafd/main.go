@@ -106,7 +106,7 @@ func run(cfg *config.Config) error {
 	}
 
 	// --- automatic certificates ---
-	certifier := engine.NewCertifier(db, rdb, cfg.ACMEDirectory, pub.Publish)
+	certifier := engine.NewCertifier(db, rdb, cfg.ACMEDirectory, cfg.ACMEInsecure, pub.Publish)
 	certifier.Run(ctx)
 
 	// --- event collection and housekeeping ---
