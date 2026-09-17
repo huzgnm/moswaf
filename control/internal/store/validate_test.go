@@ -131,8 +131,6 @@ func TestValidateSiteACMERejectsBadInput(t *testing.T) {
 // slips through the current IP/dotless check. It should be rejected up front with a
 // clear message.
 func TestValidateSiteACMERejectsWildcard(t *testing.T) {
-	t.Skip("KNOWN (round-5 finding): ValidateSite accepts a wildcard with acme_enabled; " +
-		"remove this Skip once it rejects one")
 	s := acmeSite()
 	s.Domains = []string{"*.example.com"}
 	if err := ValidateSite(s); err == nil {
@@ -144,8 +142,6 @@ func TestValidateSiteACMERejectsWildcard(t *testing.T) {
 // dotted-quad with a trailing dot slips past the "no IP address" guard while still
 // being, to any CA, an IP. It should be rejected the same as "1.2.3.4".
 func TestValidateSiteACMERejectsTrailingDotIP(t *testing.T) {
-	t.Skip("KNOWN (round-5 finding): net.ParseIP(\"1.2.3.4.\") is nil so it slips the IP " +
-		"guard; remove this Skip once ValidateSite rejects a trailing-dot IP")
 	s := acmeSite()
 	s.Domains = []string{"1.2.3.4."}
 	if err := ValidateSite(s); err == nil {
