@@ -19,6 +19,7 @@ local cached_ver  = -1
 
 _M.defaults = {
     version  = 0,
+    internal_token = "",
     settings = {
         under_attack         = false,   -- bat: ep JS challenge voi moi khach la
         default_mode         = "protect",

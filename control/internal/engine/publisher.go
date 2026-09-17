@@ -41,6 +41,11 @@ type luaRule struct {
 
 type luaConfig struct {
 	Version   int64              `json:"version"`
+	// Shared with the data plane so its internal API can tell the control plane
+	// apart from anything else on the same Docker network. Publishing it here means
+	// an upgraded install is protected without anyone editing .env: whoever can read
+	// this value from Redis can already rewrite the whole configuration.
+	InternalToken string `json:"internal_token"`
 	Settings  store.Settings     `json:"settings"`
 	Sites     map[string]luaSite `json:"sites"`
 	Rules     []luaRule          `json:"rules"`
@@ -96,7 +101,8 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	}
 
 	cfg := luaConfig{
-		Version:   time.Now().UnixMilli(),
+		Version:       time.Now().UnixMilli(),
+		InternalToken: p.cfg.InternalToken,
 		Settings:  settings,
 		Sites:     map[string]luaSite{},
 		Rules:     make([]luaRule, 0, len(rules)),

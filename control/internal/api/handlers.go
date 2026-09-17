@@ -112,7 +112,13 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var in store.Site
+	// Start from what is stored and let the request overlay it, the same way
+	// PUT /api/settings works. Decoding into an empty struct made every omitted
+	// field revert to its zero value - and for `enabled` that meant a client which
+	// simply did not mention it disabled the site, whereupon WriteSiteConfigs
+	// deleted the generated nginx file and every request fell through to the
+	// catch-all "domain is not configured" server.
+	in := *cur
 	if !readJSON(w, r, &in) {
 		return
 	}

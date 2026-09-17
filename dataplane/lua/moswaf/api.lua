@@ -13,23 +13,36 @@ local _M = {}
 -- server block is a network boundary, not an identity check: anything sharing the
 -- Docker network - another container, a compromised sidecar - sits inside it and
 -- could lift bans or force config reloads. The token is the second lock.
-local TOKEN = os.getenv("MOSWAF_INTERNAL_TOKEN")
+local ENV_TOKEN = os.getenv("MOSWAF_INTERNAL_TOKEN")
+
+-- The token can arrive two ways: from the environment, or inside the configuration
+-- the control plane publishes. The second path is what protects an install that was
+-- upgraded and never had the variable added to its .env - it heals itself on the
+-- next config sync, with nothing for an operator to remember.
+local function expected_token()
+    if ENV_TOKEN and ENV_TOKEN ~= "" then return ENV_TOKEN end
+    local published = config.get().internal_token
+    if published and published ~= "" then return published end
+    return nil
+end
 
 -- Endpoints that change state or expose data require the token. /healthz and
 -- /metrics stay open: the container healthcheck and any metrics scraper depend on
 -- them, and neither returns anything sensitive.
 local function authorised()
-    if not TOKEN or TOKEN == "" then
-        -- An install upgraded from before the token existed. Keep working on the
-        -- allow list alone rather than breaking unban, but say so on every call.
-        ngx.log(ngx.WARN, "moswaf: MOSWAF_INTERNAL_TOKEN is not set - the internal ",
-                "API is protected by its IP allow list only. Run install.sh --repair.")
+    local token = expected_token()
+    if not token then
+        -- No token from either source yet: the data plane has not completed its
+        -- first config sync. Keep working on the allow list alone rather than
+        -- breaking unban, and say so.
+        ngx.log(ngx.WARN, "moswaf: no internal API token known yet - protected by ",
+                "the IP allow list only until the first configuration sync")
         return true
     end
 
     local got = ngx.req.get_headers()["X-MosWAF-Token"]
     if type(got) == "table" then got = got[1] end
-    if util.const_eq(got or "", TOKEN) then return true end
+    if util.const_eq(got or "", token) then return true end
 
     ngx.log(ngx.WARN, "moswaf: internal API call from ", ngx.var.remote_addr,
             " rejected: token missing or wrong")

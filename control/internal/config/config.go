@@ -103,6 +103,13 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+func internalToken() string {
+	if v := os.Getenv("MOSWAF_INTERNAL_TOKEN"); v != "" {
+		return v
+	}
+	return randomSecret()
+}
+
 func Load() *Config {
 	secret := env("MOSWAF_JWT_SECRET", "")
 	if secret == "" {
@@ -126,7 +133,10 @@ func Load() *Config {
 		CertsDir:        env("MOSWAF_CERTS_DIR", "/etc/moswaf/certs"),
 		AdminTLS:        env("MOSWAF_ADMIN_TLS_DIR", "/etc/moswaf/admin-tls"),
 		ProxySync:       env("MOSWAF_PROXY_SYNC_URL", "http://proxy:8081/sync"),
-		InternalToken:   env("MOSWAF_INTERNAL_TOKEN", ""),
+		// Generated when unset so an install that never edits .env still gets a real
+		// token: it is published with the configuration, and the data plane picks it
+		// up on its next sync. Only the two planes ever see it.
+		InternalToken: internalToken(),
 		RetainDays:      envInt("MOSWAF_LOG_RETAIN_DAYS", 7),
 		SiteHTTPPort:    envInt("MOSWAF_SITE_HTTP_PORT", 80),
 		SiteHTTPSPort:   envInt("MOSWAF_SITE_HTTPS_PORT", 443),

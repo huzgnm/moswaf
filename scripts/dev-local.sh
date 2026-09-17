@@ -281,6 +281,65 @@ seed_site() {
   else
     ok "$count site(s) already exist, not adding another"
   fi
+
+  seed_demo_tls "$token"
+}
+
+# Give the demo site a self-signed certificate.
+#
+# Without one the site only gets an HTTP server block, and the HTTPS listener is the
+# catch-all default server - which has no http2 and no site attached, so anything
+# that needs TLS or HTTP/2 cannot be exercised at all locally.
+seed_demo_tls() {
+  local token="$1"
+  local id
+  id="$(curl -sk "https://127.0.0.1:$ADMIN_PORT/api/sites" -H "Authorization: Bearer $token" \
+        | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)"
+  [[ -n "$id" ]] || return 0
+
+  if curl -sk "https://127.0.0.1:$ADMIN_PORT/api/sites/$id" -H "Authorization: Bearer $token" \
+       | grep -q '"has_tls":true'; then
+    ok "Demo site already has a certificate"
+    return 0
+  fi
+
+  mkdir -p "$RUN/demo-tls"
+  if [[ ! -f "$RUN/demo-tls/demo.crt" ]]; then
+    info "Generating a certificate for the demo site..."
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+      -keyout "$RUN/demo-tls/demo.key" -out "$RUN/demo-tls/demo.crt" \
+      -subj "/C=VN/O=MosWAF/CN=demo.moswaf.local" \
+      -addext "subjectAltName=DNS:localhost,DNS:demo.moswaf.local,IP:127.0.0.1" >/dev/null 2>&1
+  fi
+
+  info "Attaching the certificate so the site serves TLS and HTTP/2..."
+  DEMO_DIR="$RUN/demo-tls" DEMO_PORT="$DEMO_PORT" python3 - > "$RUN/run/site.json" <<'PYJSON'
+import json, os
+d = os.environ["DEMO_DIR"]
+print(json.dumps({
+    "name": "Demo site",
+    "domains": ["localhost", "127.0.0.1", "demo.moswaf.local"],
+    "upstream_scheme": "http",
+    "upstream_host": "127.0.0.1",
+    "upstream_port": int(os.environ["DEMO_PORT"]),
+    "mode": "protect",
+    "challenge": "auto",
+    "force_https": False,
+    "tls_cert": open(d + "/demo.crt").read(),
+    "tls_key": open(d + "/demo.key").read(),
+}))
+PYJSON
+
+  curl -sk -X PUT "https://127.0.0.1:$ADMIN_PORT/api/sites/$id" \
+    -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+    --data-binary "@$RUN/run/site.json" >/dev/null
+  rm -f "$RUN/run/site.json"
+
+  sleep 2
+  if [[ "$SKIP_PROXY" != "1" ]]; then
+    "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -s reload 2>/dev/null || true
+  fi
+  ok "Demo site now answers on https://127.0.0.1:$HTTPS_PORT (self-signed, HTTP/2)"
 }
 
 # ------------------------------------------------------------------ commands
@@ -308,6 +367,7 @@ cmd_start() {
     echo
   else
     echo "  Site via WAF   : ${BLD}http://127.0.0.1:${HTTP_PORT}/${NC}"
+    echo "  Over TLS/HTTP2 : ${BLD}https://127.0.0.1:${HTTPS_PORT}/${NC} ${DIM}(self-signed)${NC}"
     echo "  Upstream       : http://127.0.0.1:${DEMO_PORT}/ ${DIM}(bypasses the WAF, for comparison)${NC}"
     echo
     echo "  Attack test    : ./scripts/attack-sim.sh http://127.0.0.1:${HTTP_PORT}"
