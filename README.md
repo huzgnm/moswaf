@@ -7,210 +7,222 @@
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vuedotjs&logoColor=white)](web/package.json)
 [![Docker](https://img.shields.io/badge/deploy-one--command-2496ED?logo=docker&logoColor=white)](install.sh)
 
-Tuong lua ung dung web (WAF) kiem chong DDoS lop 7, trien khai bang mot lenh,
-co bang dieu khien admin chay tren **cong rieng** tach khoi luu luong that.
+A layer-7 web application firewall and anti-DDoS gateway. One command to deploy,
+with an admin dashboard on its **own port**, fully separated from real traffic.
 
 ---
 
-## Cai dat one-command
+## One-command install
 
-Tren may chu Linux (Ubuntu/Debian/CentOS/Alma...), chay bang root:
+On a Linux server (Ubuntu / Debian / CentOS / Alma / ...), as root:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | bash
 ```
 
-Hoac khi da co san source:
+Or, if you already have the source:
 
 ```bash
 sudo bash install.sh
 ```
 
-Script se: kiem tra/cai Docker → sinh `.env` voi toan bo bi mat ngau nhien →
-build image → khoi dong stack → in ra URL dashboard kem mat khau admin.
+The installer checks for (and installs) Docker, generates a `.env` with fresh
+random secrets, builds the images, starts the stack, and prints the dashboard
+URL together with the admin password.
 
-Tuy chon hay dung:
-
-```bash
-sudo bash install.sh --admin-port 9443 --admin-bind 127.0.0.1   # chi vao qua SSH tunnel
-sudo bash install.sh --upgrade                                   # nang cap, giu du lieu
-sudo bash install.sh --reset-password                            # sinh mat khau admin moi
-sudo bash install.sh --uninstall                                 # go
-```
-
-## Cac cong
-
-| Cong | Dich vu | Ghi chu |
-|------|---------|---------|
-| `80` | Data plane (HTTP) | luu luong that cua khach |
-| `443` | Data plane (HTTPS) | luu luong that cua khach |
-| **`9443`** | **Dashboard admin** | **cong rieng, HTTPS chung chi tu ky, doi duoc qua `.env`** |
-| `8081` | API noi bo data plane | chi mo trong mang Docker, khong publish |
-
-Dashboard khong bao gio dung chung cong voi traffic: ke tan cong dap cong 80/443
-cung khong cham duoc trang quan tri. Neu muon kin hon nua, dat
-`MOSWAF_ADMIN_BIND=127.0.0.1` roi vao bang tunnel:
+Useful flags:
 
 ```bash
-ssh -L 9443:127.0.0.1:9443 root@IP_SERVER
+sudo bash install.sh --admin-port 9443 --admin-bind 127.0.0.1   # reachable only through an SSH tunnel
+sudo bash install.sh --upgrade                                   # pull, rebuild, keep all data
+sudo bash install.sh --reset-password                            # generate a new admin password
+sudo bash install.sh --uninstall                                 # remove MosWAF
 ```
 
-## Kien truc
+## Ports
+
+| Port | Service | Notes |
+|------|---------|-------|
+| `80` | Data plane (HTTP) | real visitor traffic |
+| `443` | Data plane (HTTPS) | real visitor traffic |
+| **`9443`** | **Admin dashboard** | **separate port, HTTPS with a self-signed cert, configurable in `.env`** |
+| `8081` | Data plane internal API | Docker network only, never published |
+
+The dashboard never shares a port with traffic: hammering 80/443 cannot reach
+the admin panel. For a tighter setup, set `MOSWAF_ADMIN_BIND=127.0.0.1` and
+reach it through a tunnel:
+
+```bash
+ssh -L 9443:127.0.0.1:9443 root@SERVER_IP
+```
+
+## Architecture
 
 ```
                       Internet
                          │
-              ┌──────────▼───────────┐   cong 80/443
-              │   proxy (OpenResty)  │   ← data plane, engine Lua
+              ┌──────────▼───────────┐   ports 80/443
+              │   proxy (OpenResty)  │   ← data plane, Lua engine
               │  rate limit ▸ IP set │
-              │  JS challenge ▸ rule │
+              │  JS challenge ▸ rules│
               └─────┬──────────┬─────┘
-       config (3s)  │          │  su kien + bo dem
+       config (3s)  │          │  events + counters
               ┌─────▼──────────▼─────┐
               │        Redis         │
               └─────┬──────────┬─────┘
                     │          │
-              ┌─────▼──────────▼─────┐   cong 9443 (rieng)
+              ┌─────▼──────────▼─────┐   port 9443 (separate)
               │   mgmt (Go + Vue)    │   ← control plane + dashboard
               └──────────┬───────────┘
                          │
                    ┌─────▼─────┐
-                   │ Postgres  │  site, luat, nhat ky tan cong
+                   │ Postgres  │  sites, rules, attack log
                    └───────────┘
 ```
 
-Vi sao tach doi:
+Why the split:
 
-- **Data plane** chi lo loc goi tin. Khong dung DB, khong cho I/O. Moi quyet
-  dinh doc tu `lua_shared_dict` trong bo nho, nen chi phi moi request la vai
-  chuc micro giay.
-- **Control plane** giu nguon su that trong Postgres, day chinh sach sang Redis
-  va sinh file cau hinh nginx. Control plane chet thi WAF **van chan binh thuong**
-  bang ban config cuoi cung.
+- The **data plane** only filters traffic. No database, no blocking I/O. Every
+  decision reads from an in-memory `lua_shared_dict`, so the per-request cost
+  stays in the tens of microseconds.
+- The **control plane** owns the source of truth in Postgres, publishes policy
+  to Redis and writes the nginx site files. If the control plane goes down, the
+  WAF **keeps blocking** using the last configuration it loaded.
 
-## Cac lop phong ve (theo dung thu tu chay)
+## Defense layers (in execution order)
 
-| # | Lop | Xu ly |
-|---|-----|-------|
-| 1 | `limit_conn` / `limit_req` cua nginx | cat song flood tho truoc khi ton CPU cho Lua |
-| 2 | Whitelist IP | bo qua toan bo kiem tra con lai |
-| 3 | Blacklist + ban tam thoi | chan ngay, doc tu shared dict |
-| 4 | Rate limit 2 cua so (1s + 10s) | bat ca burst tuc thoi lan flood rai deu |
-| 5 | JS challenge (proof-of-work SHA-256) | loc bot khong chay duoc JavaScript |
-| 6 | Engine chu ky | SQLi, XSS, LFI/traversal, RCE, SSRF, scanner, CRLF |
+| # | Layer | What it does |
+|---|-------|--------------|
+| 1 | nginx `limit_conn` / `limit_req` | cuts crude floods before any Lua runs |
+| 2 | IP allowlist | skips every remaining check |
+| 3 | IP blocklist + temporary bans | rejected straight from the shared dict |
+| 4 | Two-window rate limiting (1s + 10s) | catches instant bursts *and* slow, evenly paced floods |
+| 5 | JS challenge (SHA-256 proof-of-work) | filters clients that cannot run JavaScript |
+| 6 | Signature engine | SQLi, XSS, LFI/traversal, RCE, SSRF, scanners, CRLF |
 
-Vuot nguong 3 lan trong 1 phut thi IP bi **ban tam thoi** thay vi chan tung
-request - re hon nhieu khi dang bi botnet dap.
+Cross the threshold three times in a minute and the IP is **temporarily banned**
+instead of being rejected request by request — far cheaper when a botnet is
+pounding on the door.
 
-### JS challenge hoat dong the nao
+### How the JS challenge works
 
-Khach chua co cookie hop le se nhan trang challenge. Trinh duyet phai tim `nonce`
-sao cho `SHA-256(salt + nonce)` co N bit 0 dau (mac dinh 16 bit ≈ 0,1-0,3 giay).
-Giai xong thi duoc cap cookie ky HMAC, song 30 phut.
+A visitor without a valid cookie gets the challenge page. The browser must find
+a `nonce` such that `SHA-256(salt + nonce)` starts with N zero bits (16 by
+default, roughly 0.1–0.3s of work). On success it receives an HMAC-signed cookie
+valid for 30 minutes.
 
-Bot dung `curl`/`python-requests` khong chay JavaScript nen rot ngay. Botnet muon
-duy tri flood se phai tra chi phi CPU gap hang nghin lan phia may chu.
+Bots driving `curl` or `python-requests` do not run JavaScript, so they fail
+immediately. A botnet that wants to sustain a flood has to pay thousands of
+times more CPU than the server does.
 
-Khi bi tan cong nang, bat **che do dang bi tan cong** o goc phai dashboard:
-moi khach la deu phai giai challenge truoc khi vao site.
+When an attack is in progress, flip **under-attack mode** in the top right of
+the dashboard: every unknown visitor must solve a challenge before reaching the
+site.
 
-## Su dung
+## Getting started
 
-1. Vao `https://IP:9443`, dang nhap bang tai khoan installer in ra.
-2. **Doi mat khau ngay** trong muc Cai dat.
-3. Vao **Trang web → Them site**: khai ten mien va upstream that
-   (vi du `10.0.0.5:8080`, hoac `host.docker.internal:8080` neu web chay tren chinh may nay).
-4. Tro ban ghi A cua ten mien ve IP may chay MosWAF.
-5. Theo doi o **Tong quan** va **Nhat ky tan cong**.
+1. Open `https://SERVER_IP:9443` and log in with the credentials the installer printed.
+2. **Change the password immediately** under Settings.
+3. Go to **Sites → Add site** and enter your domains plus the real upstream
+   (for example `10.0.0.5:8080`, or `host.docker.internal:8080` if the app runs
+   on this same machine).
+4. Point the domain's A record at the machine running MosWAF.
+5. Watch **Overview** and **Attack log**.
 
-Nen bat che do **Chi theo doi** vai ngay dau de xem co luat nao chan nham
-luu luong that khong, roi moi chuyen sang **Bao ve**.
+Run in **monitor** mode for the first few days to see whether any rule blocks
+legitimate traffic, then switch to **protect**.
 
-## Kiem tra WAF co that su chan khong
+## Verifying that it actually blocks
 
-Sau khi them site, ban mot loat request kieu tan cong vao chinh site cua minh
-roi doi chieu ket qua:
+After adding a site, fire a batch of common attacks at your own site and compare
+the results:
 
 ```bash
 ./scripts/attack-sim.sh https://example.com
-./scripts/attack-sim.sh https://example.com --flood 150   # thu ca rate limit
+./scripts/attack-sim.sh https://example.com --flood 150   # also exercise rate limiting
 ```
 
-Script thu SQLi, XSS, path traversal, RCE, do file bi mat, SSRF metadata va
-User-Agent cua cong cu quet, dong thoi kiem tra hai request binh thuong **khong**
-bi chan nham. Nhin dashboard thay "da chan 0" thi khong biet la chua ai tan cong
-hay la minh cau hinh sai - chay script nay se ro ngay.
+The script tries SQLi, XSS, path traversal, RCE, secret-file probes, SSRF to
+cloud metadata and scanner user agents — and also checks that two **normal**
+requests are *not* blocked. A dashboard reading "0 blocked" does not tell you
+whether nobody attacked you or your configuration is simply wrong; this does.
 
-## Lenh thuong dung
+## Everyday commands
 
 ```bash
 cd /opt/moswaf
-docker compose ps                 # trang thai
-docker compose logs -f proxy      # log data plane
-docker compose logs -f mgmt       # log control plane
+docker compose ps                 # status
+docker compose logs -f proxy      # data plane logs
+docker compose logs -f mgmt       # control plane logs
 docker compose restart proxy
 ```
 
-Trong thu muc source con co `make`:
+From a source checkout there is also `make`:
 
 ```bash
-make up          # build + chay
-make logs        # xem log
-make nginx-test  # kiem tra cu phap nginx dang chay
-make down        # dung
+make up          # build and start
+make logs        # follow logs
+make nginx-test  # validate the running nginx config
+make down        # stop
 ```
 
-## Phat trien
+## Development
 
-Can Go >= 1.22 va Node >= 20.
+Requires Go >= 1.22 and Node >= 20.
 
 ```bash
-make web-build   # build dashboard vao control/internal/web/dist
-make go-build    # build binary control plane
+make web-build   # build the dashboard into control/internal/web/dist
+make go-build    # build the control plane binary
 make go-test     # go vet + go test
-make web-dev     # Vite dev server, proxy API sang https://127.0.0.1:9443
+make lua-check   # check Lua syntax (needs luajit)
+make web-dev     # Vite dev server, proxying the API to https://127.0.0.1:9443
 ```
 
-Sua engine Lua trong `dataplane/lua/moswaf/` thi chi can:
+After editing the Lua engine in `dataplane/lua/moswaf/`:
 
 ```bash
 docker compose restart proxy
 ```
 
-## Cau truc thu muc
+## Layout
 
 ```
 moswaf/
-├── install.sh              trinh cai one-command
+├── install.sh              one-command installer
 ├── docker-compose.yml
-├── dataplane/              OpenResty - lop chan
-│   ├── conf/               nginx.conf, server mac dinh, trang challenge/blocked
+├── scripts/attack-sim.sh   verify the WAF blocks what it should
+├── dataplane/              OpenResty - the filtering layer
+│   ├── conf/               nginx.conf, default server, challenge/blocked pages
 │   └── lua/moswaf/
-│       ├── access.lua      pha quyet dinh cho qua / chan / challenge
-│       ├── rules.lua       engine chu ky + bo luat goc
-│       ├── ratelimit.lua   bo dem 2 cua so
-│       ├── ipset.lua       danh sach den/trang + ban tam thoi
-│       ├── challenge.lua   JS challenge proof-of-work
-│       ├── config.lua      dong bo cau hinh tu Redis
-│       └── log.lua         day su kien + thong ke
-├── control/                Go - API, dashboard, dong bo
+│       ├── access.lua      allow / block / challenge decision
+│       ├── rules.lua       signature engine + built-in ruleset
+│       ├── ratelimit.lua   two-window counters
+│       ├── ipset.lua       allow/blocklists + temporary bans
+│       ├── challenge.lua   proof-of-work JS challenge
+│       ├── config.lua      config sync from Redis
+│       └── log.lua         event and stats shipping
+├── control/                Go - API, dashboard, sync
 │   ├── cmd/moswafd/
 │   └── internal/{api,store,engine,config,web}
-└── web/                    Vue 3 + Vite - giao dien dashboard
+└── web/                    Vue 3 + Vite - dashboard UI
 ```
 
-## Gioi han hien tai
+## Documentation
 
-Nhung phan **chua** co, can biet truoc khi dua ra san xuat:
+- [REST API reference](docs/API.md) — every control-plane endpoint with `curl` examples.
 
-- Chua tu xin chung chi Let's Encrypt (da chua san duong `/.well-known/acme-challenge/`,
-  chung chi hien phai dan tay vao form site).
-- Chua co cum nhieu node - moi ban cai la mot may doc lap.
-- Chua co fingerprint TLS (JA3/JA4) va chua co hoc may; phat hien hien dua tren
-  chu ky + tan suat.
-- Chua co xac thuc hai lop cho dashboard.
-- Chua co canh bao qua Telegram/email khi bi tan cong.
+## Current limitations
 
-## Tai lieu
+Worth knowing before putting this in front of production traffic:
 
-- [Tai lieu REST API](docs/API.md) - toan bo endpoint cua control plane, kem vi du curl.
+- No automatic Let's Encrypt yet (`/.well-known/acme-challenge/` is already
+  wired up, but certificates must be pasted into the site form for now).
+- No multi-node clustering — each install is an independent machine.
+- No TLS fingerprinting (JA3/JA4) and no machine learning; detection is
+  signature- and rate-based.
+- No two-factor authentication for the dashboard.
+- No Telegram/email alerting when an attack starts.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
