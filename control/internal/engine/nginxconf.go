@@ -15,13 +15,33 @@ import (
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,31}$`)
 
+// SiteRender gom nhung thu can de sinh file cau hinh site.
+// Trong container luon la 80/443; doi cong duoc de chay thu tren may dev.
+type SiteRender struct {
+	CertsDir  string
+	HTTPPort  int
+	HTTPSPort int
+}
+
+func (o SiteRender) normalized() SiteRender {
+	if o.HTTPPort == 0 {
+		o.HTTPPort = 80
+	}
+	if o.HTTPSPort == 0 {
+		o.HTTPSPort = 443
+	}
+	return o
+}
+
 // renderSite sinh noi dung file .conf cho mot site.
 //
 // Hai kich ban:
-//   - co chung chi : mot server block cho 80 (chuyen huong hoac phuc vu)
-//     va mot cho 443
-//   - khong chung chi: chi server block 80
-func renderSite(s *store.Site, certsDir string) (string, error) {
+//   - co chung chi : mot server block cho cong HTTP (chuyen huong hoac phuc vu)
+//     va mot cho cong HTTPS
+//   - khong chung chi: chi server block HTTP
+func renderSite(s *store.Site, opt SiteRender) (string, error) {
+	opt = opt.normalized()
+	certsDir := opt.CertsDir
 	if !idRe.MatchString(s.ID) {
 		return "", fmt.Errorf("id site khong hop le: %q", s.ID)
 	}
@@ -77,7 +97,7 @@ func renderSite(s *store.Site, certsDir string) (string, error) {
 		key := filepath.Join(certsDir, s.ID+".key")
 
 		w("server {")
-		w("    listen 80;")
+		w("    listen %d;", opt.HTTPPort)
 		w("    server_name %s;", names)
 		acme("    ")
 		if s.ForceHTTPS {
@@ -88,7 +108,7 @@ func renderSite(s *store.Site, certsDir string) (string, error) {
 		w("}")
 		w("")
 		w("server {")
-		w("    listen 443 ssl;")
+		w("    listen %d ssl;", opt.HTTPSPort)
 		w("    http2 on;")
 		w("    server_name %s;", names)
 		w("")
@@ -108,7 +128,7 @@ func renderSite(s *store.Site, certsDir string) (string, error) {
 		w("}")
 	} else {
 		w("server {")
-		w("    listen 80;")
+		w("    listen %d;", opt.HTTPPort)
 		w("    server_name %s;", names)
 		acme("    ")
 		w("")
@@ -122,7 +142,10 @@ func renderSite(s *store.Site, certsDir string) (string, error) {
 // WriteSiteConfigs ghi lai toan bo file cau hinh site va chung chi,
 // xoa nhung file cua site da bi go. Watcher trong container proxy
 // se tu phat hien thay doi va reload.
-func WriteSiteConfigs(sites []*store.Site, sitesDir, certsDir string) error {
+func WriteSiteConfigs(sites []*store.Site, sitesDir string, opt SiteRender) error {
+	opt = opt.normalized()
+	certsDir := opt.CertsDir
+
 	if err := os.MkdirAll(sitesDir, 0o755); err != nil {
 		return err
 	}
@@ -136,7 +159,7 @@ func WriteSiteConfigs(sites []*store.Site, sitesDir, certsDir string) error {
 		if !s.Enabled {
 			continue
 		}
-		conf, err := renderSite(s, certsDir)
+		conf, err := renderSite(s, opt)
 		if err != nil {
 			return fmt.Errorf("site %s: %w", s.Name, err)
 		}

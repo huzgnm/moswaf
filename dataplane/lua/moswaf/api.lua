@@ -63,6 +63,41 @@ function _M.metrics()
     return ngx.exit(200)
 end
 
+-- Danh sach IP dang bi ban tam thoi. Ban nay do engine tu sinh khi phat hien
+-- flood nen chi nam trong bo nho data plane, DB khong biet -> phai hoi o day.
+function _M.bans()
+    local ban = ngx.shared.moswaf_ban
+    local items = {}
+    for _, key in ipairs(ban:get_keys(1000)) do
+        local ip = key:match("^b:(.+)$")
+        if ip then
+            items[#items + 1] = {
+                ip     = ip,
+                reason = ban:get(key) or "auto",
+                ttl    = ban:ttl(key) or 0,
+            }
+        end
+    end
+    return json(200, { items = items, total = #items })
+end
+
+-- Go ban cho mot IP, hoac tat ca khi ip=*
+function _M.unban()
+    local args = ngx.req.get_uri_args(5)
+    local ip = args.ip
+    if type(ip) ~= "string" or ip == "" then
+        return json(400, { error = "thieu tham so ip" })
+    end
+    if ip == "*" then
+        ngx.shared.moswaf_ban:flush_all()
+        ngx.log(ngx.NOTICE, "moswaf: da go toan bo ban tam thoi")
+        return json(200, { unbanned = "all" })
+    end
+    ipset.unban(ip)
+    ngx.log(ngx.NOTICE, "moswaf: da go ban cho ", ip)
+    return json(200, { unbanned = ip })
+end
+
 -- Control plane goi sau khi admin luu thay doi -> nap cau hinh ngay, khong doi timer
 function _M.sync()
     local ok = config.sync()

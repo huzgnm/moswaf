@@ -59,6 +59,9 @@ func (s *Server) Handler() http.Handler {
 	auth.HandleFunc("POST /api/ips", s.handleAddIP)
 	auth.HandleFunc("DELETE /api/ips/{id}", s.handleDeleteIP)
 
+	auth.HandleFunc("GET /api/bans", s.handleListBans)
+	auth.HandleFunc("DELETE /api/bans/{ip}", s.handleUnban)
+
 	auth.HandleFunc("GET /api/events", s.handleListEvents)
 
 	auth.HandleFunc("GET /api/stats/overview", s.handleOverview)

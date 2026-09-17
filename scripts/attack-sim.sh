@@ -12,13 +12,17 @@
 #  Dung:
 #    ./scripts/attack-sim.sh https://example.com
 #    ./scripts/attack-sim.sh http://127.0.0.1 --host example.com   # test truc tiep tren may chu
-#    ./scripts/attack-sim.sh https://example.com --flood 150       # thu ca rate limit
+#    ./scripts/attack-sim.sh https://example.com --flood 300       # thu ca rate limit
+#
+#  --flood ban song song (mac dinh 25 luong, doi bang CONCURRENCY=50).
+#  So request phai vuot nguong rate limit dang dat trong Cai dat.
 #
 set -uo pipefail
 
 TARGET="${1:-}"
 HOST_HEADER=""
 FLOOD=0
+CONCURRENCY="${CONCURRENCY:-25}"
 shift || true
 
 while [[ $# -gt 0 ]]; do
@@ -36,7 +40,9 @@ fi
 
 GRN=$'\033[0;32m'; RED=$'\033[0;31m'; YLW=$'\033[0;33m'; DIM=$'\033[2m'; NC=$'\033[0m'
 
-curl_args=(-s -o /dev/null -k --max-time 10 -w '%{http_code}')
+# Co xuong dong o cuoi: phan flood ghi moi ket qua ra mot file roi gop lai dem,
+# thieu \n thi ca tram ma se dinh thanh mot dong va dem sai.
+curl_args=(-s -o /dev/null -k --max-time 10 -w '%{http_code}\n')
 [[ -n "$HOST_HEADER" ]] && curl_args+=(-H "Host: $HOST_HEADER")
 
 pass=0; fail=0
@@ -108,22 +114,37 @@ probe "User-Agent nikto"    block "$TARGET/" -A "Mozilla/5.00 (Nikto/2.5.0)"
 
 if [[ "$FLOOD" -gt 0 ]]; then
   echo
-  echo "Rate limit - ban $FLOOD request lien tiep:"
-  limited=0
-  for _ in $(seq 1 "$FLOOD"); do
-    code="$(curl "${curl_args[@]}" "$TARGET/")"
-    case "$code" in
-      429|503) limited=$((limited + 1)) ;;
-    esac
+  echo "Rate limit - ban $FLOOD request song song ($CONCURRENCY luong):"
+
+  # Phai ban song song moi giong flood that. Ban tuan tu bang curl chi dat
+  # vai chuc request/giay, thuong khong cham noi nguong nen bao "khong chan"
+  # trong khi rate limit van dang hoat dong binh thuong.
+  tmpdir="$(mktemp -d)"
+  running=0
+  for i in $(seq 1 "$FLOOD"); do
+    curl "${curl_args[@]}" "$TARGET/" > "$tmpdir/$i" 2>/dev/null &
+    running=$((running + 1))
+    if [[ $running -ge $CONCURRENCY ]]; then
+      wait -n 2>/dev/null || wait
+      running=$((running - 1))
+    fi
   done
-  if [[ $limited -gt 0 ]]; then
+  wait
+
+  # 429 = vuot nguong, 503 = bi day sang challenge, 403 = IP da bi ban tam thoi
+  limited="$(cat "$tmpdir"/* 2>/dev/null | grep -c -E '^(403|429|503)$' || true)"
+  rm -rf "$tmpdir"
+
+  if [[ "$limited" -gt 0 ]]; then
     pass=$((pass + 1))
     printf "  ${GRN}✓${NC} %-38s ${DIM}%s/%s request bi chan hoac bi challenge${NC}\n" \
       "Rate limit co hoat dong" "$limited" "$FLOOD"
   else
     fail=$((fail + 1))
     printf "  ${RED}✗${NC} %-38s ${RED}khong request nao bi chan${NC}\n" "Rate limit"
-    echo "     ${YLW}Kiem tra global_rate_rps trong Cai dat, hoac IP cua ban dang nam trong danh sach trang.${NC}"
+    echo "     ${YLW}Kiem tra: so request phai vuot nguong trong Cai dat${NC}"
+    echo "     ${YLW}(mac dinh 60 request/giay va 120 request/10 giay cho moi IP),${NC}"
+    echo "     ${YLW}va IP cua ban khong nam trong danh sach trang.${NC}"
   fi
 fi
 

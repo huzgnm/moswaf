@@ -15,6 +15,8 @@ COPY dataplane/entrypoint.sh /usr/local/moswaf/entrypoint.sh
 
 RUN chmod +x /usr/local/moswaf/entrypoint.sh
 
+ENV MOSWAF_CONF_DIR=/usr/local/moswaf/conf
+
 EXPOSE 80 443 8081
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \

@@ -95,7 +95,7 @@ func run(cfg *config.Config) error {
 	}
 
 	// --- day cau hinh xuong data plane ---
-	pub := engine.NewPublisher(db, rdb, cfg.SitesDir, cfg.CertsDir, cfg.ProxySync)
+	pub := engine.NewPublisher(db, rdb, cfg)
 	if err := pub.Publish(ctx); err != nil {
 		// Khong chet han: admin van vao dashboard duoc de xu ly
 		log.Printf("canh bao: chua day duoc cau hinh ban dau: %v", err)

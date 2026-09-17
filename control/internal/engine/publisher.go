@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mosvpn/moswaf/control/internal/config"
 	"github.com/mosvpn/moswaf/control/internal/store"
 	"github.com/redis/go-redis/v9"
 )
@@ -48,18 +49,16 @@ type luaConfig struct {
 }
 
 type Publisher struct {
-	db       *store.Store
-	rdb      *redis.Client
-	sitesDir string
-	certsDir string
-	syncURL  string
+	db  *store.Store
+	rdb *redis.Client
+	cfg *config.Config
 
 	mu      sync.Mutex
 	version int64
 }
 
-func NewPublisher(db *store.Store, rdb *redis.Client, sitesDir, certsDir, syncURL string) *Publisher {
-	return &Publisher{db: db, rdb: rdb, sitesDir: sitesDir, certsDir: certsDir, syncURL: syncURL}
+func NewPublisher(db *store.Store, rdb *redis.Client, cfg *config.Config) *Publisher {
+	return &Publisher{db: db, rdb: rdb, cfg: cfg}
 }
 
 func (p *Publisher) Version() int64 {
@@ -138,7 +137,11 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		return fmt.Errorf("day config sang redis: %w", err)
 	}
 
-	if err := WriteSiteConfigs(sites, p.sitesDir, p.certsDir); err != nil {
+	if err := WriteSiteConfigs(sites, p.cfg.SitesDir, SiteRender{
+		CertsDir:  p.cfg.CertsDir,
+		HTTPPort:  p.cfg.SiteHTTPPort,
+		HTTPSPort: p.cfg.SiteHTTPSPort,
+	}); err != nil {
 		return fmt.Errorf("ghi cau hinh nginx: %w", err)
 	}
 
@@ -150,13 +153,13 @@ func (p *Publisher) Publish(ctx context.Context) error {
 // notifyProxy giuc data plane nap cau hinh ngay thay vi doi chu ky 3 giay.
 // That bai o day khong phai loi nghiem trong: timer se tu keo ve sau.
 func (p *Publisher) notifyProxy() {
-	if p.syncURL == "" {
+	if p.cfg.ProxySync == "" {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.syncURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.cfg.ProxySync, nil)
 		if err != nil {
 			return
 		}

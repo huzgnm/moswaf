@@ -24,6 +24,22 @@ local _M = {}
 
 local BODY_METHODS = { POST = true, PUT = true, PATCH = true, DELETE = true }
 
+-- Ke tan cong hay ma hoa URL de qua mat bo luat: "UNION ALL SELECT" gui di
+-- thanh "UNION%20ALL%20SELECT", "<script>" thanh "%3Cscript%3E", tinh vi hon
+-- thi ma hoa hai lop ("%2520"). Vi vay truoc khi quet phai chuan hoa: ghep ca
+-- ban goc lan cac ban da giai ma lai lam mot, de luat khop o bat ky lop nao.
+local function expand(s)
+    if not s or s == "" then return "" end
+    local out, prev = s, s
+    for _ = 1, 2 do
+        local ok, decoded = pcall(ngx.unescape_uri, prev)
+        if not ok or decoded == prev then break end
+        out = out .. "\n" .. decoded
+        prev = decoded
+    end
+    return out
+end
+
 -- --------------------------------------------------------------- phan hoi
 
 local function render_block(ctx, status)
@@ -123,8 +139,14 @@ function _M.run()
     end
 
     -- 5. rate limit
-    local rps   = tonumber(site.rate_rps)   or tonumber(st.global_rate_rps)   or 60
-    local burst = tonumber(site.rate_burst) or tonumber(st.global_rate_burst) or 120
+    -- Site de 0 nghia la "dung muc toan cuc". Trong Lua so 0 van la gia tri
+    -- dung (khac nil) nen khong duoc viet `tonumber(site.rate_rps) or global`:
+    -- nhu the se ra 0 va tat han rate limit.
+    local rps = tonumber(site.rate_rps) or 0
+    if rps <= 0 then rps = tonumber(st.global_rate_rps) or 60 end
+
+    local burst = tonumber(site.rate_burst) or 0
+    if burst <= 0 then burst = tonumber(st.global_rate_burst) or 120 end
     local hit, rreason, c1, c10 = ratelimit.check(site_id ~= "" and site_id or "g", ip, rps, burst)
     ctx.rps = c1
     if hit then
@@ -151,11 +173,13 @@ function _M.run()
     -- 7. quet chu ky
     local headers = ngx.req.get_headers(64)
     local scan = {
-        uri     = uri,
-        args    = ngx.var.args or "",
+        -- $uri da duoc nginx giai ma va chuan hoa, $request_uri giu nguyen ban
+        -- goc - can ca hai de bat duoc ../ lan cac kieu ma hoa
+        uri     = expand((ngx.var.request_uri or uri) .. "\n" .. uri),
+        args    = expand(ngx.var.args or ""),
         ua      = ua,
-        cookie  = ngx.var.http_cookie or "",
-        referer = ngx.var.http_referer or "",
+        cookie  = expand(ngx.var.http_cookie or ""),
+        referer = expand(ngx.var.http_referer or ""),
         headers = headers,
     }
 
@@ -164,7 +188,7 @@ function _M.run()
         local max = tonumber(st.max_body_scan) or 65536
         if len > 0 and len <= max then
             ngx.req.read_body()
-            scan.body = ngx.req.get_body_data() or ""
+            scan.body = expand(ngx.req.get_body_data() or "")
         end
     end
 

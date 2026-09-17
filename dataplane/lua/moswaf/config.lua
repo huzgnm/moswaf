@@ -51,9 +51,26 @@ local function read_file(path)
     return c
 end
 
+-- Thu muc chua trang challenge/blocked. Trong container la duong dan co dinh,
+-- nhung ban cai native (scripts/dev-local.sh) dat o cho khac.
+local CONF_DIR = os.getenv("MOSWAF_CONF_DIR") or "/usr/local/moswaf/conf"
+
 function _M.bootstrap()
-    _M.challenge_html = read_file("/usr/local/moswaf/conf/challenge.html") or "<html><body>Checking...</body></html>"
-    _M.block_html     = read_file("/usr/local/moswaf/conf/blocked.html")   or "<html><body>Blocked by MosWAF</body></html>"
+    _M.challenge_html = read_file(CONF_DIR .. "/challenge.html")
+    _M.block_html     = read_file(CONF_DIR .. "/blocked.html")
+
+    -- Thieu trang challenge la hong nang: ban du phong khong co JavaScript nen
+    -- khach khong bao gio giai duoc, bat che do chong tan cong la khoa sach.
+    -- Phai bao that to thay vi am tham chay tiep.
+    if not _M.challenge_html then
+        ngx.log(ngx.ERR, "moswaf: KHONG doc duoc ", CONF_DIR, "/challenge.html - ",
+                "JS challenge se khong hoat dong. Dat MOSWAF_CONF_DIR cho dung.")
+        _M.challenge_html = "<html><body>Checking...</body></html>"
+    end
+    if not _M.block_html then
+        ngx.log(ngx.ERR, "moswaf: khong doc duoc ", CONF_DIR, "/blocked.html")
+        _M.block_html = "<html><body>Blocked by MosWAF</body></html>"
+    end
 
     if not shm:get("data") then
         shm:set("data", cjson.encode(_M.defaults))
@@ -127,7 +144,7 @@ end
 
 function _M.start_sync()
     if ngx.worker.id() ~= 0 then return end     -- mot worker dong bo la du
-    _M.sync()
+
     local function tick(premature)
         if premature then return end
         local ok, err = pcall(_M.sync)
@@ -135,7 +152,13 @@ function _M.start_sync()
         local ok2, err2 = ngx.timer.at(SYNC_PERIOD, tick)
         if not ok2 then ngx.log(ngx.ERR, "moswaf: khong dat duoc timer config: ", err2) end
     end
-    local ok, err = ngx.timer.at(SYNC_PERIOD, tick)
+
+    -- Tuyet doi khong goi _M.sync() thang o day: ham nay chay trong pha
+    -- init_worker, ma pha do khong dung duoc cosocket (ngx.socket.tcp).
+    -- Goi thang se nem loi, lam ca chuoi khoi tao dut giua chung va timer
+    -- dong bo khong bao gio duoc dat -> engine chay mai bang cau hinh mac dinh.
+    -- Hen timer 0 giay de lan dong bo dau tien van chay ngay lap tuc.
+    local ok, err = ngx.timer.at(0, tick)
     if not ok then ngx.log(ngx.ERR, "moswaf: khong dat duoc timer config: ", err) end
 end
 

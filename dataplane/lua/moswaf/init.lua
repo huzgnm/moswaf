@@ -23,8 +23,13 @@ function _M.init_worker()
 
     math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
 
-    config.start_sync()     -- keo cau hinh tu control plane
-    log.start_flush()       -- day su kien + thong ke
+    -- Tach pcall cho tung phan: mot phan hong thi phan con lai van chay,
+    -- thay vi dut ca chuoi khoi tao worker nhu truoc.
+    local ok, err = pcall(config.start_sync)   -- keo cau hinh tu control plane
+    if not ok then ngx.log(ngx.ERR, "moswaf: khong khoi dong duoc dong bo config: ", err) end
+
+    ok, err = pcall(log.start_flush)           -- day su kien + thong ke
+    if not ok then ngx.log(ngx.ERR, "moswaf: khong khoi dong duoc bo day log: ", err) end
 
     -- don ban het han (mot worker la du)
     if ngx.worker.id() == 0 then
