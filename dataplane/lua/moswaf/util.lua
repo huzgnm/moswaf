@@ -272,6 +272,26 @@ function _M.const_eq(a, b)
     return diff == 0
 end
 
+-- Only a path on this site may be redirected to.
+--
+-- Checking for a leading "/" and a second character that is not "/" was not enough:
+-- browsers read "/\\evil.example" as protocol-relative and follow it off-site, which
+-- turns the challenge into an open redirect an attacker can point anywhere. A
+-- backslash in that position is rejected now, along with control characters and
+-- anything carrying a scheme.
+function _M.is_local_path(v)
+    if type(v) ~= "string" or v == "" or #v > 2048 then return false end
+    if v:sub(1, 1) ~= "/" then return false end
+
+    local second = v:sub(2, 2)
+    if second == "/" or second == "\\" then return false end
+
+    if v:find("[%c]") then return false end          -- CR, LF, NUL and friends
+    if v:lower():find("://", 1, true) then return false end
+
+    return true
+end
+
 function _M.hex(s)
     return (s:gsub(".", function(c) return format("%02x", byte(c)) end))
 end

@@ -147,7 +147,8 @@ func (s *Server) issueToken(u *store.User) (string, time.Time, error) {
 	return str, exp, err
 }
 
-func (s *Server) parseToken(raw string) (*store.User, error) {
+// parseToken returns the account and the moment the token was issued.
+func (s *Server) parseToken(raw string) (*store.User, time.Time, error) {
 	tok, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, errors.New("unsupported signing algorithm")
@@ -155,19 +156,23 @@ func (s *Server) parseToken(raw string) (*store.User, error) {
 		return s.cfg.JWTSecret, nil
 	}, jwt.WithValidMethods([]string{"HS256"}))
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	claims, ok := tok.Claims.(jwt.MapClaims)
 	if !ok || !tok.Valid {
-		return nil, errors.New("invalid token")
+		return nil, time.Time{}, errors.New("invalid token")
 	}
 	sub, _ := claims["sub"].(string)
 	id, err := strconv.ParseInt(sub, 10, 64)
 	if err != nil {
-		return nil, errors.New("token has no subject")
+		return nil, time.Time{}, errors.New("token has no subject")
+	}
+	iat, ok := claims["iat"].(float64)
+	if !ok {
+		return nil, time.Time{}, errors.New("token has no issue time")
 	}
 	usr, _ := claims["usr"].(string)
-	return &store.User{ID: id, Username: usr}, nil
+	return &store.User{ID: id, Username: usr}, time.Unix(int64(iat), 0), nil
 }
 
 func (s *Server) requireAuth(next http.Handler) http.Handler {
@@ -177,11 +182,25 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeErr(w, http.StatusUnauthorized, "not signed in")
 			return
 		}
-		u, err := s.parseToken(strings.TrimPrefix(h, "Bearer "))
+		u, issued, err := s.parseToken(strings.TrimPrefix(h, "Bearer "))
 		if err != nil {
 			writeErr(w, http.StatusUnauthorized, "session is invalid or has expired")
 			return
 		}
+
+		// Changing the password has to end every session that was already open,
+		// otherwise a stolen token stays usable for its full 12 hours and changing
+		// the password - the one action taken after a compromise - does nothing.
+		changed, err := s.db.PasswordChangedAt(r.Context(), u.ID)
+		if err != nil {
+			writeErr(w, http.StatusUnauthorized, "this account no longer exists")
+			return
+		}
+		if issued.Before(changed.Add(-time.Second)) {
+			writeErr(w, http.StatusUnauthorized, "the password changed; sign in again")
+			return
+		}
+
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
 	})
 }

@@ -34,12 +34,17 @@ func TestTokenRoundTrip(t *testing.T) {
 		t.Errorf("token lives longer than the configured TTL: %v", exp)
 	}
 
-	u, err := s.parseToken(raw)
+	u, issued, err := s.parseToken(raw)
 	if err != nil {
 		t.Fatalf("parseToken: %v", err)
 	}
 	if u.ID != 7 || u.Username != "admin" {
 		t.Fatalf("round trip lost the identity: %+v", u)
+	}
+	// requireAuth compares this against the last password change, so a token that
+	// carries no usable issue time would let a revoked session live on.
+	if time.Since(issued) > time.Minute {
+		t.Fatalf("token issue time is wrong: %v", issued)
 	}
 }
 
@@ -53,7 +58,7 @@ func TestParseTokenRejectsAlgNone(t *testing.T) {
 	forged := b64(`{"alg":"none","typ":"JWT"}`) + "." +
 		b64(`{"sub":"1","usr":"admin","exp":99999999999}`) + "."
 
-	if _, err := s.parseToken(forged); err == nil {
+	if _, _, err := s.parseToken(forged); err == nil {
 		t.Fatal("an alg=none token was accepted: full authentication bypass")
 	}
 }
@@ -67,7 +72,7 @@ func TestParseTokenRejectsAnotherSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing: %v", err)
 	}
-	if _, err := s.parseToken(raw); err == nil {
+	if _, _, err := s.parseToken(raw); err == nil {
 		t.Fatal("a token signed with the wrong secret was accepted")
 	}
 }
@@ -81,7 +86,7 @@ func TestParseTokenRejectsExpired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("signing: %v", err)
 	}
-	if _, err := s.parseToken(raw); err == nil {
+	if _, _, err := s.parseToken(raw); err == nil {
 		t.Fatal("an expired token was accepted")
 	}
 }

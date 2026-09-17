@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/crypto/bcrypt"
@@ -59,6 +60,17 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 		return nil, ErrNotFound
 	}
 	return &u, err
+}
+
+// PasswordChangedAt reports when this account's credentials last changed. A token
+// minted before that moment must no longer be accepted.
+func (s *Store) PasswordChangedAt(ctx context.Context, id int64) (time.Time, error) {
+	var t time.Time
+	err := s.pool.QueryRow(ctx, `SELECT updated_at FROM users WHERE id = $1`, id).Scan(&t)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t, ErrNotFound
+	}
+	return t, err
 }
 
 func (s *Store) SetPassword(ctx context.Context, username, password string) error {

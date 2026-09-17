@@ -115,32 +115,41 @@ function _M.run()
     }
     ngx.ctx.moswaf = ctx
 
-    -- 1. a visitor coming back from the challenge
-    if uri == challenge.verify_uri then
-        ctx.action = "verify"
-        return challenge.handle_verify(ip, ua)
-    end
-
-    -- 2. protection mode
+    -- 1. protection mode
     local mode = site.mode or st.default_mode or "protect"
     if mode == "off" then
         ctx.action = "bypass"
         return
     end
 
-    -- 3. allowlist: skip every remaining check
+    -- 2. allowlist: skip every remaining check
     if ipset.is_whitelisted(ip) then
         ctx.action = "allow_white"
         return
     end
 
-    -- 4. currently banned, or on the blocklist
+    -- 3. currently banned, or on the blocklist
     local banned, breason = ipset.is_banned(ip)
     if banned then
         return block(ctx, mode, "banned:" .. tostring(breason), nil, 403)
     end
     if ipset.is_blacklisted(ip) then
         return block(ctx, mode, "blacklist", nil, 403)
+    end
+
+    -- 4. a visitor coming back from the challenge
+    --
+    -- This sits after the ban and blocklist checks and before rate limiting, on
+    -- purpose. Before them it was a free channel: a banned IP could still reach an
+    -- endpoint that runs a SHA-256 and an HMAC per request, which made it the most
+    -- expensive path in the whole engine to flood. After rate limiting it would be
+    -- worse in the other direction - a legitimate visitor challenged *because* they
+    -- crossed the threshold could never reach the endpoint that clears it, and would
+    -- be stuck in a challenge loop. Repeat offenders still end up banned, and a ban
+    -- does close this door.
+    if uri == challenge.verify_uri then
+        ctx.action = "verify"
+        return challenge.handle_verify(ip, ua)
     end
 
     -- 5. rate limiting

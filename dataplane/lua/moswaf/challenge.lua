@@ -155,8 +155,7 @@ function _M.handle_verify(ip, ua)
     local target = "/"
     if type(ret) == "string" and ret ~= "" then
         local decoded = ngx.decode_base64((ret:gsub("-", "+"):gsub("_", "/")) .. "==")
-        -- only allow internal paths, to prevent an open redirect
-        if decoded and decoded:sub(1, 1) == "/" and decoded:sub(2, 2) ~= "/" then
+        if decoded and util.is_local_path(decoded) then
             target = decoded
         end
     end

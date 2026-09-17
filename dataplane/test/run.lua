@@ -115,6 +115,22 @@ check("normalize_ip: IPv6 forms collapse to one key",
     "::1 and 0:0:0:0:0:0:0:1 are the same host but normalize_ip returns each " ..
     "verbatim, so an IPv6 client still gets two ban/counter keys")
 
+-- ------------------------------------------------------- challenge redirect
+
+-- The verify endpoint redirects to wherever ?r= points once the proof of work is
+-- accepted. Checking only for a leading "/" and a second character that is not "/"
+-- left "/\\evil.example" through, which browsers read as protocol-relative and
+-- follow off-site: the challenge became an open redirect.
+check("redirect: ordinary path accepted", util.is_local_path("/products?id=1"))
+check("redirect: root accepted", util.is_local_path("/"))
+check("redirect: protocol-relative // rejected", not util.is_local_path("//evil.example"))
+check("redirect: backslash form rejected", not util.is_local_path("/\\evil.example"))
+check("redirect: absolute URL rejected", not util.is_local_path("https://evil.example"))
+check("redirect: scheme anywhere rejected", not util.is_local_path("/redir?u=https://evil.example"))
+check("redirect: newline rejected", not util.is_local_path("/ok\nLocation: https://evil.example"))
+check("redirect: empty rejected", not util.is_local_path(""))
+check("redirect: non-string rejected", not util.is_local_path(nil))
+
 -- ------------------------------------------------------------------ parse_cidr
 
 local from, to = util.parse_cidr("10.0.0.0/8")
