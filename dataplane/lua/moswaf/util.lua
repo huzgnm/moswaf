@@ -95,12 +95,90 @@ end
 -- strings they are different keys - and bans, the blocklist and the rate-limit
 -- counters are all keyed on this string. Padding an octet was enough to walk away
 -- from a ban. A port and IPv6 brackets are stripped for the same reason.
+-- Rewrite an IPv6 address into the single form of RFC 5952: lowercase, no leading
+-- zeros in a group, and the longest run of zero groups collapsed to "::".
+--
+-- "::1" and "0:0:0:0:0:0:0:1" are the same host written two ways. Returned verbatim
+-- they are two different ban and counter keys, which is the same one-host-many-
+-- identities problem as a zero-padded IPv4 octet, one layer down.
+local function normalize_ipv6(v)
+    v = v:lower():gsub("%%.*$", "")   -- drop a zone index such as %eth0
+
+    -- An embedded IPv4 tail (::ffff:1.2.3.4) becomes two hex groups
+    local head, a, b, c, d = v:match("^(.-)(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    if head then
+        a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+        if a > 255 or b > 255 or c > 255 or d > 255 then return nil end
+        v = head .. format("%x:%x", a * 256 + b, c * 256 + d)
+    end
+
+    local left, right = v:match("^(.-)::(.*)$")
+    local groups = {}
+
+    local function push(part)
+        if part == "" then return true end
+        for g in part:gmatch("[^:]+") do
+            if #g > 4 or not g:match("^%x+$") then return false end
+            groups[#groups + 1] = tonumber(g, 16)
+        end
+        return true
+    end
+
+    if left then
+        local head_groups = {}
+        if not push(left) then return nil end
+        for i = 1, #groups do head_groups[i] = groups[i] end
+
+        groups = {}
+        if not push(right) then return nil end
+        local tail_groups = groups
+
+        local fill = 8 - #head_groups - #tail_groups
+        if fill < 0 then return nil end
+
+        groups = {}
+        for _, g in ipairs(head_groups) do groups[#groups + 1] = g end
+        for _ = 1, fill do groups[#groups + 1] = 0 end
+        for _, g in ipairs(tail_groups) do groups[#groups + 1] = g end
+    else
+        if not push(v) then return nil end
+    end
+
+    if #groups ~= 8 then return nil end
+    for i = 1, 8 do
+        if groups[i] > 0xffff then return nil end
+    end
+
+    -- Longest run of zero groups, at least two long, leftmost on a tie
+    local best_start, best_len, run_start, run_len = nil, 0, nil, 0
+    for i = 1, 9 do
+        if i <= 8 and groups[i] == 0 then
+            run_start = run_start or i
+            run_len = run_len + 1
+        else
+            if run_len > best_len then best_start, best_len = run_start, run_len end
+            run_start, run_len = nil, 0
+        end
+    end
+
+    local out = {}
+    for i = 1, 8 do out[i] = format("%x", groups[i]) end
+
+    if best_len >= 2 then
+        local head = table.concat(out, ":", 1, best_start - 1)
+        local tail = best_start + best_len <= 8
+            and table.concat(out, ":", best_start + best_len, 8) or ""
+        return head .. "::" .. tail
+    end
+    return table.concat(out, ":")
+end
+
 function _M.normalize_ip(v)
     if not v or v == "" then return nil end
     v = v:match("^%s*(.-)%s*$")
 
     local bracketed = v:match("^%[(.+)%]")   -- [2001:db8::1]:443
-    if bracketed then return bracketed end
+    if bracketed then v = bracketed end
 
     local host = v:match("^([%d%.]+):%d+$")  -- 1.2.3.4:5678
     if host then v = host end
@@ -112,7 +190,7 @@ function _M.normalize_ip(v)
         return format("%d.%d.%d.%d", a, b, c, d)
     end
 
-    if find(v, ":", 1, true) then return v end   -- IPv6
+    if find(v, ":", 1, true) then return normalize_ipv6(v) end
     return nil
 end
 

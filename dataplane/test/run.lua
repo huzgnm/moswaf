@@ -96,10 +96,21 @@ eq("normalize_ip: IPv6 brackets stripped", util.normalize_ip("[2001:db8::1]:443"
 eq("normalize_ip: octet over 255 rejected", util.normalize_ip("999.1.1.1"), nil)
 eq("normalize_ip: empty input", util.normalize_ip(""), nil)
 
--- KNOWN GAP the peer flagged: normalize_ip does not canonicalise IPv6, so the two
--- spellings of loopback stay distinct keys - the same many-identities problem #16
--- described, one layer down. Left as a documented failing check so it is not lost.
-soft("normalize_ip: IPv6 forms should collapse to one key (KNOWN GAP)",
+-- Fixed in PR #7: IPv6 is rewritten into the single form of RFC 5952, so every
+-- spelling of a host is one ban and counter key.
+eq("normalize_ip: IPv6 loopback canonical form", util.normalize_ip("0:0:0:0:0:0:0:1"), "::1")
+eq("normalize_ip: IPv6 leading zeros dropped",
+    util.normalize_ip("2001:0db8:0000:0000:0000:0000:0000:0001"), "2001:db8::1")
+eq("normalize_ip: IPv6 uppercase lowered", util.normalize_ip("2001:DB8::1"), "2001:db8::1")
+eq("normalize_ip: IPv6 zone index dropped", util.normalize_ip("fe80::1%eth0"), "fe80::1")
+eq("normalize_ip: IPv6 all zeros", util.normalize_ip("0:0:0:0:0:0:0:0"), "::")
+eq("normalize_ip: IPv4-mapped IPv6 folded into groups",
+    util.normalize_ip("::ffff:1.2.3.4"), util.normalize_ip("::ffff:102:304"))
+eq("normalize_ip: malformed IPv6 group rejected", util.normalize_ip("2001:db8::gggg"), nil)
+eq("normalize_ip: too many IPv6 groups rejected",
+    util.normalize_ip("1:2:3:4:5:6:7:8:9"), nil)
+
+check("normalize_ip: IPv6 forms collapse to one key",
     util.normalize_ip("::1") == util.normalize_ip("0:0:0:0:0:0:0:1"),
     "::1 and 0:0:0:0:0:0:0:1 are the same host but normalize_ip returns each " ..
     "verbatim, so an IPv6 client still gets two ban/counter keys")
