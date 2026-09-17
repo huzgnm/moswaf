@@ -62,6 +62,8 @@ jobs:
             fi
           done
           exit $fail
+      - name: Run Lua unit tests
+        run: luajit dataplane/test/run.lua
       - name: Validate docker-compose
         run: docker compose config --quiet
         env:

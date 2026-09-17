@@ -1,352 +1,262 @@
-# MosWAF — Báo cáo kiểm thử #1
+# MosWAF — Test report #1
 
-**Ngày:** 2026-09-17
-**Phạm vi:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), cấu hình triển khai (`install.sh`, `docker-compose.yml`, `.env.example`)
-**Phương pháp:** đọc mã nguồn + test tái hiện chạy được bằng Go. Chưa kiểm thử hộp đen trên stack đang chạy (xem phần *Chưa kiểm được*).
-**Commit:** `cd6ce7d`
-
----
-
-## Tóm tắt
-
-Kiến trúc tách data plane / control plane là đúng, lớp xác thực JWT sạch, và nhiều chỗ trong mã cho thấy tác giả đã nghĩ kỹ (comment giải thích bẫy `tonumber(x) or default` với giá trị 0, tách `pcall` từng phần trong `init_worker`, ghi file tạm rồi `rename`). Vấn đề không nằm ở sự cẩu thả mà nằm ở **các tương tác giữa hai lớp**: thứ tự rule do SQL quyết định nhưng ngữ nghĩa "first match wins" nằm ở Lua; kiểm tra regex bằng RE2 nhưng thực thi bằng PCRE; validate site ở Go nhưng render ra nginx cũng ở Go mà không ai escape.
-
-Kết quả: **một header `User-Agent` duy nhất vô hiệu hoá toàn bộ engine chữ ký.**
-
-| # | Mức | Vấn đề | Test |
-|---|-----|--------|------|
-| 1 | **Nghiêm trọng** | Rule `log` chắn trước rule `deny` → bypass WAF bằng 1 header | `TestLoggingRuleDoesNotShadowBlockingRule` |
-| 2 | **Nghiêm trọng** | `make up` triển khai với bí mật `changeme`, không có chốt chặn | — |
-| 3 | **Cao** | `Site.Name` không validate → inject chỉ thị nginx (worker chạy `root`) | `TestRenderSiteDoesNotEmitInjectedDirectives` |
-| 4 | **Cao** | Header và User-Agent nằm ngoài tầm quét của mọi rule `any` | `TestAttackInHeaderIsDetected` |
-| 5 | **Cao** | Body > 64KB hoặc `Transfer-Encoding: chunked` không bị quét | — |
-| 6 | **Cao** | `real_ip_header` không bắt buộc `trusted_proxies` → giả mạo IP | `TestValidateSettingsRequiresTrustedProxiesWithRealIPHeader` |
-| 7 | Trung bình | Rate limit fail-open khi shared dict đầy | — |
-| 8 | Trung bình | Cửa sổ đếm cố định → cho phép gấp đôi ngưỡng ở ranh giới | — |
-| 9 | Trung bình | Validate regex bằng RE2, chạy bằng PCRE; lỗi PCRE bị nuốt | `TestValidateRuleAcceptsPCRELookahead` |
-| 10 | Trung bình | `/__moswaf/verify` đứng trước mọi kiểm tra ban/rate limit | — |
-| 11 | Trung bình | `loginGuard` rò bộ nhớ vĩnh viễn | `TestLoginGuardReleasesInertEntries` |
-| 12 | Trung bình | `/unban?ip=*` trên cổng 8081 không xác thực, cho cả dải RFC1918 | — |
-| 13 | Thấp | Open redirect qua `/\` trong tham số `r` của verify | — |
-| 14 | Thấp | Đổi mật khẩu không thu hồi JWT đang có | — |
+**Date:** 2026-09-17
+**Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
+**Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `4017d87` (PR #4 + PR #5)
 
 ---
 
-## 1. Bypass toàn bộ engine chữ ký bằng một header — NGHIÊM TRỌNG
+## Summary
 
-**Tái hiện:**
+The data-plane / control-plane split is sound, the JWT layer is clean, and much of
+the code shows careful thought (the comment explaining the `tonumber(x) or default`
+trap when the value is `0`, the per-part `pcall` in `init_worker`, the write-temp-then-rename
+for site files). The problems were not carelessness; they lived in the **seams
+between the two layers**: rule order is decided by SQL but "first match wins" lives
+in Lua; regexes are validated with RE2 but executed with PCRE; sites are validated
+in Go but rendered to nginx in Go with nothing escaped.
+
+The headline result of round 1: **a single `User-Agent` header disabled the entire
+signature engine.**
+
+Round 1 raised 14 findings; **8 were fixed and re-verified** (PR #4). Round 2 added
+3 more (one newly found during verification); **all 3 are now fixed** (PR #5). As of
+`4017d87` every High/Critical finding is closed. What remains is the medium/low tail
+from round 1 (rate-limit hardening, the verify-endpoint ordering, the internal API,
+JWT revocation) plus one documented IPv6 key-canonicalisation gap.
+
+| # | Severity | Finding | Reproduction | Status |
+|---|----------|---------|--------------|--------|
+| 1 | **Critical** | `log` rule shadows a `deny` rule → WAF bypass with one header | `TestLoggingRuleDoesNotShadowBlockingRule` | **Fixed ✓** |
+| 2 | **Critical** | `make up` ships with `changeme` secrets, nothing refuses to boot | — | **Fixed ✓** |
+| 3 | **High** | `Site.Name` unvalidated → nginx directive injection (workers run `root`) | `TestRenderSiteDoesNotEmitInjectedDirectives` | **Fixed ✓** |
+| 4 | **High** | Headers and User-Agent invisible to every `any` rule | `TestAttackInHeaderIsDetected` | **Fixed ✓** |
+| 5 | **High** | Body > 64 KB or `Transfer-Encoding: chunked` not scanned | — | **Fixed ✓** |
+| 6a | **High** | `real_ip_header` without `trusted_proxies` → IP spoofing | `TestValidateSettingsRequiresTrustedProxiesWithRealIPHeader` | **Fixed ✓** |
+| 6b | **High** | `X-Forwarded-For` read left-to-right → spoofing even when configured correctly | `client_ip: XFF is read right to left` (Lua) | **Fixed ✓ (PR #5)** |
+| 7 | Medium | Rate limit fails open when the shared dict is full | — | Open |
+| 8 | Medium | Fixed counting windows → up to 2× the configured limit at the boundary | — | Open |
+| 9 | Medium | Rules validated with RE2, run with PCRE; PCRE errors were swallowed | `TestValidateRuleAcceptsPCRELookahead` | **Fixed ✓** |
+| 10 | Medium | `/__moswaf/verify` runs before every ban / rate-limit check | — | Open |
+| 11 | Medium | `loginGuard` leaked memory forever | `TestLoginGuardReleasesInertEntries` | **Fixed ✓** |
+| 12 | Medium | `/unban?ip=*` on port 8081 is unauthenticated, allows all of RFC1918 | — | Open |
+| 13 | Low | Open redirect via `/\` in the verify `r` parameter | — | Open |
+| 14 | Low | Changing the password does not revoke existing JWTs | — | Open |
+| 15 | Medium | URL-encoding ≥ 3 layers bypasses the engine (`expand` decodes only 2) | `verify.sh` triple-encode row | **Fixed ✓ (PR #5)** |
+| 16 | Low | Zero-padded IPv4 octets evade a ban (`01.2.3.4` ≠ `1.2.3.4` as a key) | `normalize_ip: zero-padded octets collapse` (Lua) | **Fixed ✓ (PR #5)** |
+| 17 | Low | `SeedRules` freezes rule name/category on first run (`ON CONFLICT DO NOTHING`) | — | **Fixed ✓ (PR #5)** |
+| 18 | Low | `normalize_ip` does not canonicalise IPv6 → `::1` ≠ `0:0:0:0:0:0:0:1` as a key | `normalize_ip: IPv6 forms should collapse` (Lua, soft) | Open |
+
+---
+
+## Round 2 — verification of the fixes (against the running stack)
+
+Re-run any time with `.local/verify.sh http://127.0.0.1:8088` (script is gitignored;
+it is reproduced in the appendix).
+
+### The 8 fixes hold
+
+```
+=== FIX #1: signature-engine bypass via User-Agent ===
+  default UA + SQLi                          403  (want 403)
+  -A python-requests + SQLi                  403  (want 403)
+  -A Go-http-client + SQLi                   403  (want 403)
+  -A okhttp + SQLi                           403  (want 403)
+  -A axios + XSS                             403  (want 403)
+  GET /pma/.env                              403  (want 403)
+=== FIX #4: header and User-Agent are now scanned ===
+  SQLi in X-Api-Version                      403  (want 403)
+  SQLi in User-Agent                         403  (want 403)
+=== evasion variants ===
+  SQLi with /**/ comments                    403  (want 403)
+  SQLi in Cookie                             403  (want 403)
+  SQLi in JSON body                          403  (want 403)
+  SQLi in chunked body                       403  (want 403)   ← FIX #5
+=== clean traffic must still pass ===
+  GET /                                      200  (not 403)
+  normal browser UA                          404  (not 403)   ← origin 404, WAF let it through
+  POST clean JSON                            501  (not 403)
+```
+
+The critical bypass is closed: announcing yourself as `python-requests` no longer
+buys an exemption, and payloads in headers, the User-Agent, cookies and chunked
+bodies are all caught. No false positives on clean traffic.
+
+I also confirmed the control-plane fixes at the source level: the server now
+refuses to boot on a placeholder secret (#2), `ValidateSettings` rejects a real-IP
+header with no trusted proxies (#6a), `ValidateRule` accepts PCRE-only syntax and
+rejects nested quantifiers (#9), and `loginGuard` reaps inert records and has a hard
+ceiling (#11). The full Go suite and `lua-check` pass.
+
+### On the `loginGuard` test I wrote
+
+The peer correctly reworked `TestLoginGuardReleasesInertEntries`. My original
+version demanded the map be empty immediately after a single failure, which cannot
+hold at the same time as `TestLoginGuardLocksOutAfterRepeatedFailures` — the lockout
+needs the `fails` counter to survive from attempt 1 through 5. The leak was real;
+the right fix is "keep recent records, reap after the retention window, cap the
+total," which is what landed. Agreed, no objection.
+
+---
+
+## Round 2 — three findings raised, and now fixed (PR #5)
+
+All three were confirmed against the running stack, fixed by the peer session, and
+re-verified. The `dataplane/test/run.lua` checks that pinned them are now green.
+
+### 6b. `X-Forwarded-For` was read left-to-right — HIGH (the unfixed half of #6) — FIXED
+
+`util.client_ip` took the **leftmost** valid entry. A CDN *appends* to
+`X-Forwarded-For`, so with a real client behind Cloudflare the header is
+`<whatever the client sent>, <real client IP>`; the leftmost entry is attacker text.
+Bans, the blocklist and every rate-limit counter keyed on it, so all three were
+defeated per request — **even when `trusted_proxies` was configured correctly.** Fix
+6a (PR #4) only closed the empty-trusted-list half.
+
+The fix reads the header right to left, skips hops that are in `trusted_proxies`, and
+returns the first address that is not one of them (falling back to the leftmost when
+every hop is trusted). Verified:
+
+```
+X-Forwarded-For: 1.2.3.4, 198.51.100.7   (trusted_proxies = 203.0.113.0/24, peer 203.0.113.10)
+  -> client_ip = 198.51.100.7   (was 1.2.3.4)
+```
+
+Pinned by `client_ip: XFF is read right to left, skipping trusted hops` and the
+trusted-proxy-chain case in `run.lua`.
+
+### 15. URL-encoding of 3+ layers bypassed the engine — MEDIUM (new) — FIXED
+
+`access.lua:expand` decoded exactly two layers (`for _ = 1, 2`), so a payload encoded
+one layer deeper was never normalised to the form the rules match. Measured before
+the fix, same `UNION ALL SELECT` payload, varying only encoding depth: 0/1/2 layers
+→ 403, **3/4 layers → 404 (reached the origin)**.
+
+The fix decodes in a loop until the string stops changing, capped at 5 iterations.
+After it, 1–4 layers all return 403, and `scripts/attack-sim.sh` gained double- and
+triple-encoded cases (now 19/19).
+
+### 16. Zero-padded IPv4 octets evaded a ban — LOW (new) — FIXED
+
+`ipv4_to_int("01.2.3.4")` parses to the same integer as `1.2.3.4`, so both match the
+same CIDR — but `ipset.ban_ip` and the rate-limit counters keyed on the **raw
+string**, so `01.2.3.4`, `001.2.3.4`, … were distinct keys resolving to one host. A
+banned attacker got a fresh identity by padding an octet.
+
+The fix adds `util.normalize_ip` (canonical dotted-quad, strips a port and IPv6
+brackets), applied before the value becomes a key. Verified:
+`010.000.000.007 -> 10.0.0.7`. Pinned by the `normalize_ip:` checks in `run.lua`.
+
+### 17. `SeedRules` froze rule names on first run — LOW (found by the peer) — FIXED
+
+Surfaced while verifying #6b: the attack log still showed a Vietnamese rule name
+("XSS - thẻ nguy hiểm") after the whole project had been translated. `SeedRules` used
+`ON CONFLICT (id) DO NOTHING`, so `name` and `category` were frozen at first boot and
+no upgrade ever refreshed them. The fix refreshes `name`/`category` from code on every
+start while leaving `pattern`, `action`, `severity` and `enabled` under the admin's
+control. Not one I raised — recording it so the round is complete.
+
+---
+
+## Round 2 — one gap left open
+
+### 18. `normalize_ip` does not canonicalise IPv6 — LOW
+
+`normalize_ip` returns an IPv6 address verbatim, so `::1` and `0:0:0:0:0:0:0:1` are
+the same host but two different ban/counter keys — the #16 many-identities problem,
+one layer down, for IPv6 clients. Low impact today (IPv6 clients behind the WAF are
+rare and the CIDR match still works), but it should be closed for symmetry with the
+IPv4 fix. Flagged as a **soft** (non-failing) check in `run.lua` so CI stays green
+while the gap is not forgotten; promote it to a hard check when it is fixed.
+
+**Fix:** expand IPv6 to its full form (or compress to the canonical RFC 5952 form)
+inside `normalize_ip` before returning it.
+
+---
+
+## Still open from round 1 (unchanged, not yet addressed)
+
+- **#7** rate limit fails open when `moswaf_cnt` is full — worst-case mode for an
+  anti-DDoS product; prefer challenge over pass when `incr` fails.
+- **#8** fixed counting windows allow ~2× the configured rate at a window boundary;
+  use a sliding window or two overlapping windows.
+- **#10** `/__moswaf/verify` is handled before the ban and rate-limit checks, so a
+  banned IP can still spend the server's CPU on HMAC + SHA-256 at will.
+- **#12** the port-8081 internal API (`/sync`, `/unban?ip=*`, `/bans`) is guarded by
+  source IP only, and the allow list covers all of RFC1918; add a shared secret.
+- **#13** open redirect: `challenge.lua` blocks `//host` but not `/\host`.
+- **#14** changing the password / deleting the account does not invalidate a live
+  JWT (12 h default TTL); `requireAuth` also never checks the account still exists.
+
+---
+
+## Checked and PASSING
+
+Not everything was broken — these were verified and are solid:
+
+- **JWT**: rejects `alg=none`, wrong key, and expired tokens; `jwt.WithValidMethods`
+  is used correctly.
+- **`requireAuth`**: rejects a missing header, the wrong scheme, and a garbage token.
+- **Login lockout**: 5 failures → 5-minute lock, 10 → 30 minutes; a success clears
+  it. Keyed on `r.RemoteAddr`, and does **not** trust `X-Forwarded-For` — correct.
+- **Security headers**: `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, and a
+  CSP of `default-src 'self'` are all present.
+- **Token transport**: `Authorization: Bearer`, not a cookie → no CSRF surface.
+- **Dashboard**: no `v-html` / `innerHTML` sink; the token lives in `localStorage`,
+  acceptable given Bearer transport and the CSP.
+- **`renderSite`**: applies `limit_conn`, `limit_req`, `access_by_lua_block` and
+  `log_by_lua_block` in the right places; output is deterministic; bad site ids are
+  rejected.
+- **`expand()`** decodes two URL layers as designed; `%2e%2e%2f` is caught (but see
+  #15 for three layers).
+- **`const_eq`** is a constant-time comparison — correct.
+- **`ValidateSettings`** clamps challenge difficulty, TTL, ban time and status code
+  to sane bounds.
+
+---
+
+## Not yet covered
+
+- **Deeper evasion** the peer asked for: multipart upload, WebSocket upgrade, HTTP/2
+  specifics, request smuggling between nginx and the upstream. Next round.
+- **`install.sh`** beyond the secret-generation path.
+- **Load-based attacks** (slowloris, PoW bypass with a headless browser) — need a
+  dedicated load rig.
+
+---
+
+## How to run the tests
 
 ```bash
-curl -A 'python-requests/2.31.0' \
-     'https://site-cua-ban/products?id=1%20UNION%20ALL%20SELECT%20password%20FROM%20users'
+cd control && go test ./...     # control plane (Go)
+make lua-test                   # data plane pure-Lua units (needs luajit)
+make lua-check                  # Lua syntax
+.local/verify.sh http://127.0.0.1:8088   # black-box re-verification (needs a running stack)
 ```
 
-Request đi lọt lên upstream. Đổi `-A` thành `curl/8.4` thì bị chặn.
+Reproduction tests:
 
-**Nguyên nhân — chuỗi ba mắt xích ở ba file khác nhau:**
+- `control/internal/store/rules_scan_test.go` — faithful model of the data plane's
+  rule-evaluation order (including `expand()`), for hunting bypasses without booting
+  the stack.
+- `control/internal/store/validate_test.go` — site, settings and rule validation.
+- `control/internal/engine/nginxconf_test.go` — the rendered nginx output.
+- `control/internal/api/auth_test.go` — JWT, `requireAuth`, login throttling.
+- `dataplane/test/run.lua` — pure-Lua units for IP parsing, normalisation and
+  client-IP resolution (this is where #6b, #16 and the #18 gap are pinned; the repo
+  had no Lua tests before). Now wired into CI's data-plane job.
 
-1. `store/rules.go:101` — `ListRules` sắp xếp `ORDER BY builtin DESC, category, id`.
-2. `engine/publisher.go:116` — `Publish` đẩy rule vào Redis đúng theo thứ tự đó.
-3. `dataplane/lua/moswaf/rules.lua:137` — `scan` duyệt tuần tự và **`return` ngay ở rule khớp đầu tiên**, bất kể `action` là gì.
-
-Category `bot` đứng trước `lfi`, `rce`, `sqli`, `xss` theo thứ tự chữ cái. Trong `bot`, id sắp thành `ua-empty`, `ua-lib`, `ua-scanner`. Rule **`ua-lib` mang `action = "log"`**, mà `access.lua:198` xử lý `log` là *cho qua và ghi nhận*:
-
-```lua
-if action == "log" then
-    ctx.action = "log"
-    ...
-    return          -- request đi tiếp lên upstream
-```
-
-Nên chỉ cần `User-Agent` khớp `ua-lib`, vòng lặp dừng lại và **không rule sqli/xss/rce/lfi nào được chạy**.
-
-Các UA kích hoạt: `python-requests`, `python-urllib`, `go-http-client`, `java/`, `okhttp`, `libwww-perl`, `axios/`, `scrapy`, `node-fetch`.
-
-Trớ trêu: đây là danh sách "client tự động đáng ngờ" — **đánh dấu mình là bot thì được miễn kiểm tra.**
-
-Lỗi tương tự trong category `recon`: `path-admin` (`log`) đứng trước `path-secret` (`deny`), nên `GET /pma/.env` lọt qua.
-
-**Vì sao `scripts/attack-sim.sh` không bắt được:** script dùng UA mặc định của curl, không nằm trong `ua-lib`. Dashboard vẫn báo "đã chặn" cho mọi ca test, trong khi lỗ hổng thật vẫn mở.
-
-**Hướng sửa (chọn một):**
-- Trong `rules.lua:scan`, đừng dừng ở rule `log`: ghi nhận rồi tiếp tục duyệt, chỉ dừng khi gặp `deny`/`ban`/`challenge`.
-- Hoặc duyệt hết và chọn rule có `action` nặng nhất, thay vì rule đầu tiên.
-- Đồng thời cho `ListRules` sắp theo mức độ chặn (`deny` → `ban` → `challenge` → `log`) thay vì theo `category`, để thứ tự đánh giá không còn phụ thuộc vào tên category.
+When round 1 started the repo had **zero** test files, so `go test ./...` in CI was
+green without verifying anything. Every finding above now has a test that goes green
+when — and only when — the underlying bug is fixed; `run.lua` uses a **soft** check
+for the one documented open gap (#18) so CI stays honest without staying red.
 
 ---
 
-## 2. `make up` triển khai với bí mật `changeme` — NGHIÊM TRỌNG
-
-`install.sh` sinh bí mật ngẫu nhiên đàng hoàng (`rand 48`). Nhưng `Makefile` có:
-
-```make
-.env: ; @test -f .env || cp .env.example .env
-up: .env
-	$(COMPOSE) up -d --build
-```
-
-Và `.env.example` chứa:
-
-```
-MOSWAF_ADMIN_PASSWORD=changeme
-POSTGRES_PASSWORD=changeme
-REDIS_PASSWORD=changeme
-MOSWAF_JWT_SECRET=changeme
-MOSWAF_CHALLENGE_SECRET=changeme
-```
-
-**Không có chỗ nào từ chối khởi động với các giá trị này.** Hậu quả nếu ai đó triển khai bằng `make up` (README mục *Development* dạy đúng đường này):
-
-- `MOSWAF_JWT_SECRET=changeme` → ký JWT giả → **chiếm toàn quyền dashboard** không cần mật khẩu.
-- `MOSWAF_CHALLENGE_SECRET=changeme` → giả cookie `__moswaf` → **vô hiệu hoá JS challenge và chế độ under-attack**, tức là tính năng chống DDoS chính.
-- `admin` / `changeme`.
-
-Ngoài ra `control/internal/config/config.go:78` đặt mặc định `ChallengeSecret = "moswaf-insecure-default"`, trùng khớp với `challenge.lua:23`. Nếu biến môi trường thiếu, hai bên vẫn "đồng thuận" trên một khoá công khai nằm trong repo — hệ thống chạy bình thường, không cảnh báo, và cookie challenge giả được chấp nhận.
-
-**Hướng sửa:** control plane từ chối khởi động nếu `MOSWAF_JWT_SECRET` hoặc `MOSWAF_CHALLENGE_SECRET` rỗng, bằng `changeme`, hay bằng `moswaf-insecure-default`. Bỏ giá trị mặc định trong `config.go` và `challenge.lua`. Đổi `.env.example` sang để trống kèm chú thích.
-
----
-
-## 3. Inject chỉ thị nginx qua tên site — CAO
-
-`ValidateSite` (`store/sites.go:66`) kiểm tra ký tự cho `Domains` và `UpstreamHost`, nhưng **`Name` chỉ bị `TrimSpace` và kiểm tra khác rỗng**. `renderSite` ghi thẳng vào một dòng chú thích:
-
-```go
-w("# MosWAF - %s (%s)", s.Name, s.ID)
-```
-
-Một ký tự xuống dòng là thoát khỏi chú thích. Đặt tên site thành:
-
-```
-acme
-}
-server { listen 8888; location / { root /; } }
-#
-```
-
-Output thực tế do test sinh ra:
-
-```nginx
-# MosWAF - acme
-}
-server { listen 8888; location / { root /; } }
-# (acme)
-```
-
-File này được `include` trong `http{}`, và `nginx.conf:7` đặt `user root`. Nên đây không dừng ở "phục vụ toàn bộ filesystem của container qua cổng 8888" — chỉ thị `content_by_lua_block` cũng hợp lệ ở vị trí đó, tức là **thực thi mã tuỳ ý với quyền root** trong container proxy.
-
-Cần quyền admin đã đăng nhập, nên mức độ phụ thuộc vào việc bạn coi admin dashboard là ranh giới tin cậy hay không. Nhưng đây là phòng thủ theo chiều sâu cơ bản: kết hợp với bất kỳ lỗi XSS/CSRF nào trên dashboard là thành chiếm quyền máy chủ.
-
-`Domains` và `UpstreamHost` **không** inject được (`;`, `{`, `}`, khoảng trắng đều bị chặn nên không kết thúc được chỉ thị), nhưng vẫn cho lọt ký tự xuống dòng, sinh ra config nginx không parse được → proxy không reload được nữa → mọi thay đổi cấu hình sau đó âm thầm không có hiệu lực.
-
-**Hướng sửa:** từ chối `\r` và `\n` trong cả ba trường; escape `Name` khi render, hoặc đơn giản là không in `Name` vào file config.
-
----
-
-## 4. Header và User-Agent nằm ngoài tầm quét — CAO
-
-`access.lua:174` thu thập cẩn thận `ngx.req.get_headers(64)` và truyền vào `scan.headers`. Nhưng `rules.lua:125`:
-
-```lua
-ctx._any = concat({ ctx.uri, ctx.args, ctx.body, ctx.cookie, ctx.referer }, "\n")
-```
-
-Target `any` **không bao gồm `ua` và không bao gồm `headers`**. Và trong bộ rule mặc định **không có rule nào target `header`**. Nên:
-
-- SQLi/RCE/XSS đặt trong header bất kỳ (`X-Api-Version`, `X-Forwarded-Host`, ...) → hoàn toàn vô hình.
-- Payload đặt trong `User-Agent` chỉ gặp 3 rule `ua` (tên scanner, UA rỗng, thư viện HTTP) → `User-Agent: 1' UNION ALL SELECT ...` đi lọt.
-
-Đây là bề mặt tấn công rất thực tế: header là nơi Log4Shell sống, và là nơi payload SQLi đi vào các hệ thống ghi log request.
-
-Rule `hdr-inject` (phát hiện CRLF injection) cũng để `target = "any"` — tức là **rule chống tiêm header không bao giờ nhìn thấy header**.
-
-**Hướng sửa:** thêm `ua` và `_hdr` vào subject `any`, hoặc đổi các rule chính sang một target mới bao trùm tất cả. Đồng thời xử lý việc `get_headers(64)` cắt bớt khi request có >64 header (gửi 70 header, giấu payload ở header thứ 65).
-
----
-
-## 5. Body lớn và chunked không bị quét — CAO
-
-`access.lua:186`:
-
-```lua
-local len = tonumber(ngx.var.http_content_length) or 0
-local max = tonumber(st.max_body_scan) or 65536
-if len > 0 and len <= max then
-    ngx.req.read_body()
-    scan.body = expand(ngx.req.get_body_data() or "")
-end
-```
-
-Hai lối thoát:
-
-1. **`Transfer-Encoding: chunked`** — không có `Content-Length`, nên `len = 0`, điều kiện `len > 0` sai, **body không bao giờ được quét**.
-2. **Body > 64KB** — `nginx.conf:49` cho `client_max_body_size 64m`, còn `max_body_scan` mặc định 65536. Đệm payload bằng 64KB rác là qua. Lưu ý điều kiện là `len <= max` chứ không phải "quét 64KB đầu", nên vượt ngưỡng là bỏ qua **toàn bộ**, không phải cắt bớt.
-
-Ngoài ra `ngx.req.get_body_data()` trả `nil` khi nginx đã ghi body ra file tạm (`client_body_buffer_size 256k`) — nhưng trường hợp đó đã bị chặn bởi giới hạn 64KB, nên hiện chưa lộ.
-
-**Hướng sửa:** quét `min(len, max)` byte đầu thay vì bỏ qua; xử lý chunked bằng cách đọc body rồi đo độ dài thực tế; cân nhắc chặn thẳng request vượt `max_body_scan` khi ở chế độ protect (fail-closed) thay vì cho qua.
-
----
-
-## 6. Giả mạo IP khi bật `real_ip_header` — CAO
-
-`util.lua:99`:
-
-```lua
-local trusted = settings.trusted_proxies
-if trusted and #trusted > 0 and not _M.ip_in_list(peer, trusted) then
-    return peer
-end
-```
-
-Nếu `trusted_proxies` rỗng, điều kiện sai → **không kiểm tra gì cả** → đọc thẳng header. `ValidateSettings` không hề bắt buộc khai báo proxy tin cậy khi đã đặt `real_ip_header`.
-
-Kịch bản: admin đặt sau Cloudflare, điền "Real IP header = X-Forwarded-For", để trống danh sách proxy tin cậy (rất tự nhiên). Từ đó **mọi client tự khai IP của mình**:
-
-- Ban tạm thời vô dụng — đổi header là có IP mới.
-- Blacklist vô dụng.
-- Rate limit vô dụng — mỗi request một IP là mỗi request một bộ đếm mới (`ratelimit.lua:31` khoá theo chuỗi IP).
-- Nhật ký tấn công bị đầu độc, chỉ về nạn nhân vô can.
-
-**Lỗi thứ hai, tồn tại ngay cả khi đã cấu hình đúng:** `util.lua:108` lấy phần tử **trái nhất** hợp lệ của `X-Forwarded-For`. Nhưng CDN *nối thêm* vào cuối, nên phần tử trái nhất chính là phần kẻ tấn công tự điền. Gửi `X-Forwarded-For: 1.2.3.4`, Cloudflare biến thành `1.2.3.4, <IP thật>`, MosWAF lấy `1.2.3.4`. **Rate limit và ban vẫn bị vô hiệu dù cấu hình chuẩn.** Đúng quy tắc là bóc các proxy tin cậy từ *phải* sang và lấy phần tử không tin cậy đầu tiên.
-
-Phụ: `ipv4_to_int` chấp nhận số 0 ở đầu (`010.0.0.1`), và lệnh ban lưu theo *chuỗi* IP. Nên `1.2.3.4`, `01.2.3.4`, `001.2.3.4`… là các khoá ban khác nhau nhưng khớp cùng một dải blacklist — thêm một đường lách ban.
-
----
-
-## 7. Rate limit tự tắt khi bị tấn công nặng — TRUNG BÌNH
-
-`ratelimit.lua:14`:
-
-```lua
-local newval, err = cnt:incr(key, 1, 0, ttl)
-if not newval then
-    ngx.log(ngx.WARN, ...)
-    return 0                 -- "khong chan nham, chi ghi log"
-end
-```
-
-Trả `0` nghĩa là không bao giờ vượt ngưỡng → **rate limit ngừng hoạt động**. Khoá đếm là `scope:s:<ip>:<giây>` — một khoá mỗi IP mỗi giây. Khi botnet từ hàng chục nghìn IP tràn vào, `moswaf_cnt` (64MB) đầy hoặc bị đẩy LRU liên tục, và bộ chống flood tự vô hiệu hoá **đúng lúc cần nhất**.
-
-Với sản phẩm chống DDoS, đây là chế độ hỏng tệ nhất. Quyết định "thà cho qua còn hơn chặn nhầm" là có chủ ý (comment nói rõ) nhưng đặt sai chỗ.
-
-**Hướng sửa:** khi `incr` lỗi, chuyển sang challenge thay vì cho qua; theo dõi `cnt:free_space()` và cảnh báo lên dashboard; cân nhắc khoá đếm theo `/24` thay vì IP đơn để giảm số khoá.
-
-## 8. Cửa sổ đếm cố định — TRUNG BÌNH
-
-`floor(now)` và `floor(now/10)` là cửa sổ cố định, không trượt. Với `rps = 60`: gửi 60 request ở `t = 0.999` và 60 request ở `t = 1.001` → **120 request trong 2ms, không có gì bị chặn**. Tương tự ở cửa sổ 10 giây. Thực tế ngưỡng thật cao gấp đôi ngưỡng cấu hình.
-
-`mark_violation` cũng dùng cửa sổ cố định 60 giây, nên bộ đếm vi phạm reset đều đặn và ngưỡng leo thang sang ban (`>= 3`) khó đạt hơn dự kiến.
-
-## 9. Validate bằng RE2, thực thi bằng PCRE — TRUNG BÌNH
-
-`ValidateRule` (`store/rules.go:137`) dùng `regexp.Compile` của Go (RE2); data plane chạy bằng PCRE qua `ngx.re.find`. Lệch cả hai chiều:
-
-- **RE2 từ chối lookahead/backreference** → không lưu được các mẫu WAF thông dụng như `(?=.*union)(?=.*select)`.
-- **RE2 không có backtracking thảm hoạ nên chấp nhận mẫu sẽ treo PCRE.** `nginx.conf` không đặt `lua_regex_match_limit`, nên một mẫu kiểu `^(a+)+$` chạy trên mọi request là đủ làm nghẽn data plane.
-- `rules.lua:148` **bỏ qua giá trị lỗi** của `ngx.re.find`. Mẫu hợp lệ với RE2 nhưng PCRE từ chối sẽ **âm thầm không bao giờ khớp**, trong khi dashboard vẫn hiển thị rule đang bật. Admin tin là mình được bảo vệ.
-
-**Hướng sửa:** validate bằng chính PCRE (gọi xuống data plane qua endpoint `/validate` mới, hoặc dùng thư viện PCRE trong Go); đặt `lua_regex_match_limit`; ghi log và báo lên dashboard khi `ngx.re.find` trả lỗi.
-
-## 10. `/__moswaf/verify` đứng trước mọi kiểm tra — TRUNG BÌNH
-
-`access.lua:114` xử lý endpoint verify **trước** kiểm tra ban, blacklist và rate limit. Nên endpoint này không chịu bất kỳ giới hạn nào của lớp Lua: IP đang bị ban vẫn gọi được, và có thể gọi ở tốc độ tuỳ ý (chỉ còn `limit_req` mức nginx với ngưỡng 200r/s). Mỗi lượt gọi tốn một HMAC và một SHA-256.
-
-Thêm nữa, bộ ba `(salt, sig, nonce)` đã giải dùng lại được suốt 120 giây (`SALT_TTL`) vì không có theo dõi nonce đã dùng — tác động hạn chế do cookie gắn với IP, nhưng vẫn nên vá.
-
-## 11. `loginGuard` rò bộ nhớ — TRUNG BÌNH
-
-`auth.go:39` `cleanup()` chỉ xoá entry có `fails == 0`. Nhưng `fail()` luôn tăng `fails`, còn `success()` xoá hẳn entry. **Không entry nào từng thoả điều kiện xoá** — goroutine dọn dẹp là mã chết, và map giữ một `*attempt` cho mỗi IP từng đăng nhập sai, vĩnh viễn.
-
-`/api/auth/login` không cần xác thực, nên đây là đường làm cạn bộ nhớ control plane từ xa.
-
-## 12. API nội bộ cổng 8081 không xác thực — TRUNG BÌNH
-
-`dataplane/conf/default.conf:39` bảo vệ cổng 8081 **chỉ bằng địa chỉ nguồn**:
-
-```nginx
-allow 127.0.0.1;
-allow 10.0.0.0/8;
-allow 172.16.0.0/12;
-allow 192.168.0.0/16;
-deny  all;
-```
-
-Không có khoá chia sẻ, không có token. Trong khi đó `api.lua:86` có:
-
-```lua
-if ip == "*" then
-    ngx.shared.moswaf_ban:flush_all()
-```
-
-Tức là **một GET `/unban?ip=*` xoá sạch mọi lệnh ban tạm thời** — đúng thứ engine tự sinh ra khi đang bị flood. `/sync` cũng gọi được tự do.
-
-Trong triển khai Docker chuẩn, cổng 8081 không publish nên chỉ container trong mạng gọi được, rủi ro thấp. Nhưng dải cho phép bao trọn RFC1918, nên chỉ cần một lần chạy `--network host`, một dòng `ports:` thêm nhầm, hay một bridge được route ra LAN là bất kỳ máy nào trong mạng nội bộ cũng gỡ được toàn bộ ban giữa lúc bị tấn công.
-
-**Hướng sửa:** yêu cầu header bí mật dùng chung (`MOSWAF_INTERNAL_TOKEN`) cho `/sync`, `/unban`, `/bans`; giữ `allow` như lớp thứ hai.
-
-## 13. Open redirect — THẤP
-
-`challenge.lua:147` chặn `//evil.com` nhưng không chặn `/\evil.com`. Trình duyệt chuẩn hoá `\` thành `/`, nên `/\evil.com` được xử lý như `//evil.com` → chuyển hướng ra ngoài. Tham số `r` là base64url do client gửi.
-
-## 14. Đổi mật khẩu không thu hồi JWT — THẤP
-
-`parseToken` chỉ kiểm chữ ký và `exp`. Đổi mật khẩu, xoá tài khoản, hay `install.sh --reset-password` đều **không** làm mất hiệu lực token đang lưu hành (TTL mặc định 12 giờ). `requireAuth` cũng không kiểm tra tài khoản còn tồn tại (chỉ `handleMe` kiểm).
-
----
-
-## Điểm đã kiểm và ĐẠT
-
-Không phải mọi thứ đều hỏng — các mục sau đã được kiểm và chắc chắn:
-
-- **JWT**: từ chối `alg=none`, từ chối sai khoá, từ chối hết hạn. `jwt.WithValidMethods` dùng đúng.
-- **`requireAuth`**: chặn thiếu header, sai scheme, token rác.
-- **Khoá đăng nhập sai**: 5 lần sai → khoá 5 phút, 10 lần → 30 phút; đăng nhập đúng xoá khoá. Khoá theo `r.RemoteAddr`, **không** tin `X-Forwarded-For` — đúng.
-- **Header bảo mật**: `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, CSP `default-src 'self'` đều có.
-- **Token gửi qua `Authorization: Bearer`** chứ không qua cookie → không có bề mặt CSRF.
-- **`renderSite`**: áp `limit_conn`, `limit_req`, `access_by_lua_block`, `log_by_lua_block` đúng chỗ; kết quả tất định; từ chối site id sai định dạng.
-- **Bộ rule mặc định** chặn đúng SQLi/traversal/RCE/XSS/scanner ở đường đi thông thường (khi không bị lỗi #1 chắn).
-- **`expand()`** giải mã URL hai lớp đúng như thiết kế; `%2e%2e%2f` bị bắt.
-- **`const_eq`** so sánh chữ ký không phụ thuộc thời gian — đúng.
-- **`ValidateSettings`** kẹp biên hợp lý cho độ khó challenge, TTL, thời gian ban, mã trạng thái.
-
----
-
-## Chưa kiểm được
-
-- **Kiểm thử hộp đen trên stack thật** — chưa dựng được; đang cài colima. Ưu tiên khi có: xác nhận #1 và #5 bằng request thật, đo tác động #8 bằng tải thực.
-- **`lua-check`** — máy chưa có `luajit`, chưa kiểm cú pháp Lua.
-- **Dashboard Vue** — chưa soi XSS (`v-html`), chưa kiểm nơi lưu token.
-- **`log.lua`, `api.lua`, `consumer.go`, `events.go`** — chưa đọc. Riêng `/unban` và `/sync` trên cổng 8081 không có xác thực, chỉ lọc bằng `allow` cho toàn bộ dải RFC1918 — cần soi kỹ.
-- **`install.sh`** — mới đọc phần sinh bí mật.
-- **Tấn công tải thật** (slowloris, bypass PoW bằng headless browser) — cần hạ tầng riêng.
-
----
-
-## Đề xuất thứ tự sửa
-
-1. **#1** — một dòng trong `rules.lua` và một `ORDER BY`. Sửa xong là bịt lỗ hổng lớn nhất.
-2. **#2** — thêm chốt chặn khởi động. Nhanh, và ngăn được thảm hoạ triển khai.
-3. **#4**, **#5** — mở rộng bề mặt quét. Vừa phải, giá trị cao.
-4. **#6** — sửa cả hai phần (bắt buộc `trusted_proxies`, và lấy IP từ phải sang).
-5. **#3** — chặn `\r\n` ở ba trường.
-6. Còn lại theo mức độ.
-
-Sau mỗi mục, bổ sung ca tương ứng vào `scripts/attack-sim.sh` để lần sau bắt được bằng kiểm thử hộp đen, không phải bằng đọc mã.
-
----
-
-## Cách chạy bộ test
-
-```bash
-cd control && go test ./...
-```
-
-Các test tái hiện nằm ở:
-
-- `internal/store/rules_scan_test.go` — mô phỏng trung thực thứ tự đánh giá rule của data plane (bao gồm `expand()`), dùng để săn bypass mà không cần dựng stack.
-- `internal/store/validate_test.go` — validate site, settings, rule.
-- `internal/engine/nginxconf_test.go` — kết quả render nginx.
-- `internal/api/auth_test.go` — JWT, `requireAuth`, chống dò mật khẩu.
-
-**Các test đang đỏ là cố ý** — mỗi test đỏ tương ứng một mục trong báo cáo này và sẽ tự chuyển xanh khi lỗi được vá. Trước đó repo có 0 file test, nên `go test ./...` trong CI luôn xanh mà không kiểm chứng điều gì.
+## Appendix — `.local/verify.sh`
+
+The black-box script is kept out of git (the `.local/` runtime dir is gitignored).
+For reference it issues `curl` probes for each fixed bypass and each evasion variant,
+asserting `403` on attacks and *not*-`403` on the clean-traffic controls, against the
+stack at `http://127.0.0.1:8088`.
