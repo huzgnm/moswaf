@@ -405,15 +405,43 @@ apply the same per-site cooldown to the manual path.
 - **The order flow** (`acme.go`) uses `golang.org/x/crypto/acme`, reuses the account
   key across restarts, and backs off an hour after a failure.
 
-### Not yet covered — the real ACME order end-to-end
+### The real ACME order — run against Pebble
 
-The full register → authorize → accept → poll → finalize flow has only been read and
-unit-tested, never run against a live CA. Running it locally against Pebble (a test
-CA) needs the ACME client to trust Pebble's self-signed directory — the process's
-`InsecureSkipVerify` is only on the healthcheck client, not the ACME client — plus
-container-network resolution from Pebble back to the data plane. A small dev-only knob
-(trust an extra CA / an insecure-ACME flag) would make this runnable; recommended as
-the next step for this feature.
+The `MOSWAF_ACME_INSECURE` dev flag (added after round 5, gated to a localhost/private
+directory) made a live run possible. Driven against a local Pebble test CA, most of
+the flow is now verified:
+
+- **The insecure-flag gating works.** With `MOSWAF_ACME_DIRECTORY=https://localhost:14000/dir`
+  the control plane trusts Pebble's self-signed directory and completes the TLS
+  handshake; pointed at a public directory the flag is ignored, as intended.
+- **register → order → accept run.** The control plane registers an account, creates
+  an order and accepts the challenge. (Pebble is strict about the contact email — it
+  rejects `@*.local` and `@example.com` — and about the identifier suffix; these are
+  Pebble's rules, not MosWAF bugs.)
+- **The challenge responder is proven.** With a token placed in Redis
+  (`moswaf:acme:<token>`), the data plane serves it as `200` with the exact body over
+  the *same route the CA uses* — from a container to `192.168.5.2:8088` with the
+  site's `Host` — and `404` when the token is absent. This is the MosWAF-owned half of
+  HTTP-01, confirmed end to end.
+- **The manual-issue cooldown (finding #23) works** — a second `POST` inside five
+  minutes returns `429` with the remaining wait.
+
+What the Pebble run did **not** reach: its validation authority would not resolve the
+test domain under colima (persistent `NXDOMAIN`, even though the companion
+`challtestsrv` answered `dig` from other containers on the same network) — a
+container-DNS quirk of the harness, orthogonal to MosWAF — so validation never passed
+and the tail of `Issue` did not run live.
+
+That tail has since been split into two testable pieces and unit-tested (the CSR
+builder and the chain-encode/store step, with a self-built chain): the full chain is
+kept, `notAfter` comes from the leaf, `tls.X509KeyPair` re-loads the pair, and the
+requested SANs survive. So the only step now unexercised anywhere is the single live
+call to the CA (`CreateOrderCert`) — which, like the Docker Compose deployment path,
+can only be closed against a **real domain on a real host**. The safe order there is:
+deploy via `install.sh` on a VPS, add a site with a real domain and
+`MOSWAF_ACME_DIRECTORY` pointed at Let's Encrypt **staging**, confirm the order, then
+switch to production (starting on production risks a week-long lockout after a few
+failures).
 
 ---
 
