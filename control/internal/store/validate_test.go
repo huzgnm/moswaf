@@ -83,6 +83,76 @@ func TestValidateSiteAcceptsOrdinaryInput(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------- ACME
+
+func acmeSite() *Site {
+	s := validSite()
+	s.Domains = []string{"example.com"}
+	s.AcmeEnabled = true
+	s.AcmeEmail = "ops@example.com"
+	return s
+}
+
+// The checks that already hold: a real domain with an email is fine, and an ACME
+// site cannot point at an IP, a name without a dot, or carry a missing/injected
+// email (the CA would reject those, or the address is forwarded to the CA's Contact
+// field where a CRLF would be an injection).
+func TestValidateSiteACMEAcceptsARealDomain(t *testing.T) {
+	if err := ValidateSite(acmeSite()); err != nil {
+		t.Fatalf("a valid ACME site was rejected: %v", err)
+	}
+}
+
+func TestValidateSiteACMERejectsBadInput(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Site)
+	}{
+		{"IP address", func(s *Site) { s.Domains = []string{"203.0.113.10"} }},
+		{"name without a dot", func(s *Site) { s.Domains = []string{"localhost"} }},
+		{"empty email", func(s *Site) { s.AcmeEmail = "" }},
+		{"email without @", func(s *Site) { s.AcmeEmail = "notanemail" }},
+		{"email with CRLF (Contact-header injection)", func(s *Site) { s.AcmeEmail = "ops@example.com\r\nBcc: evil" }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := acmeSite()
+			c.mutate(s)
+			if err := ValidateSite(s); err == nil {
+				t.Fatalf("ACME accepted %s", c.name)
+			}
+		})
+	}
+}
+
+// A wildcard cannot be satisfied over HTTP-01 (only DNS-01 can), so accepting one
+// with acme_enabled sets up a certificate order that fails forever and retries every
+// hour. `net.ParseIP("*.example.com")` is nil and the string contains a dot, so it
+// slips through the current IP/dotless check. It should be rejected up front with a
+// clear message.
+func TestValidateSiteACMERejectsWildcard(t *testing.T) {
+	t.Skip("KNOWN (round-5 finding): ValidateSite accepts a wildcard with acme_enabled; " +
+		"remove this Skip once it rejects one")
+	s := acmeSite()
+	s.Domains = []string{"*.example.com"}
+	if err := ValidateSite(s); err == nil {
+		t.Fatal("ACME accepted a wildcard domain, which HTTP-01 can never validate")
+	}
+}
+
+// `net.ParseIP("1.2.3.4.")` returns nil because of the trailing dot, so a
+// dotted-quad with a trailing dot slips past the "no IP address" guard while still
+// being, to any CA, an IP. It should be rejected the same as "1.2.3.4".
+func TestValidateSiteACMERejectsTrailingDotIP(t *testing.T) {
+	t.Skip("KNOWN (round-5 finding): net.ParseIP(\"1.2.3.4.\") is nil so it slips the IP " +
+		"guard; remove this Skip once ValidateSite rejects a trailing-dot IP")
+	s := acmeSite()
+	s.Domains = []string{"1.2.3.4."}
+	if err := ValidateSite(s); err == nil {
+		t.Fatal("ACME accepted \"1.2.3.4.\", an IP address hidden behind a trailing dot")
+	}
+}
+
 // Setting a real-IP header without naming the proxies that are allowed to send it
 // makes util.client_ip (dataplane/lua/moswaf/util.lua:99) trust that header from
 // *anyone*: the guard is `if trusted and #trusted > 0 and not in_list(...)`, so an
