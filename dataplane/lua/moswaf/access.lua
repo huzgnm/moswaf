@@ -28,10 +28,15 @@ local BODY_METHODS = { POST = true, PUT = true, PATCH = true, DELETE = true }
 -- as "UNION%20ALL%20SELECT", "<script>" as "%3Cscript%3E", and the more careful ones
 -- double-encode ("%2520"). So normalise before scanning: join the raw value with its
 -- decoded forms, and a rule matches at whichever layer the payload hides in.
+-- MAX_DECODE bounds the work, not the attack: peeling until the string stops
+-- changing is what matters. Stopping at two layers meant "%252520" (three layers)
+-- reached the origin untouched while one and two layers were blocked.
+local MAX_DECODE = 5
+
 local function expand(s)
     if not s or s == "" then return "" end
     local out, prev = s, s
-    for _ = 1, 2 do
+    for _ = 1, MAX_DECODE do
         local ok, decoded = pcall(ngx.unescape_uri, prev)
         if not ok or decoded == prev then break end
         out = out .. "\n" .. decoded

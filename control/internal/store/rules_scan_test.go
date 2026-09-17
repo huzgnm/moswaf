@@ -65,14 +65,15 @@ func unhex(c byte) (byte, bool) {
 	return 0, false
 }
 
-// expand mirrors access.lua:expand - the original plus up to two decoded layers,
-// concatenated, so a rule matches whichever encoding layer the payload sits in.
+// expand mirrors access.lua:expand - the original plus every decoded layer down to
+// a fixed point, concatenated, so a rule matches whichever encoding layer the
+// payload sits in.
 func expand(s string) string {
 	if s == "" {
 		return ""
 	}
 	out, prev := s, s
-	for i := 0; i < 2; i++ {
+	for i := 0; i < 5; i++ {
 		decoded := percentDecode(prev)
 		if decoded == prev {
 			break

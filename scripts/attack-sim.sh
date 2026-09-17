@@ -86,6 +86,11 @@ probe "Blind / time based"  block "$TARGET/?id=1%20AND%20SLEEP(5)"
 probe "Metadata probing"    block "$TARGET/?id=1%20AND%201=(SELECT%20COUNT(*)%20FROM%20information_schema.tables)"
 
 echo
+echo "Encoding evasion (the payload is the same UNION SELECT, wrapped in layers):"
+probe "Double encoded"  block "$TARGET/?id=1%2520UNION%2520ALL%2520SELECT%2520NULL"
+probe "Triple encoded"  block "$TARGET/?id=1%252520UNION%252520ALL%252520SELECT%252520NULL"
+
+echo
 echo "XSS:"
 probe "Script tag"      block "$TARGET/?q=%3Cscript%3Ealert(1)%3C/script%3E"
 probe "Event handler"   block "$TARGET/?q=%3Cimg%20src=x%20onerror=alert(1)%3E"

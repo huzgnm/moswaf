@@ -81,14 +81,23 @@ func scanRule(row pgx.Row) (*Rule, error) {
 	return &r, nil
 }
 
-// SeedRules loads the built-in rules, inserting only what is missing so it never
-// overwrites an admin's later edits.
+// SeedRules loads the built-in rules on every start.
+//
+// Rows that already exist keep their behaviour - pattern, action, severity and
+// whether they are enabled all belong to the admin, who can edit them from the
+// dashboard. Only the display name and category are refreshed from the code, so a
+// rename in a new version actually reaches an existing install: with a plain
+// DO NOTHING the names stayed frozen at whatever the first run wrote, which is how
+// an upgraded install ended up showing rule names in the old language.
 func (s *Store) SeedRules(ctx context.Context) error {
 	for _, r := range BuiltinRules {
 		_, err := s.pool.Exec(ctx, `
 			INSERT INTO rules (id, name, category, target, pattern, action, severity, enabled, builtin)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,true,true)
-			ON CONFLICT (id) DO NOTHING`,
+			ON CONFLICT (id) DO UPDATE SET
+				name = EXCLUDED.name,
+				category = EXCLUDED.category
+			WHERE rules.builtin = true`,
 			r.ID, r.Name, r.Category, r.Target, r.Pattern, r.Action, r.Severity)
 		if err != nil {
 			return fmt.Errorf("seeding rule %s: %w", r.ID, err)

@@ -89,28 +89,75 @@ function _M.is_private_ip(ip)
         or (n >= 2130706432 and n <= 2147483647)   -- 127/8
 end
 
+-- Canonicalise an address so that one client cannot own several identities.
+--
+-- "01.2.3.4" and "1.2.3.4" are the same host and match the same CIDR, but as raw
+-- strings they are different keys - and bans, the blocklist and the rate-limit
+-- counters are all keyed on this string. Padding an octet was enough to walk away
+-- from a ban. A port and IPv6 brackets are stripped for the same reason.
+function _M.normalize_ip(v)
+    if not v or v == "" then return nil end
+    v = v:match("^%s*(.-)%s*$")
+
+    local bracketed = v:match("^%[(.+)%]")   -- [2001:db8::1]:443
+    if bracketed then return bracketed end
+
+    local host = v:match("^([%d%.]+):%d+$")  -- 1.2.3.4:5678
+    if host then v = host end
+
+    local a, b, c, d = v:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
+    if a then
+        a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
+        if a > 255 or b > 255 or c > 255 or d > 255 then return nil end
+        return format("%d.%d.%d.%d", a, b, c, d)
+    end
+
+    if find(v, ":", 1, true) then return v end   -- IPv6
+    return nil
+end
+
 -- Resolve the real client IP according to the config (a CDN or proxy in front of MosWAF)
+--
+-- The header has to be read RIGHT to LEFT. Proxies *append* to X-Forwarded-For, so
+-- the leftmost entry is whatever the client sent - a value it makes up. Sending
+--     X-Forwarded-For: 1.2.3.4
+-- through a CDN produces "1.2.3.4, <real client>", and taking the leftmost entry
+-- handed the attacker its own identity: bans, the blocklist and the rate-limit
+-- counters all keyed on a value it chose per request, even with trusted_proxies
+-- configured correctly.
+--
+-- Correct walk: start at the rightmost entry, skip our own proxies, and the first
+-- address that is not one of them is the client.
 function _M.client_ip(settings)
-    local peer = ngx.var.remote_addr or "0.0.0.0"
+    local peer = _M.normalize_ip(ngx.var.remote_addr) or "0.0.0.0"
     local header = settings and settings.real_ip_header
     if not header or header == "" then return peer end
 
+    -- No trusted list means no way to tell our proxies from a forged hop, so the
+    -- header cannot be believed at all.
     local trusted = settings.trusted_proxies
-    if trusted and #trusted > 0 and not _M.ip_in_list(peer, trusted) then
-        return peer                       -- the peer is not in the trusted list
-    end
+    if not trusted or #trusted == 0 then return peer end
+    if not _M.ip_in_list(peer, trusted) then return peer end
 
     local v = ngx.req.get_headers()[header]
-    if type(v) == "table" then v = v[1] end
+    if type(v) == "table" then v = v[#v] end   -- the hop closest to us wins
     if not v or v == "" then return peer end
 
-    -- X-Forwarded-For: client, proxy1, proxy2 -> take the leftmost valid entry
-    for part in v:gmatch("[^,%s]+") do
-        if _M.ipv4_to_int(part) or find(part, ":", 1, true) then
-            return part
+    local hops = {}
+    for part in v:gmatch("[^,]+") do
+        local ip = _M.normalize_ip(part)
+        if ip then hops[#hops + 1] = ip end
+    end
+    if #hops == 0 then return peer end
+
+    for i = #hops, 1, -1 do
+        if not _M.ip_in_list(hops[i], trusted) then
+            return hops[i]
         end
     end
-    return peer
+
+    -- Every hop is one of ours: the leftmost entry is the client the first proxy saw
+    return hops[1]
 end
 
 -- ---------------------------------------------------------------- strings
