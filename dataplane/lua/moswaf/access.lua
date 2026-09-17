@@ -171,7 +171,10 @@ function _M.run()
     end
 
     -- 7. signature scanning
-    local headers = ngx.req.get_headers(64)
+    -- 64 was a hiding place: send 70 headers and the payload goes in number 65.
+    -- nginx already caps how many headers it accepts through
+    -- large_client_header_buffers, so reading them all is bounded.
+    local headers = ngx.req.get_headers(0, true)
     local scan = {
         -- nginx has already decoded and normalised $uri while $request_uri keeps the
         -- raw form; both are needed to catch ../ as well as encoding tricks
@@ -184,11 +187,27 @@ function _M.run()
     }
 
     if st.scan_body and BODY_METHODS[ngx.var.request_method] then
-        local len = tonumber(ngx.var.http_content_length) or 0
         local max = tonumber(st.max_body_scan) or 65536
-        if len > 0 and len <= max then
-            ngx.req.read_body()
-            scan.body = expand(ngx.req.get_body_data() or "")
+        -- Two holes used to live here. A body larger than max was skipped whole
+        -- instead of truncated, so padding a payload with 64KB of filler walked
+        -- straight through; and a chunked request has no Content-Length, so
+        -- `len > 0` was false and the body was never scanned at all.
+        ngx.req.read_body()
+        local body = ngx.req.get_body_data()
+        if not body then
+            -- nginx spilled the body to disk (client_body_buffer_size) - read the
+            -- start of that file rather than giving up on it
+            local path = ngx.req.get_body_file()
+            if path then
+                local f = io.open(path, "rb")
+                if f then
+                    body = f:read(max)
+                    f:close()
+                end
+            end
+        end
+        if body and #body > 0 then
+            scan.body = expand(#body > max and body:sub(1, max) or body)
         end
     end
 

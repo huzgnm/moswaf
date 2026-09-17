@@ -20,9 +20,17 @@ const ctxUser ctxKey = "moswaf.user"
 
 // ------------------------------------------------------- brute force guard
 
+// How long a failure record is kept once the IP is no longer locked out, and how
+// many records may exist at all.
+const (
+	guardRetention = 30 * time.Minute
+	guardMaxIPs    = 50000
+)
+
 type attempt struct {
 	fails int
 	until time.Time
+	last  time.Time // last failure, used to reap the record later
 }
 
 type loginGuard struct {
@@ -37,14 +45,26 @@ func newLoginGuard() *loginGuard {
 }
 
 func (g *loginGuard) cleanup() {
-	for range time.Tick(10 * time.Minute) {
-		g.mu.Lock()
-		for k, v := range g.data {
-			if time.Now().After(v.until) && v.fails == 0 {
-				delete(g.data, k)
-			}
+	for range time.Tick(time.Minute) {
+		g.reap()
+	}
+}
+
+// reap drops records that are neither locked out nor recently active.
+//
+// The old condition was `fails == 0`, which fail() never produces and success()
+// never leaves behind, so nothing was ever eligible and the map kept one record
+// per source IP that had ever failed a login - for the lifetime of the process.
+// /api/auth/login needs no authentication, so that was an unbounded allocation
+// any client could drive.
+func (g *loginGuard) reap() {
+	now := time.Now()
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for k, v := range g.data {
+		if now.After(v.until) && now.Sub(v.last) > guardRetention {
+			delete(g.data, k)
 		}
-		g.mu.Unlock()
 	}
 }
 
@@ -67,15 +87,35 @@ func (g *loginGuard) fail(ip string) {
 	defer g.mu.Unlock()
 	a := g.data[ip]
 	if a == nil {
+		// Hard ceiling as well as the timed reap: a distributed attempt can create
+		// records faster than the reaper removes them.
+		if len(g.data) >= guardMaxIPs {
+			g.evictOldestLocked()
+		}
 		a = &attempt{}
 		g.data[ip] = a
 	}
 	a.fails++
+	a.last = time.Now()
 	switch {
 	case a.fails >= 10:
 		a.until = time.Now().Add(30 * time.Minute)
 	case a.fails >= 5:
 		a.until = time.Now().Add(5 * time.Minute)
+	}
+}
+
+// evictOldestLocked removes the least recently active record. Callers hold g.mu.
+func (g *loginGuard) evictOldestLocked() {
+	var oldestKey string
+	var oldest time.Time
+	for k, v := range g.data {
+		if oldestKey == "" || v.last.Before(oldest) {
+			oldestKey, oldest = k, v.last
+		}
+	}
+	if oldestKey != "" {
+		delete(g.data, oldestKey)
 	}
 }
 

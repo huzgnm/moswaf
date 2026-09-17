@@ -99,7 +99,8 @@ end
 -- ------------------------------------------------------------ scanning
 
 -- Build the subject for each target, lazily, to save CPU
-local function subject_for(target, ctx)
+local subject_for
+subject_for = function(target, ctx)
     if target == "uri" then
         return ctx.uri
     elseif target == "args" then
@@ -122,17 +123,31 @@ local function subject_for(target, ctx)
         return ctx._hdr
     else -- any
         if not ctx._any then
+            -- "any" has to mean any. Leaving the User-Agent and the headers out of
+            -- this made every header an unscanned channel: an SQLi payload in
+            -- X-Forwarded-Host or in the User-Agent reached the upstream untouched,
+            -- and the CRLF rule (target "any") could never see a header at all.
             ctx._any = concat({ ctx.uri or "", ctx.args or "", ctx.body or "",
-                                ctx.cookie or "", ctx.referer or "" }, "\n")
+                                ctx.cookie or "", ctx.referer or "",
+                                ctx.ua or "", subject_for("header", ctx) }, "\n")
         end
         return ctx._any
     end
 end
 
--- Returns the first matching rule, or nil
+-- Returns the rule that decides the request, or nil.
+--
+-- A `log` rule does not stop a request, so it must not stop the scan either.
+-- It used to: the first match won whatever its action was, and because the rules
+-- arrived sorted by category, the `log` rule ua-lib (category "bot") sat in front
+-- of every sqli, xss, rce and lfi rule. Sending `User-Agent: python-requests/2.31`
+-- was enough to skip the entire signature engine - announcing yourself as a bot
+-- bought you an exemption. The control plane now orders blocking rules first as
+-- well, and this loop keeps going past a logging match.
 function _M.scan(ctx, site)
     local rules = active_rules()
     local off   = site and site.rules_off or nil
+    local logged = nil
 
     for i = 1, #rules do
         local r = rules[i]
@@ -145,12 +160,23 @@ function _M.scan(ctx, site)
         if not skip then
             local subject = subject_for(r.target or "any", ctx)
             if subject then
-                local from = re_find(subject, r.pattern, "joi")
-                if from then return r end
+                local from, _, err = re_find(subject, r.pattern, "joi")
+                if err then
+                    -- A pattern PCRE refuses silently never matches, which would
+                    -- leave the rule looking active on the dashboard forever.
+                    ngx.log(ngx.ERR, "moswaf: rule ", r.id, " has an invalid pattern: ", err)
+                elseif from then
+                    if r.action == "log" then
+                        logged = logged or r      -- remember it, keep scanning
+                    else
+                        return r                  -- deny / ban / challenge decides now
+                    end
+                end
             end
         end
     end
-    return nil
+
+    return logged
 end
 
 function _M.count()

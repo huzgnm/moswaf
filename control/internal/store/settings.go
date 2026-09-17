@@ -67,6 +67,14 @@ func ValidateSettings(st *Settings) error {
 	if st.TrustedProxies == nil {
 		st.TrustedProxies = []string{}
 	}
+	// Trusting a real-IP header from anyone means the client picks its own identity:
+	// bans, the blocklist and every rate-limit counter are keyed on a value the
+	// attacker controls, and a fresh header per request means a fresh counter per
+	// request. The header is only meaningful behind a known set of proxies.
+	if st.RealIPHeader != "" && len(st.TrustedProxies) == 0 {
+		return fmt.Errorf("%s can only be trusted when trusted_proxies is set, "+
+			"otherwise any client can spoof its own IP", st.RealIPHeader)
+	}
 	for i, p := range st.TrustedProxies {
 		norm, err := NormalizeCIDR(p)
 		if err != nil {

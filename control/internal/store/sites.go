@@ -62,6 +62,22 @@ func (s *Store) GetSite(ctx context.Context, id string) (*Site, error) {
 	return site, err
 }
 
+// hasControlChar reports whether v contains a newline, carriage return or any
+// other control character.
+//
+// Everything validated here ends up inside a generated nginx file. A newline in
+// Site.Name breaks out of the comment line renderSite writes it into, which lets
+// an admin inject arbitrary nginx directives - and the proxy workers run as root,
+// so that reaches code execution through content_by_lua_block. In Domains and
+// UpstreamHost a directive cannot be terminated, but a newline still produces a
+// file nginx refuses to parse, after which the data plane stops reloading and
+// every later configuration change silently has no effect.
+func hasControlChar(v string) bool {
+	return strings.ContainsFunc(v, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == 0 || (r < 0x20 && r != '\t') || r == 0x7f
+	})
+}
+
 // ValidateSite normalises and checks a site before it is written.
 func ValidateSite(s *Site) error {
 	s.Name = strings.TrimSpace(s.Name)
@@ -70,12 +86,15 @@ func ValidateSite(s *Site) error {
 	if s.Name == "" {
 		return fmt.Errorf("the site name is required")
 	}
+	if hasControlChar(s.Name) {
+		return fmt.Errorf("the site name cannot contain line breaks or control characters")
+	}
 	if len(s.Domains) == 0 {
 		return fmt.Errorf("at least one domain is required")
 	}
 	for i, d := range s.Domains {
 		d = strings.ToLower(strings.TrimSpace(d))
-		if d == "" || strings.ContainsAny(d, " /\\:;{}\"'$") {
+		if d == "" || strings.ContainsAny(d, " /\\:;{}\"'$") || hasControlChar(d) {
 			return fmt.Errorf("invalid domain: %q", s.Domains[i])
 		}
 		s.Domains[i] = d
@@ -83,7 +102,7 @@ func ValidateSite(s *Site) error {
 	if s.UpstreamHost == "" {
 		return fmt.Errorf("the upstream host is required")
 	}
-	if strings.ContainsAny(s.UpstreamHost, " /\\;{}\"'$") {
+	if strings.ContainsAny(s.UpstreamHost, " /\\;{}\"'$") || hasControlChar(s.UpstreamHost) {
 		return fmt.Errorf("invalid upstream host")
 	}
 	if s.UpstreamPort <= 0 || s.UpstreamPort > 65535 {

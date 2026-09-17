@@ -4,6 +4,7 @@ package config
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"strconv"
 	"time"
@@ -61,10 +62,48 @@ func randomSecret() string {
 	return hex.EncodeToString(b)
 }
 
+// Values that must never reach production. "changeme" ships in .env.example, and
+// "moswaf-insecure-default" used to be the built-in fallback on both sides of the
+// challenge cookie - a key published in this repository.
+var placeholderSecrets = map[string]bool{
+	"changeme":                    true,
+	"moswaf-insecure-default":     true,
+	"moswaf-fallback-secret":      true,
+	"moswaf-dev-jwt-secret":       false, // used by scripts/dev-local.sh on purpose
+	"moswaf-dev-challenge-secret": false,
+}
+
+// Validate refuses to run with a secret an attacker can read off the internet.
+//
+// MOSWAF_JWT_SECRET at a known value means anyone can mint a valid dashboard
+// token; MOSWAF_CHALLENGE_SECRET at a known value means anyone can forge the
+// __moswaf cookie, which switches off the JS challenge and under-attack mode -
+// the anti-DDoS feature itself. `make up` copies .env.example verbatim, so this
+// is a real path, not a hypothetical one.
+func (c *Config) Validate() error {
+	for name, value := range map[string]string{
+		"MOSWAF_JWT_SECRET":       string(c.JWTSecret),
+		"MOSWAF_CHALLENGE_SECRET": c.ChallengeSecret,
+	} {
+		if value == "" {
+			return fmt.Errorf("%s is not set; generate one with: openssl rand -hex 32", name)
+		}
+		if placeholder, known := placeholderSecrets[value]; known && placeholder {
+			return fmt.Errorf("%s is still the placeholder %q; generate a real one with: openssl rand -hex 32",
+				name, value)
+		}
+		if len(value) < 16 {
+			return fmt.Errorf("%s is too short (%d characters, need at least 16)", name, len(value))
+		}
+	}
+	return nil
+}
+
 func Load() *Config {
 	secret := env("MOSWAF_JWT_SECRET", "")
 	if secret == "" {
-		// No secret provided, so generate a throwaway one; sessions will not survive a restart.
+		// No secret provided, so generate a throwaway one; sessions will not survive a
+		// restart. Validate() rejects this before the server starts serving.
 		secret = randomSecret()
 	}
 
@@ -75,7 +114,7 @@ func Load() *Config {
 		RedisPassword:   env("MOSWAF_REDIS_PASSWORD", ""),
 		RedisDB:         envInt("MOSWAF_REDIS_DB", 0),
 		JWTSecret:       []byte(secret),
-		ChallengeSecret: env("MOSWAF_CHALLENGE_SECRET", "moswaf-insecure-default"),
+		ChallengeSecret: env("MOSWAF_CHALLENGE_SECRET", ""),
 		TokenTTL:        time.Duration(envInt("MOSWAF_TOKEN_TTL_HOURS", 12)) * time.Hour,
 		AdminUser:       env("MOSWAF_ADMIN_USER", "admin"),
 		AdminPassword:   env("MOSWAF_ADMIN_PASSWORD", ""),

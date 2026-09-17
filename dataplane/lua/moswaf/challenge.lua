@@ -20,7 +20,14 @@ local COOKIE     = "__moswaf"
 local VERIFY_URI = "/__moswaf/verify"
 local SALT_TTL   = 120        -- a salt is valid for 2 minutes
 
-local SECRET = os.getenv("MOSWAF_CHALLENGE_SECRET") or "moswaf-insecure-default"
+-- No fallback value here on purpose: a default published in this repository would
+-- let anyone forge the __moswaf cookie and walk past the challenge. If the variable
+-- is missing the engine says so and refuses to issue challenges it cannot verify.
+local SECRET = os.getenv("MOSWAF_CHALLENGE_SECRET")
+if not SECRET or SECRET == "" then
+    ngx.log(ngx.ERR, "moswaf: MOSWAF_CHALLENGE_SECRET is not set - the JS challenge ",
+            "is disabled because its cookie could be forged by anyone")
+end
 
 _M.verify_uri = VERIFY_URI
 
@@ -93,6 +100,11 @@ end
 
 -- Serve the challenge page. The request ends here.
 function _M.serve(ip, ua, reason)
+    if not SECRET or SECRET == "" then
+        -- Better to let the request through than to hand out a cookie anyone can mint
+        ngx.log(ngx.ERR, "moswaf: cannot issue a challenge without MOSWAF_CHALLENGE_SECRET")
+        return
+    end
     local st   = config.get().settings
     local bits = tonumber(st.challenge_difficulty) or 16
     local salt = new_salt()

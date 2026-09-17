@@ -56,6 +56,10 @@ func main() {
 		os.Exit(doResetPassword(cfg, *resetPassword))
 	}
 
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("refusing to start: %v", err)
+	}
+
 	if err := run(cfg); err != nil {
 		log.Fatalf("failed to start: %v", err)
 	}

@@ -15,6 +15,11 @@ import (
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,31}$`)
 
+// sanitizeComment keeps a value on the single comment line it was written into.
+var commentBreakers = strings.NewReplacer("\n", " ", "\r", " ", "\x00", "")
+
+func sanitizeComment(v string) string { return commentBreakers.Replace(v) }
+
 // SiteRender carries what is needed to render a site config file.
 // Always 80/443 in the container; the ports are configurable for local development.
 type SiteRender struct {
@@ -57,7 +62,9 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 	w := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
 
 	w("# ====================================================================")
-	w("# MosWAF - %s (%s)", s.Name, s.ID)
+	// ValidateSite already rejects control characters, but this file is included
+	// straight into http{} so the comment line is sanitised here as well.
+	w("# MosWAF - %s (%s)", sanitizeComment(s.Name), s.ID)
 	w("# Generated automatically by the control plane. Do not edit by hand.")
 	w("# ====================================================================")
 	w("")

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/base64"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -126,13 +127,15 @@ func TestLoginGuardLocksOutAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
-// loginGuard.cleanup only deletes entries where `fails == 0`, but fail() always
-// increments fails and success() deletes the entry outright - so no entry is ever
-// eligible for reaping. The map keeps one *attempt per source IP that has ever
-// failed a login, for the lifetime of the process.
+// loginGuard.cleanup used to delete only entries where `fails == 0`, which fail()
+// never produces and success() never leaves behind, so nothing was ever eligible.
+// The map kept one *attempt per source IP that had ever failed a login, for the
+// lifetime of the process, and /api/auth/login needs no authentication.
 //
-// /api/auth/login is unauthenticated, so an attacker can grow that map at will from
-// spoofed-source or distributed clients until the control plane runs out of memory.
+// A record cannot be dropped the moment it stops blocking - the failure count is
+// exactly what TestLoginGuardLocksOutAfterRepeatedFailures relies on between the
+// first and the fifth attempt. What has to hold is that a record which is neither
+// locked out nor recently active goes away.
 func TestLoginGuardReleasesInertEntries(t *testing.T) {
 	g := &loginGuard{data: map[string]*attempt{}}
 	const ip = "203.0.113.9"
@@ -142,14 +145,44 @@ func TestLoginGuardReleasesInertEntries(t *testing.T) {
 		t.Fatalf("a single failure should not block (wait %ds)", w)
 	}
 
+	// The record is still young, so it must survive: the counter is what turns five
+	// scattered attempts into a lockout.
+	g.reap()
 	g.mu.Lock()
 	held := len(g.data)
 	g.mu.Unlock()
+	if held != 1 {
+		t.Fatalf("a recent failure record was dropped (%d held); the lockout counter "+
+			"cannot survive that", held)
+	}
 
+	// Age it past the retention window and it must be released.
+	g.mu.Lock()
+	g.data[ip].last = time.Now().Add(-guardRetention - time.Minute)
+	g.mu.Unlock()
+
+	g.reap()
+	g.mu.Lock()
+	held = len(g.data)
+	g.mu.Unlock()
 	if held != 0 {
-		t.Fatalf("%d inert entry/entries retained: cleanup() requires fails==0, which "+
-			"fail() never leaves behind, so the map grows once per attacking IP and is "+
-			"never freed", held)
+		t.Fatalf("%d inert entry/entries retained after the retention window: the map "+
+			"grows once per attacking IP and is never freed", held)
+	}
+}
+
+// The timed reap alone is not enough: a distributed attempt can create records
+// faster than it removes them, so there has to be a ceiling too.
+func TestLoginGuardIsBounded(t *testing.T) {
+	g := &loginGuard{data: map[string]*attempt{}}
+	for i := 0; i < guardMaxIPs+50; i++ {
+		g.fail(fmt.Sprintf("198.51.100.%d.%d", i/255, i%255))
+	}
+	g.mu.Lock()
+	held := len(g.data)
+	g.mu.Unlock()
+	if held > guardMaxIPs {
+		t.Fatalf("%d records held, above the %d ceiling", held, guardMaxIPs)
 	}
 }
 

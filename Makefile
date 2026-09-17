@@ -5,8 +5,16 @@ COMPOSE := docker compose --env-file .env
 help: ## List the available commands
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.env: ## Create .env from the example
-	@test -f .env || cp .env.example .env
+.env: ## Create .env from the example, with real generated secrets
+	@test -f .env && exit 0; \
+	cp .env.example .env; \
+	for key in MOSWAF_ADMIN_PASSWORD POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET; do \
+		secret=$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40); \
+		sed -i.bak "s|^$$key=.*|$$key=$$secret|" .env; \
+	done; \
+	rm -f .env.bak; chmod 600 .env; \
+	echo "Generated .env with fresh secrets. Admin password:"; \
+	grep '^MOSWAF_ADMIN_PASSWORD=' .env
 
 up: .env ## Build and start the whole stack
 	$(COMPOSE) up -d --build

@@ -26,8 +26,9 @@ Kết quả: **một header `User-Agent` duy nhất vô hiệu hoá toàn bộ e
 | 9 | Trung bình | Validate regex bằng RE2, chạy bằng PCRE; lỗi PCRE bị nuốt | `TestValidateRuleAcceptsPCRELookahead` |
 | 10 | Trung bình | `/__moswaf/verify` đứng trước mọi kiểm tra ban/rate limit | — |
 | 11 | Trung bình | `loginGuard` rò bộ nhớ vĩnh viễn | `TestLoginGuardReleasesInertEntries` |
-| 12 | Thấp | Open redirect qua `/\` trong tham số `r` của verify | — |
-| 13 | Thấp | Đổi mật khẩu không thu hồi JWT đang có | — |
+| 12 | Trung bình | `/unban?ip=*` trên cổng 8081 không xác thực, cho cả dải RFC1918 | — |
+| 13 | Thấp | Open redirect qua `/\` trong tham số `r` của verify | — |
+| 14 | Thấp | Đổi mật khẩu không thu hồi JWT đang có | — |
 
 ---
 
@@ -259,11 +260,36 @@ Thêm nữa, bộ ba `(salt, sig, nonce)` đã giải dùng lại được suố
 
 `/api/auth/login` không cần xác thực, nên đây là đường làm cạn bộ nhớ control plane từ xa.
 
-## 12. Open redirect — THẤP
+## 12. API nội bộ cổng 8081 không xác thực — TRUNG BÌNH
+
+`dataplane/conf/default.conf:39` bảo vệ cổng 8081 **chỉ bằng địa chỉ nguồn**:
+
+```nginx
+allow 127.0.0.1;
+allow 10.0.0.0/8;
+allow 172.16.0.0/12;
+allow 192.168.0.0/16;
+deny  all;
+```
+
+Không có khoá chia sẻ, không có token. Trong khi đó `api.lua:86` có:
+
+```lua
+if ip == "*" then
+    ngx.shared.moswaf_ban:flush_all()
+```
+
+Tức là **một GET `/unban?ip=*` xoá sạch mọi lệnh ban tạm thời** — đúng thứ engine tự sinh ra khi đang bị flood. `/sync` cũng gọi được tự do.
+
+Trong triển khai Docker chuẩn, cổng 8081 không publish nên chỉ container trong mạng gọi được, rủi ro thấp. Nhưng dải cho phép bao trọn RFC1918, nên chỉ cần một lần chạy `--network host`, một dòng `ports:` thêm nhầm, hay một bridge được route ra LAN là bất kỳ máy nào trong mạng nội bộ cũng gỡ được toàn bộ ban giữa lúc bị tấn công.
+
+**Hướng sửa:** yêu cầu header bí mật dùng chung (`MOSWAF_INTERNAL_TOKEN`) cho `/sync`, `/unban`, `/bans`; giữ `allow` như lớp thứ hai.
+
+## 13. Open redirect — THẤP
 
 `challenge.lua:147` chặn `//evil.com` nhưng không chặn `/\evil.com`. Trình duyệt chuẩn hoá `\` thành `/`, nên `/\evil.com` được xử lý như `//evil.com` → chuyển hướng ra ngoài. Tham số `r` là base64url do client gửi.
 
-## 13. Đổi mật khẩu không thu hồi JWT — THẤP
+## 14. Đổi mật khẩu không thu hồi JWT — THẤP
 
 `parseToken` chỉ kiểm chữ ký và `exp`. Đổi mật khẩu, xoá tài khoản, hay `install.sh --reset-password` đều **không** làm mất hiệu lực token đang lưu hành (TTL mặc định 12 giờ). `requireAuth` cũng không kiểm tra tài khoản còn tồn tại (chỉ `handleMe` kiểm).
 

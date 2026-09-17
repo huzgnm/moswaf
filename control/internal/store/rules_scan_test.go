@@ -12,11 +12,13 @@ import (
 //
 // Two pieces of production code are mirrored here:
 //
-//   - Store.ListRules  -> ORDER BY builtin DESC, category, id.
+//   - Store.ListRules  -> ORDER BY <blocking actions first>, builtin DESC, category, id.
 //     Publisher.Publish appends the rules to the Redis config in that same order,
 //     and rules.lua walks that slice front to back, so this ordering *is* the
 //     evaluation order of the engine.
-//   - rules.lua:_M.scan -> first match wins; the loop returns immediately.
+//   - rules.lua:_M.scan -> a blocking match wins immediately; a `log` match is
+//     remembered and the scan continues, so a logging rule can never shadow a
+//     blocking one.
 //
 // The builtin patterns are all RE2-compatible (ValidateRule already compiles them
 // with regexp.Compile), so Go's regexp engine reaches the same verdict as PCRE for
@@ -84,7 +86,8 @@ func expand(s string) string {
 // subjectFor mirrors dataplane/lua/moswaf/rules.lua:subject_for, applying the same
 // normalisation access.lua applies before handing the values to the engine.
 //
-// Note what target "any" does NOT cover: the User-Agent and the request headers.
+// Target "any" covers the User-Agent and the request headers as well: leaving them
+// out turned every header into an unscanned channel.
 func (r request) subjectFor(target string) string {
 	switch target {
 	case "uri":
@@ -98,17 +101,36 @@ func (r request) subjectFor(target string) string {
 	case "ua":
 		return r.ua // access.lua passes the User-Agent through unchanged
 	case "header":
-		parts := make([]string, 0, len(r.headers))
-		for k, v := range r.headers {
-			parts = append(parts, k+": "+v)
-		}
-		sort.Strings(parts)
-		return strings.Join(parts, "\n")
+		return r.headerBlob()
 	default: // "any"
 		return strings.Join([]string{
 			expand(r.uri), expand(r.args), expand(r.body),
 			expand(r.cookie), expand(r.referer),
+			r.ua, r.headerBlob(),
 		}, "\n")
+	}
+}
+
+func (r request) headerBlob() string {
+	parts := make([]string, 0, len(r.headers))
+	for k, v := range r.headers {
+		parts = append(parts, k+": "+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "\n")
+}
+
+// actionRank mirrors the CASE expression in ListRules' ORDER BY.
+func actionRank(action string) int {
+	switch action {
+	case "deny":
+		return 0
+	case "ban":
+		return 1
+	case "challenge":
+		return 2
+	default: // log
+		return 3
 	}
 }
 
@@ -116,6 +138,9 @@ func (r request) subjectFor(target string) string {
 func evaluationOrder() []Rule {
 	out := append([]Rule(nil), BuiltinRules...)
 	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := actionRank(out[i].Action), actionRank(out[j].Action); ri != rj {
+			return ri < rj
+		}
 		if out[i].Category != out[j].Category {
 			return out[i].Category < out[j].Category
 		}
@@ -124,19 +149,27 @@ func evaluationOrder() []Rule {
 	return out
 }
 
-// scan mirrors rules.lua:_M.scan - the first rule that matches wins and the loop
-// stops, whatever that rule's action happens to be.
+// scan mirrors rules.lua:_M.scan - a blocking rule decides the request as soon as
+// it matches, while a `log` match is only remembered so the scan can carry on.
 func scan(rules []Rule, r request) *Rule {
+	var logged *Rule
 	for i := range rules {
 		re, err := regexp.Compile(rules[i].Pattern)
 		if err != nil {
 			continue
 		}
-		if re.MatchString(r.subjectFor(rules[i].Target)) {
-			return &rules[i]
+		if !re.MatchString(r.subjectFor(rules[i].Target)) {
+			continue
 		}
+		if rules[i].Action == "log" {
+			if logged == nil {
+				logged = &rules[i]
+			}
+			continue
+		}
+		return &rules[i]
 	}
-	return nil
+	return logged
 }
 
 // blocks reports whether access.lua would actually stop the request.

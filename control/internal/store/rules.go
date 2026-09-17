@@ -97,8 +97,14 @@ func (s *Store) SeedRules(ctx context.Context) error {
 	return nil
 }
 
+// actionOrder decides the order rules are evaluated in. The data plane walks this
+// list and stops at the first match, so a rule that only logs must never be
+// reached before one that blocks: ordering by category alone meant a `log` rule in
+// category "bot" shadowed every sqli/xss/rce rule behind it.
+const actionOrder = `CASE action WHEN 'deny' THEN 0 WHEN 'ban' THEN 1 WHEN 'challenge' THEN 2 ELSE 3 END`
+
 func (s *Store) ListRules(ctx context.Context) ([]*Rule, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+ruleCols+` FROM rules ORDER BY builtin DESC, category, id`)
+	rows, err := s.pool.Query(ctx, `SELECT `+ruleCols+` FROM rules ORDER BY `+actionOrder+`, builtin DESC, category, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -133,9 +139,8 @@ func ValidateRule(r *Rule) error {
 	if r.Pattern == "" {
 		return fmt.Errorf("the pattern is required")
 	}
-	// OpenResty's PCRE syntax is broader than RE2, but this still catches most typos.
-	if _, err := regexp.Compile(r.Pattern); err != nil {
-		return fmt.Errorf("invalid pattern: %v", err)
+	if err := validatePattern(r.Pattern); err != nil {
+		return err
 	}
 	switch r.Target {
 	case "uri", "args", "body", "ua", "header", "cookie", "any":
@@ -154,6 +159,32 @@ func ValidateRule(r *Rule) error {
 	}
 	if r.Category == "" {
 		r.Category = "custom"
+	}
+	return nil
+}
+
+// A group that is itself quantified and whose body ends in a quantifier - (a+)+,
+// (a*)* , (ab+)* - is the classic catastrophic-backtracking shape. RE2 runs it in
+// linear time and accepts it happily, but the data plane runs patterns through
+// PCRE, nginx.conf sets no lua_regex_match_limit, and rules.lua drops the error
+// return of ngx.re.find. One such rule stalls a worker on every request.
+var nestedQuantifier = regexp.MustCompile(`\([^()]*[+*][^()]*\)\s*[+*]`)
+
+// validatePattern checks a rule pattern without pretending RE2 and PCRE are the
+// same engine. RE2 rejects lookarounds and backreferences that PCRE handles fine,
+// so a pattern RE2 calls "unsupported Perl syntax" is still valid for the data
+// plane and must be accepted; anything RE2 calls malformed is malformed in both.
+func validatePattern(pattern string) error {
+	if nestedQuantifier.MatchString(pattern) {
+		return fmt.Errorf("invalid pattern: a quantified group containing a quantifier " +
+			"(for example `(a+)+`) can backtrack catastrophically in the data plane")
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		// Valid PCRE that RE2 simply does not implement - accept it.
+		if strings.Contains(err.Error(), "invalid or unsupported Perl syntax") {
+			return nil
+		}
+		return fmt.Errorf("invalid pattern: %v", err)
 	}
 	return nil
 }
