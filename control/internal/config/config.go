@@ -29,6 +29,10 @@ type Config struct {
 	CertsDir   string // where site certificates are written
 	AdminTLS   string // certificate directory for the dashboard itself
 	ProxySync  string // data plane /sync endpoint URL
+
+	// Shared with the data plane so its internal API can tell us apart from
+	// anything else that happens to sit on the same Docker network.
+	InternalToken string
 	RetainDays int    // how many days to keep the attack log
 
 	// Ports the generated site server blocks listen on. Always 80/443 inside the
@@ -122,6 +126,7 @@ func Load() *Config {
 		CertsDir:        env("MOSWAF_CERTS_DIR", "/etc/moswaf/certs"),
 		AdminTLS:        env("MOSWAF_ADMIN_TLS_DIR", "/etc/moswaf/admin-tls"),
 		ProxySync:       env("MOSWAF_PROXY_SYNC_URL", "http://proxy:8081/sync"),
+		InternalToken:   env("MOSWAF_INTERNAL_TOKEN", ""),
 		RetainDays:      envInt("MOSWAF_LOG_RETAIN_DAYS", 7),
 		SiteHTTPPort:    envInt("MOSWAF_SITE_HTTP_PORT", 80),
 		SiteHTTPSPort:   envInt("MOSWAF_SITE_HTTPS_PORT", 443),

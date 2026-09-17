@@ -185,6 +185,12 @@ make down        # stop
 
 Requires Go >= 1.22 and Node >= 20.
 
+Enable the repository's git hooks once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ```bash
 make web-build   # build the dashboard into control/internal/web/dist
 make go-build    # build the control plane binary

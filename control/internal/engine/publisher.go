@@ -163,6 +163,9 @@ func (p *Publisher) notifyProxy() {
 		if err != nil {
 			return
 		}
+		if p.cfg.InternalToken != "" {
+			req.Header.Set("X-MosWAF-Token", p.cfg.InternalToken)
+		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			log.Printf("moswaf: could not call the data plane /sync (%v), falling back to the poll", err)

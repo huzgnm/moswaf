@@ -5,7 +5,40 @@ local rules  = require "moswaf.rules"
 local ipset  = require "moswaf.ipset"
 local log    = require "moswaf.log"
 
+local util = require "moswaf.util"
+
 local _M = {}
+
+-- Shared with the control plane through the environment. The IP allow list on this
+-- server block is a network boundary, not an identity check: anything sharing the
+-- Docker network - another container, a compromised sidecar - sits inside it and
+-- could lift bans or force config reloads. The token is the second lock.
+local TOKEN = os.getenv("MOSWAF_INTERNAL_TOKEN")
+
+-- Endpoints that change state or expose data require the token. /healthz and
+-- /metrics stay open: the container healthcheck and any metrics scraper depend on
+-- them, and neither returns anything sensitive.
+local function authorised()
+    if not TOKEN or TOKEN == "" then
+        -- An install upgraded from before the token existed. Keep working on the
+        -- allow list alone rather than breaking unban, but say so on every call.
+        ngx.log(ngx.WARN, "moswaf: MOSWAF_INTERNAL_TOKEN is not set - the internal ",
+                "API is protected by its IP allow list only. Run install.sh --repair.")
+        return true
+    end
+
+    local got = ngx.req.get_headers()["X-MosWAF-Token"]
+    if type(got) == "table" then got = got[1] end
+    if util.const_eq(got or "", TOKEN) then return true end
+
+    ngx.log(ngx.WARN, "moswaf: internal API call from ", ngx.var.remote_addr,
+            " rejected: token missing or wrong")
+    ngx.status = 403
+    ngx.header["Content-Type"] = "application/json; charset=utf-8"
+    ngx.print('{"error":"forbidden"}')
+    ngx.exit(403)
+    return false
+end
 
 local function json(status, tbl)
     ngx.status = status
@@ -67,6 +100,7 @@ end
 -- detects a flood, so they only live in data plane memory and the database knows
 -- nothing about them - they have to be read here.
 function _M.bans()
+    if not authorised() then return end
     local ban = ngx.shared.moswaf_ban
     local items = {}
     for _, key in ipairs(ban:get_keys(1000)) do
@@ -84,6 +118,7 @@ end
 
 -- Lift the ban for one IP, or for all of them when ip=*
 function _M.unban()
+    if not authorised() then return end
     local args = ngx.req.get_uri_args(5)
     local ip = args.ip
     if type(ip) ~= "string" or ip == "" then
@@ -102,6 +137,7 @@ end
 -- Called by the control plane after an admin saves, so the config loads now
 -- instead of waiting for the poll timer
 function _M.sync()
+    if not authorised() then return end
     local ok = config.sync()
     return json(ok and 200 or 502, { synced = ok, version = config.version() })
 end

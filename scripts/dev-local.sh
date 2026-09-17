@@ -33,6 +33,7 @@ DEMO_PORT="${MOSWAF_DEV_DEMO_PORT:-8090}"
 ADMIN_USER="admin"
 ADMIN_PASS="${MOSWAF_DEV_ADMIN_PASSWORD:-moswaf-dev-12345}"
 REDIS_PASS="moswaf-dev-redis"
+INTERNAL_TOKEN="moswaf-dev-internal-token"
 
 GRN=$'\033[0;32m'; RED=$'\033[0;31m'; YLW=$'\033[0;33m'; BLU=$'\033[0;36m'; BLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
 info() { echo "${BLU}[*]${NC} $*"; }
@@ -191,6 +192,7 @@ start_openresty() {
   export MOSWAF_REDIS_PASSWORD="$REDIS_PASS"
   export MOSWAF_CHALLENGE_SECRET="moswaf-dev-challenge-secret"
   export MOSWAF_CONF_DIR="$ROOT/dataplane/conf"
+  export MOSWAF_INTERNAL_TOKEN="$INTERNAL_TOKEN"
 
   if [[ -f "$RUN/run/nginx.pid" ]] && kill -0 "$(cat "$RUN/run/nginx.pid")" 2>/dev/null; then
     info "Reloading the OpenResty configuration..."
@@ -234,6 +236,7 @@ start_control() {
   MOSWAF_CERTS_DIR="$RUN/certs" \
   MOSWAF_ADMIN_TLS_DIR="$RUN/admin-tls" \
   MOSWAF_PROXY_SYNC_URL="http://127.0.0.1:$INTERNAL_PORT/sync" \
+  MOSWAF_INTERNAL_TOKEN="$INTERNAL_TOKEN" \
   MOSWAF_SITE_HTTP_PORT="$HTTP_PORT" \
   MOSWAF_SITE_HTTPS_PORT="$HTTPS_PORT" \
     nohup "$RUN/moswafd" >"$RUN/logs/mgmt.log" 2>&1 &

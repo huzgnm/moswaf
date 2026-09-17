@@ -19,7 +19,16 @@ func (s *Server) dataplaneURL(path string) string {
 }
 
 func (s *Server) callDataplane(w http.ResponseWriter, target string) {
-	resp, err := dataplaneClient.Get(target)
+	req, err := http.NewRequest(http.MethodGet, target, nil)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if s.cfg.InternalToken != "" {
+		req.Header.Set("X-MosWAF-Token", s.cfg.InternalToken)
+	}
+
+	resp, err := dataplaneClient.Do(req)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "cannot reach the data plane: "+err.Error())
 		return

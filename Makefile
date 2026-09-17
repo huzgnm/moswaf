@@ -8,7 +8,7 @@ help: ## List the available commands
 .env: ## Create .env from the example, with real generated secrets
 	@test -f .env && exit 0; \
 	cp .env.example .env; \
-	for key in MOSWAF_ADMIN_PASSWORD POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET; do \
+	for key in MOSWAF_ADMIN_PASSWORD POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET MOSWAF_INTERNAL_TOKEN; do \
 		secret=$$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 40); \
 		sed -i.bak "s|^$$key=.*|$$key=$$secret|" .env; \
 	done; \

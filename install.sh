@@ -164,6 +164,7 @@ REDIS_PASSWORD=$(rand 32)
 
 MOSWAF_JWT_SECRET=$(rand 48)
 MOSWAF_CHALLENGE_SECRET=$(rand 48)
+MOSWAF_INTERNAL_TOKEN=$(rand 48)
 
 MOSWAF_DATA_DIR=${INSTALL_DIR}/data
 MOSWAF_LOG_LEVEL=warn
@@ -270,7 +271,8 @@ do_repair() {
 
   # Any secret missing from .env leaves a service unable to start
   local key missing=0
-  for key in POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET; do
+  for key in POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET \
+             MOSWAF_INTERNAL_TOKEN; do
     if [[ -z "$(env_get "$key")" ]]; then
       warn "$key is missing from .env, generating a new value"
       echo "$key=$(rand 32)" >> "$INSTALL_DIR/.env"

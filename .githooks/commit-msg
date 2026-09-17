@@ -1,0 +1,14 @@
+#!/bin/sh
+#
+# Strip AI co-authorship trailers from commit messages.
+#
+# Commits in this repository are authored under the project owner's name only.
+# Several tools add a "Co-Authored-By: ..." trailer by default, which puts an extra
+# account into the repository's Contributors list. This hook removes those lines
+# before the commit is written, so it cannot happen by accident.
+#
+# Enable it once per clone:
+#     git config core.hooksPath .githooks
+#
+grep -viE '^[[:space:]]*Co-Authored-By:[[:space:]]*(Claude|Anthropic|.*noreply@anthropic\.com)' "$1" > "$1.clean"
+mv "$1.clean" "$1"
