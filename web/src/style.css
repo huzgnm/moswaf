@@ -1,22 +1,22 @@
 :root {
-  /* be mat */
+  /* surfaces */
   --bg:        #0b0e14;
-  --surface-1: #11161f;   /* mat nen cua the va bieu do */
+  --surface-1: #11161f;   /* card and chart surface */
   --surface-2: #161c27;
   --line:      #1f2733;
   --line-2:    #2b3544;
 
-  /* chu */
+  /* text */
   --text-primary:   #e6edf3;
   --text-secondary: #9aa6b2;
   --text-muted:     #6b7683;
 
-  /* chuoi du lieu tren bieu do - thu tu co dinh, khong xoay vong */
-  --series-1: #3987e5;   /* tong request */
-  --series-2: #d95926;   /* bi chan */
+  /* chart series - fixed order, never cycled */
+  --series-1: #3987e5;   /* total requests */
+  --series-2: #d95926;   /* blocked */
   --series-3: #199e70;   /* challenge */
 
-  /* trang thai */
+  /* status */
   --good:     #199e70;
   --warning:  #c98500;
   --serious:  #d95926;
@@ -42,7 +42,7 @@ a { color: var(--series-1); text-decoration: none; }
 
 h1, h2, h3 { margin: 0; font-weight: 600; }
 
-/* ---------------------------------------------------------- bo cuc */
+/* ---------------------------------------------------------- layout */
 
 .layout { display: flex; min-height: 100vh; }
 
@@ -84,7 +84,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .content { padding: 22px; flex: 1; overflow: auto; }
 
-/* ---------------------------------------------------------- the */
+/* ---------------------------------------------------------- cards */
 
 .card {
   background: var(--surface-1);
@@ -103,7 +103,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 @media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px)  { .grid-4, .grid-2 { grid-template-columns: 1fr; } }
 
-/* ---------------------------------------------------------- dieu khien */
+/* ---------------------------------------------------------- controls */
 
 .btn {
   display: inline-flex; align-items: center; gap: 7px;
@@ -145,7 +145,7 @@ textarea.input { min-height: 90px; resize: vertical; font-family: ui-monospace, 
 .switch input:checked + .track::after { transform: translateX(17px); }
 .switch.danger input:checked + .track { background: var(--critical); }
 
-/* ---------------------------------------------------------- bang */
+/* ---------------------------------------------------------- tables */
 
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th {
@@ -174,7 +174,7 @@ textarea.input { min-height: 90px; resize: vertical; font-family: ui-monospace, 
 
 .empty { padding: 42px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
 
-/* ---------------------------------------------------------- lop phu */
+/* ---------------------------------------------------------- overlays */
 
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(4, 6, 10, .72);

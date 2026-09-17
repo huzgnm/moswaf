@@ -1,4 +1,5 @@
-# Thu muc nay chua ban build cua web/ (Vite ghi ra day de Go nhung vao binary).
-# Khong commit file build; chi giu file nay de `go build` luon co thu muc de embed.
+# Holds the build output of web/ (Vite writes here so Go can embed it).
+# The build is never committed; this file only keeps the directory present so
+# `go build` always has something to embed.
 *
 !.gitignore

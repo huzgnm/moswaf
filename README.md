@@ -20,23 +20,38 @@ On a Linux server (Ubuntu / Debian / CentOS / Alma / ...), as root:
 curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | bash
 ```
 
-Or, if you already have the source:
+Or, from a source checkout:
 
 ```bash
 sudo bash install.sh
 ```
 
-The installer checks for (and installs) Docker, generates a `.env` with fresh
-random secrets, builds the images, starts the stack, and prints the dashboard
-URL together with the admin password.
+Run without arguments and the installer shows a menu:
 
-Useful flags:
+```
+  1) INSTALL     fresh install
+  2) UPDATE      pull the latest code, rebuild, keep all data
+  3) REPAIR      diagnose and fix a broken install
+  4) UNINSTALL   remove MosWAF
+  0) Exit
+```
+
+**INSTALL** checks for (and installs) Docker, generates a `.env` with fresh random
+secrets, builds the images, starts the stack and prints the dashboard URL together
+with the admin password.
+
+**REPAIR** is for the usual breakages: a container stuck in a restart loop, a `.env`
+that lost a secret, missing data directories, or an image that no longer matches the
+source. It regenerates what is missing, rebuilds, recreates the containers and forces
+a config resync — and never touches the database.
+
+Every action also has a flag, for scripts and CI:
 
 ```bash
-sudo bash install.sh --admin-port 9443 --admin-bind 127.0.0.1   # reachable only through an SSH tunnel
-sudo bash install.sh --upgrade                                   # pull, rebuild, keep all data
-sudo bash install.sh --reset-password                            # generate a new admin password
-sudo bash install.sh --uninstall                                 # remove MosWAF
+sudo bash install.sh --install --admin-port 9443 --admin-bind 127.0.0.1  # SSH tunnel only
+sudo bash install.sh --update
+sudo bash install.sh --repair
+sudo bash install.sh --uninstall --yes
 ```
 
 ## Ports

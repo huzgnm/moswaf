@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-#  MosWAF - chay toan bo stack tren may dev, khong can Docker
+#  MosWAF - run the whole stack on a dev machine, without Docker
 #
-#  Dung khi muon thu nhanh hoac khi may khong cai duoc Docker. Moi thu chay
-#  bang tai khoan thuong, du lieu nam gon trong .local/ va xoa di la sach.
+#  Useful for a quick try, or when Docker is not an option. Everything runs as a
+#  normal user, all state lives under .local/ and deleting that folder is a clean
+#  reset.
 #
-#    ./scripts/dev-local.sh start     dung stack + tao san mot site demo
-#    ./scripts/dev-local.sh stop      dung tat ca
-#    ./scripts/dev-local.sh status    xem con song khong
-#    ./scripts/dev-local.sh logs      theo doi log
-#    ./scripts/dev-local.sh reset     dung + xoa sach du lieu
+#    ./scripts/dev-local.sh start     start the stack and seed a demo site
+#    ./scripts/dev-local.sh stop      stop everything
+#    ./scripts/dev-local.sh status    show what is running
+#    ./scripts/dev-local.sh logs      follow the logs
+#    ./scripts/dev-local.sh reset     stop and wipe all local state
 #
-#  Can: postgresql@16, redis, openresty, go, node
+#  Requires: postgresql@16, redis, openresty, go, node
 #    brew install postgresql@16 redis go node
 #    brew trust openresty/brew && brew install openresty/brew/openresty
 #
@@ -20,7 +21,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$ROOT/.local"
 
-# Cong mac dinh tranh cac cong hay bi chiem tren may dev
+# Defaults chosen to avoid ports commonly taken on a dev machine
 HTTP_PORT="${MOSWAF_DEV_HTTP_PORT:-8088}"
 HTTPS_PORT="${MOSWAF_DEV_HTTPS_PORT:-8543}"
 ADMIN_PORT="${MOSWAF_DEV_ADMIN_PORT:-9443}"
@@ -46,22 +47,22 @@ OPENRESTY_BIN="$BREW_PREFIX/opt/openresty/bin/openresty"
 
 DSN="postgres://$(whoami)@127.0.0.1:${PG_PORT}/moswaf?sslmode=disable"
 
-# ------------------------------------------------------------------ kiem tra
+# ------------------------------------------------------------------ checks
 
 SKIP_PROXY=0
 
 check_deps() {
-  [[ -x "$PG_BIN/pg_ctl" ]] || die "Thieu postgresql@16: brew install postgresql@16"
-  command -v redis-server >/dev/null || die "Thieu redis: brew install redis"
-  command -v go >/dev/null || die "Thieu go: brew install go"
-  command -v node >/dev/null || die "Thieu node: brew install node"
+  [[ -x "$PG_BIN/pg_ctl" ]] || die "postgresql@16 is missing: brew install postgresql@16"
+  command -v redis-server >/dev/null || die "redis is missing: brew install redis"
+  command -v go >/dev/null || die "go is missing: brew install go"
+  command -v node >/dev/null || die "node is missing: brew install node"
 
-  # Thieu OpenResty thi van chay duoc control plane + dashboard de xem giao dien
-  # va thu API; chi khong co lop loc traffic that.
+  # Without OpenResty the control plane and dashboard still run, so the UI and the
+  # API can be exercised; only the traffic filtering layer is missing.
   if [[ -z "$OPENRESTY_BIN" || ! -x "$OPENRESTY_BIN" ]]; then
     SKIP_PROXY=1
-    warn "Chua co OpenResty - se chay thieu data plane (khong loc duoc traffic)."
-    warn "Cai bang: brew trust openresty/brew && brew install openresty/brew/openresty"
+    warn "OpenResty is missing - starting without the data plane (no traffic filtering)."
+    warn "Install it with: brew trust openresty/brew && brew install openresty/brew/openresty"
   fi
 }
 
@@ -71,66 +72,66 @@ port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1; }
 
 start_postgres() {
   if port_busy "$PG_PORT"; then
-    ok "Postgres da chay san o cong $PG_PORT"
+    ok "Postgres is already running on port $PG_PORT"
     return
   fi
-  # Tren macOS, thieu LC_ALL hop le thi postmaster bao
-  # "became multithreaded during startup" roi chet ngay.
+  # On macOS, without a valid LC_ALL the postmaster dies immediately with
+  # "became multithreaded during startup".
   export LC_ALL="${LC_ALL:-en_US.UTF-8}"
 
   if [[ ! -d "$RUN/pgdata/base" ]]; then
-    info "Khoi tao cum du lieu Postgres..."
+    info "Initialising the Postgres cluster..."
     "$PG_BIN/initdb" -D "$RUN/pgdata" -U "$(whoami)" -E UTF8 --locale=C >/dev/null
   fi
-  info "Khoi dong Postgres (cong $PG_PORT)..."
+  info "Starting Postgres (port $PG_PORT)..."
   "$PG_BIN/pg_ctl" -D "$RUN/pgdata" -l "$RUN/logs/postgres.log" \
     -o "-p $PG_PORT -k $RUN/run -h 127.0.0.1" -w start >/dev/null
 
   "$PG_BIN/psql" -h 127.0.0.1 -p "$PG_PORT" -d postgres -tAc \
     "SELECT 1 FROM pg_database WHERE datname='moswaf'" | grep -q 1 \
     || "$PG_BIN/createdb" -h 127.0.0.1 -p "$PG_PORT" moswaf
-  ok "Postgres san sang"
+  ok "Postgres is ready"
 }
 
 # ------------------------------------------------------------------ redis
 
 start_redis() {
   if port_busy "$REDIS_PORT"; then
-    ok "Redis da chay san o cong $REDIS_PORT"
+    ok "Redis is already running on port $REDIS_PORT"
     return
   fi
-  info "Khoi dong Redis (cong $REDIS_PORT)..."
+  info "Starting Redis (port $REDIS_PORT)..."
   redis-server --port "$REDIS_PORT" --requirepass "$REDIS_PASS" \
     --bind 127.0.0.1 --save '' --appendonly no --daemonize yes \
     --dir "$RUN/run" --pidfile "$RUN/run/redis.pid" \
     --logfile "$RUN/logs/redis.log"
   sleep 0.5
-  ok "Redis san sang"
+  ok "Redis is ready"
 }
 
-# ------------------------------------------------------------------ site demo
+# ------------------------------------------------------------------ demo site
 
 start_demo_upstream() {
   mkdir -p "$RUN/demo-site/san-pham"
   cat > "$RUN/demo-site/index.html" <<'HTML'
 <!doctype html><meta charset="utf-8"><title>Demo upstream</title>
 <body style="font-family:system-ui;background:#0b0e14;color:#c9d1d9;padding:48px">
-<h2>Trang web demo</h2>
-<p>Day la upstream gia dung de thu MosWAF. Neu ban thay trang nay nghia la
-request da di qua tuong lua va duoc cho phep.</p>
+<h2>Demo web site</h2>
+<p>This is a stand-in upstream used to exercise MosWAF. Seeing this page means the
+request passed through the firewall and was allowed.</p>
 </body>
 HTML
   cp "$RUN/demo-site/index.html" "$RUN/demo-site/san-pham/index.html"
 
   if port_busy "$DEMO_PORT"; then
-    ok "Upstream demo da chay o cong $DEMO_PORT"
+    ok "The demo upstream is already running on port $DEMO_PORT"
     return
   fi
-  info "Khoi dong upstream demo (cong $DEMO_PORT)..."
+  info "Starting the demo upstream (port $DEMO_PORT)..."
   (cd "$RUN/demo-site" && nohup python3 -m http.server "$DEMO_PORT" --bind 127.0.0.1 \
     >"$RUN/logs/demo.log" 2>&1 & echo $! > "$RUN/run/demo.pid")
   sleep 0.5
-  ok "Upstream demo san sang"
+  ok "The demo upstream is ready"
 }
 
 # ------------------------------------------------------------------ openresty
@@ -139,14 +140,14 @@ write_nginx_conf() {
   mkdir -p "$RUN/nginx/conf" "$RUN/nginx/logs" "$RUN/ssl" "$RUN/acme"
 
   if [[ ! -f "$RUN/ssl/default.crt" ]]; then
-    info "Sinh chung chi mac dinh cho data plane..."
+    info "Generating the default data plane certificate..."
     openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
       -keyout "$RUN/ssl/default.key" -out "$RUN/ssl/default.crt" \
       -subj "/C=VN/O=MosWAF/CN=moswaf.local" >/dev/null 2>&1
   fi
 
-  # Lay dung file cau hinh that cua data plane roi chi doi duong dan + cong,
-  # de thu nghiem o day sat voi ban chay trong container nhat co the.
+  # Start from the real data plane config and only rewrite paths and ports, so this
+  # setup stays as close as possible to what runs inside the container.
   sed \
     -e '/^user  *root;/d' \
     -e "s|__LOG_LEVEL__|notice|g" \
@@ -166,7 +167,7 @@ write_nginx_conf() {
     -e "s|/var/www/acme|$RUN/acme|g" \
     "$ROOT/dataplane/conf/default.conf" > "$RUN/nginx/conf/default.conf"
 
-  # mime.types nam khac cho tuy ban cai (brew de o etc/openresty)
+  # mime.types lives in different places depending on the install (brew uses etc/openresty)
   local mime
   for mime in "$BREW_PREFIX/etc/openresty/mime.types" \
               "$BREW_PREFIX/opt/openresty/nginx/conf/mime.types" \
@@ -176,15 +177,15 @@ write_nginx_conf() {
       return
     fi
   done
-  die "Khong tim thay mime.types cua OpenResty"
+  die "Could not find the OpenResty mime.types"
 }
 
 start_openresty() {
   write_nginx_conf
 
-  # Engine Lua doc ba bien nay qua os.getenv (khai bao `env` trong nginx.conf).
-  # Thieu chung thi worker se di tim host "redis" cua Docker va rot het
-  # su kien lan cau hinh.
+  # The Lua engine reads these through os.getenv (declared with `env` in nginx.conf).
+  # Without them a worker looks for Docker's "redis" host and drops both the events
+  # and the configuration.
   export MOSWAF_REDIS_HOST="127.0.0.1"
   export MOSWAF_REDIS_PORT="$REDIS_PORT"
   export MOSWAF_REDIS_PASSWORD="$REDIS_PASS"
@@ -192,35 +193,35 @@ start_openresty() {
   export MOSWAF_CONF_DIR="$ROOT/dataplane/conf"
 
   if [[ -f "$RUN/run/nginx.pid" ]] && kill -0 "$(cat "$RUN/run/nginx.pid")" 2>/dev/null; then
-    info "Nap lai cau hinh OpenResty..."
+    info "Reloading the OpenResty configuration..."
     "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -s reload
     return
   fi
-  info "Kiem tra cu phap nginx..."
+  info "Checking the nginx configuration..."
   "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -t
-  info "Khoi dong OpenResty (HTTP $HTTP_PORT, HTTPS $HTTPS_PORT)..."
+  info "Starting OpenResty (HTTP $HTTP_PORT, HTTPS $HTTPS_PORT)..."
   "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf
   sleep 0.5
-  ok "Data plane san sang"
+  ok "The data plane is ready"
 }
 
 # ------------------------------------------------------------------ control plane
 
 build_all() {
   if [[ ! -f "$ROOT/control/internal/web/dist/index.html" ]]; then
-    info "Build dashboard..."
+    info "Building the dashboard..."
     (cd "$ROOT/web" && npm install --silent --no-audit --no-fund && npm run build >/dev/null)
   fi
-  info "Build control plane..."
+  info "Building the control plane..."
   (cd "$ROOT/control" && go build -o "$RUN/moswafd" ./cmd/moswafd)
 }
 
 start_control() {
   if port_busy "$ADMIN_PORT"; then
-    ok "Control plane da chay o cong $ADMIN_PORT"
+    ok "The control plane is already running on port $ADMIN_PORT"
     return
   fi
-  info "Khoi dong control plane (dashboard cong $ADMIN_PORT)..."
+  info "Starting the control plane (dashboard on port $ADMIN_PORT)..."
   MOSWAF_LISTEN=":$ADMIN_PORT" \
   MOSWAF_DB_DSN="$DSN" \
   MOSWAF_REDIS_ADDR="127.0.0.1:$REDIS_PORT" \
@@ -240,15 +241,15 @@ start_control() {
 
   for _ in $(seq 1 40); do
     if curl -sk "https://127.0.0.1:$ADMIN_PORT/api/health" >/dev/null 2>&1; then
-      ok "Control plane san sang"
+      ok "The control plane is ready"
       return
     fi
     sleep 0.5
   done
-  die "Control plane khong len duoc, xem $RUN/logs/mgmt.log"
+  die "The control plane did not start; see $RUN/logs/mgmt.log"
 }
 
-# ------------------------------------------------------------------ site demo trong MosWAF
+# ------------------------------------------------------------------ demo site trong MosWAF
 
 seed_site() {
   local token
@@ -256,30 +257,30 @@ seed_site() {
     -H 'Content-Type: application/json' \
     -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
     | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
-  [[ -n "$token" ]] || die "Khong dang nhap duoc de tao site demo"
+  [[ -n "$token" ]] || die "Could not sign in to create the demo site"
 
   local count
   count="$(curl -sk "https://127.0.0.1:$ADMIN_PORT/api/sites" \
     -H "Authorization: Bearer $token" | grep -o '"id"' | wc -l | tr -d ' ')"
 
   if [[ "$count" == "0" ]]; then
-    info "Tao site demo tro ve upstream 127.0.0.1:$DEMO_PORT..."
+    info "Creating a demo site pointing at 127.0.0.1:$DEMO_PORT..."
     curl -sk "https://127.0.0.1:$ADMIN_PORT/api/sites" \
       -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-      -d "{\"name\":\"Site demo\",\"domains\":[\"localhost\",\"127.0.0.1\",\"demo.moswaf.local\"],
+      -d "{\"name\":\"Demo site\",\"domains\":[\"localhost\",\"127.0.0.1\",\"demo.moswaf.local\"],
            \"upstream_scheme\":\"http\",\"upstream_host\":\"127.0.0.1\",\"upstream_port\":$DEMO_PORT,
            \"mode\":\"protect\",\"challenge\":\"auto\"}" >/dev/null
     if [[ "$SKIP_PROXY" != "1" ]]; then
-      sleep 2   # cho control plane ghi xong file cau hinh site
+      sleep 2   # let the control plane finish writing the site config
       "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -s reload 2>/dev/null || true
     fi
-    ok "Da tao site demo"
+    ok "Demo site created"
   else
-    ok "Da co $count site, khong tao them"
+    ok "$count site(s) already exist, not adding another"
   fi
 }
 
-# ------------------------------------------------------------------ lenh
+# ------------------------------------------------------------------ commands
 
 cmd_start() {
   check_deps
@@ -293,23 +294,23 @@ cmd_start() {
   seed_site
   echo
   echo "${GRN}${BLD}============================================================${NC}"
-  echo "${GRN}${BLD}  MosWAF dang chay tren may nay${NC}"
+  echo "${GRN}${BLD}  MosWAF is running on this machine${NC}"
   echo "${GRN}${BLD}============================================================${NC}"
-  echo "  Dashboard      : ${BLD}https://127.0.0.1:${ADMIN_PORT}${NC} ${DIM}(TLS tu ky, bo qua canh bao)${NC}"
-  echo "  Tai khoan      : ${BLD}${ADMIN_USER} / ${ADMIN_PASS}${NC}"
+  echo "  Dashboard      : ${BLD}https://127.0.0.1:${ADMIN_PORT}${NC} ${DIM}(self-signed TLS, accept the warning)${NC}"
+  echo "  Credentials    : ${BLD}${ADMIN_USER} / ${ADMIN_PASS}${NC}"
   echo
   if [[ "$SKIP_PROXY" == "1" ]]; then
-    echo "  ${YLW}Data plane   : chua chay (thieu OpenResty) - chua loc duoc traffic${NC}"
-    echo "  Upstream goc   : http://127.0.0.1:${DEMO_PORT}/"
+    echo "  ${YLW}Data plane   : not running (OpenResty missing) - no traffic filtering${NC}"
+    echo "  Upstream       : http://127.0.0.1:${DEMO_PORT}/"
     echo
   else
-    echo "  Site qua WAF   : ${BLD}http://127.0.0.1:${HTTP_PORT}/${NC}"
-    echo "  Upstream goc   : http://127.0.0.1:${DEMO_PORT}/ ${DIM}(khong qua WAF, de doi chieu)${NC}"
+    echo "  Site via WAF   : ${BLD}http://127.0.0.1:${HTTP_PORT}/${NC}"
+    echo "  Upstream       : http://127.0.0.1:${DEMO_PORT}/ ${DIM}(bypasses the WAF, for comparison)${NC}"
     echo
-    echo "  Thu tan cong   : ./scripts/attack-sim.sh http://127.0.0.1:${HTTP_PORT}"
+    echo "  Attack test    : ./scripts/attack-sim.sh http://127.0.0.1:${HTTP_PORT}"
   fi
-  echo "  Log            : ./scripts/dev-local.sh logs"
-  echo "  Dung           : ./scripts/dev-local.sh stop"
+  echo "  Logs           : ./scripts/dev-local.sh logs"
+  echo "  Stop           : ./scripts/dev-local.sh stop"
   echo "${GRN}${BLD}============================================================${NC}"
   echo
 }
@@ -318,42 +319,42 @@ stop_pid() {
   local file="$1" name="$2"
   if [[ -f "$file" ]] && kill -0 "$(cat "$file")" 2>/dev/null; then
     kill "$(cat "$file")" 2>/dev/null || true
-    ok "Da dung $name"
+    ok "Stopped $name"
   fi
   rm -f "$file"
 }
 
 cmd_stop() {
   stop_pid "$RUN/run/mgmt.pid" "control plane"
-  stop_pid "$RUN/run/demo.pid" "upstream demo"
+  stop_pid "$RUN/run/demo.pid" "the demo upstream"
   if [[ -f "$RUN/run/nginx.pid" ]]; then
     "$OPENRESTY_BIN" -p "$RUN/nginx" -c conf/nginx.conf -s quit 2>/dev/null || \
       kill "$(cat "$RUN/run/nginx.pid")" 2>/dev/null || true
-    ok "Da dung OpenResty"
+    ok "Stopped OpenResty"
   fi
   if [[ -f "$RUN/run/redis.pid" ]]; then
     redis-cli -p "$REDIS_PORT" -a "$REDIS_PASS" --no-auth-warning shutdown nosave 2>/dev/null || true
-    ok "Da dung Redis"
+    ok "Stopped Redis"
   fi
   if [[ -d "$RUN/pgdata" ]]; then
-    "$PG_BIN/pg_ctl" -D "$RUN/pgdata" stop -m fast >/dev/null 2>&1 && ok "Da dung Postgres" || true
+    "$PG_BIN/pg_ctl" -D "$RUN/pgdata" stop -m fast >/dev/null 2>&1 && ok "Stopped Postgres" || true
   fi
 }
 
 cmd_status() {
-  printf "%-18s %s\n" "Postgres"      "$(port_busy "$PG_PORT"       && echo "${GRN}dang chay${NC} :$PG_PORT"       || echo "${RED}tat${NC}")"
-  printf "%-18s %s\n" "Redis"         "$(port_busy "$REDIS_PORT"    && echo "${GRN}dang chay${NC} :$REDIS_PORT"    || echo "${RED}tat${NC}")"
-  printf "%-18s %s\n" "Upstream demo" "$(port_busy "$DEMO_PORT"     && echo "${GRN}dang chay${NC} :$DEMO_PORT"     || echo "${RED}tat${NC}")"
-  printf "%-18s %s\n" "Data plane"    "$(port_busy "$HTTP_PORT"     && echo "${GRN}dang chay${NC} :$HTTP_PORT"     || echo "${RED}tat${NC}")"
-  printf "%-18s %s\n" "Control plane" "$(port_busy "$ADMIN_PORT"    && echo "${GRN}dang chay${NC} :$ADMIN_PORT"    || echo "${RED}tat${NC}")"
+  printf "%-18s %s\n" "Postgres"      "$(port_busy "$PG_PORT"       && echo "${GRN}running${NC} :$PG_PORT"       || echo "${RED}stopped${NC}")"
+  printf "%-18s %s\n" "Redis"         "$(port_busy "$REDIS_PORT"    && echo "${GRN}running${NC} :$REDIS_PORT"    || echo "${RED}stopped${NC}")"
+  printf "%-18s %s\n" "Demo upstream" "$(port_busy "$DEMO_PORT"     && echo "${GRN}running${NC} :$DEMO_PORT"     || echo "${RED}stopped${NC}")"
+  printf "%-18s %s\n" "Data plane"    "$(port_busy "$HTTP_PORT"     && echo "${GRN}running${NC} :$HTTP_PORT"     || echo "${RED}stopped${NC}")"
+  printf "%-18s %s\n" "Control plane" "$(port_busy "$ADMIN_PORT"    && echo "${GRN}running${NC} :$ADMIN_PORT"    || echo "${RED}stopped${NC}")"
 }
 
 cmd_logs() { tail -f "$RUN/logs/mgmt.log" "$RUN/logs/error.log" 2>/dev/null; }
 
 cmd_reset() {
   cmd_stop
-  read -r -p "Xoa sach .local/ (database, log, chung chi)? [y/N] " a
-  [[ "${a:-N}" =~ ^[Yy]$ ]] && rm -rf "$RUN" && ok "Da xoa $RUN"
+  read -r -p "Wipe .local/ entirely (database, logs, certificates)? [y/N] " a
+  [[ "${a:-N}" =~ ^[Yy]$ ]] && rm -rf "$RUN" && ok "Removed $RUN"
 }
 
 case "${1:-start}" in

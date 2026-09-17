@@ -2,68 +2,68 @@ COMPOSE := docker compose --env-file .env
 
 .DEFAULT_GOAL := help
 
-help: ## Liet ke lenh
+help: ## List the available commands
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.env: ## Tao .env tu mau
+.env: ## Create .env from the example
 	@test -f .env || cp .env.example .env
 
-up: .env ## Build + chay toan bo stack
+up: .env ## Build and start the whole stack
 	$(COMPOSE) up -d --build
 	$(COMPOSE) ps
 
-down: ## Dung stack (giu du lieu)
+down: ## Stop the stack, keeping all data
 	$(COMPOSE) down
 
-destroy: ## Dung stack + xoa volume (MAT DU LIEU)
+destroy: ## Stop the stack and delete its volumes (DESTROYS DATA)
 	$(COMPOSE) down -v
 
-restart: ## Restart stack
+restart: ## Restart the stack
 	$(COMPOSE) restart
 
-logs: ## Xem log tat ca service
+logs: ## Follow the logs of every service
 	$(COMPOSE) logs -f --tail=100
 
-logs-proxy: ## Log data plane
+logs-proxy: ## Follow the data plane logs
 	$(COMPOSE) logs -f --tail=200 proxy
 
-logs-mgmt: ## Log control plane
+logs-mgmt: ## Follow the control plane logs
 	$(COMPOSE) logs -f --tail=200 mgmt
 
-ps: ## Trang thai container
+ps: ## Show container status
 	$(COMPOSE) ps
 
-shell-proxy: ## Vao shell container OpenResty
+shell-proxy: ## Open a shell in the OpenResty container
 	$(COMPOSE) exec proxy sh
 
-nginx-test: ## Kiem tra cu phap nginx dang chay
+nginx-test: ## Validate the running nginx configuration
 	$(COMPOSE) exec proxy openresty -t
 
-reload: ## Reload data plane
+reload: ## Reload the data plane
 	$(COMPOSE) exec proxy openresty -s reload
 
-# ---------- phat trien local (khong can docker) ----------
+# ---------- local development (no docker needed) ----------
 
-web-dev: ## Chay Vue dev server (proxy API ve https://localhost:9443)
+web-dev: ## Run the Vue dev server (API proxied to https://localhost:9443)
 	cd web && npm install && npm run dev
 
-web-build: ## Build dashboard vao control/internal/web/dist
+web-build: ## Build the dashboard into control/internal/web/dist
 	cd web && npm install && npm run build
 
-go-build: ## Build binary control plane
+go-build: ## Build the control plane binary
 	cd control && go build -o bin/moswafd ./cmd/moswafd
 
-go-test: ## Test control plane
+go-test: ## Vet and test the control plane
 	cd control && go vet ./... && go test ./...
 
-fmt: ## Format Go
+fmt: ## Format the Go code
 	cd control && gofmt -w .
 
-lua-check: ## Kiem tra cu phap engine Lua (can luajit: brew install luajit)
-	@command -v luajit >/dev/null || { echo "Thieu luajit: brew install luajit"; exit 1; }
+lua-check: ## Check the Lua engine syntax (needs luajit: brew install luajit)
+	@command -v luajit >/dev/null || { echo "luajit is missing: brew install luajit"; exit 1; }
 	@for f in $$(find dataplane/lua -name '*.lua'); do \
 		luajit -b $$f /dev/null || exit 1; \
 	done
-	@echo "Cu phap Lua OK"
+	@echo "Lua syntax OK"
 
 .PHONY: help up down destroy restart logs logs-proxy logs-mgmt ps shell-proxy nginx-test reload web-dev web-build go-build go-test fmt lua-check

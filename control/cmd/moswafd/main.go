@@ -94,7 +94,7 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("cannot connect to redis: %w", err)
 	}
 
-	// --- day cau hinh xuong data plane ---
+	// --- publish the configuration to the data plane ---
 	pub := engine.NewPublisher(db, rdb, cfg)
 	if err := pub.Publish(ctx); err != nil {
 		// Not fatal: the admin can still reach the dashboard and fix things

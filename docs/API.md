@@ -1,19 +1,19 @@
 # MosWAF REST API
 
-Toan bo API nam duoi `https://<IP>:<MOSWAF_ADMIN_PORT>/api/`, mac dinh cong `9443`,
-chung chi tu ky (dung `curl -k` khi test).
+Everything lives under `https://<IP>:<MOSWAF_ADMIN_PORT>/api/`, port `9443` by
+default, behind a self-signed certificate (use `curl -k` when testing).
 
-Tru `POST /api/auth/login` va `GET /api/health`, moi endpoint deu can header:
+Except for `POST /api/auth/login` and `GET /api/health`, every endpoint needs:
 
 ```
 Authorization: Bearer <token>
 ```
 
-Loi luon tra ve dang `{"error": "mo ta bang tieng Viet"}` kem ma HTTP tuong ung.
+Errors always come back as `{"error": "description"}` with a matching HTTP status.
 
 ---
 
-## Xac thuc
+## Authentication
 
 ### `POST /api/auth/login`
 
@@ -31,33 +31,33 @@ curl -sk https://127.0.0.1:9443/api/auth/login \
 }
 ```
 
-Sai mat khau 5 lan tu mot IP se bi khoa 5 phut, 10 lan thi khoa 30 phut
-(dem trong bo nho cua tien trinh, reset khi restart).
+Five failed attempts from one IP lock it out for 5 minutes; ten lock it for 30.
+The counter lives in process memory and resets on restart.
 
 ### `GET /api/auth/me`
 
-Tra ve tai khoan dang dang nhap.
+Returns the signed-in account.
 
 ### `POST /api/auth/password`
 
 ```json
-{ "current": "mat-khau-cu", "new": "mat-khau-moi-it-nhat-8-ky-tu" }
+{ "current": "old-password", "new": "new-password-at-least-8-chars" }
 ```
 
 ---
 
-## Site
+## Sites
 
 ### `GET /api/sites`
 
-Mang cac site. Khoa rieng TLS **khong bao gio** duoc tra ve; truong `has_tls`
-cho biet site da co chung chi hay chua.
+An array of sites. The TLS private key is **never** returned; `has_tls` tells you
+whether a certificate is installed.
 
 ### `POST /api/sites`
 
 ```json
 {
-  "name": "Website ban hang",
+  "name": "Online store",
   "domains": ["example.com", "www.example.com"],
   "upstream_scheme": "http",
   "upstream_host": "10.0.0.5",
@@ -72,35 +72,36 @@ cho biet site da co chung chi hay chua.
 }
 ```
 
-| Truong | Gia tri | Y nghia |
-|--------|---------|---------|
-| `mode` | `protect` / `monitor` / `off` | chan that / chi ghi log / cho qua het |
-| `challenge` | `auto` / `always` / `off` | khi nao bat JS challenge |
-| `rate_rps` | so nguyen, `0` = theo muc toan cuc | request/giay/IP |
-| `rate_burst` | so nguyen, `0` = theo muc toan cuc | nguong trong cua so 10 giay |
+| Field | Values | Meaning |
+|-------|--------|---------|
+| `mode` | `protect` / `monitor` / `off` | block for real / log only / pass everything |
+| `challenge` | `auto` / `always` / `off` | when the JS challenge is used |
+| `rate_rps` | integer, `0` = use the global value | requests per second per IP |
+| `rate_burst` | integer, `0` = use the global value | threshold over a 10 second window |
 
-Moi thay doi site deu lam control plane sinh lai file nginx va day cau hinh
-sang Redis ngay; container proxy phat hien file doi va tu `reload`.
+Every site change makes the control plane rewrite the nginx files and publish the
+configuration to Redis; the proxy container notices the file change and reloads.
 
 ### `PUT /api/sites/{id}`
 
-Giong `POST`. De trong `tls_cert` va `tls_key` thi giu nguyen chung chi dang dung.
+Same body as `POST`. Leave `tls_cert` and `tls_key` empty to keep the certificate
+already in use.
 
 ### `DELETE /api/sites/{id}`
 
 ---
 
-## Luat phat hien
+## Detection rules
 
 ### `GET /api/rules`
 
-Bao gom ca luat goc (`builtin: true`) lan luat tu tao.
+Returns both the built-in rules (`builtin: true`) and custom ones.
 
 ### `POST /api/rules`
 
 ```json
 {
-  "name": "Chan truy cap /internal tu ben ngoai",
+  "name": "Block external access to /internal",
   "category": "custom",
   "target": "uri",
   "pattern": "(?i)^/internal/",
@@ -109,14 +110,14 @@ Bao gom ca luat goc (`builtin: true`) lan luat tu tao.
 }
 ```
 
-| Truong | Gia tri |
-|--------|---------|
+| Field | Values |
+|-------|--------|
 | `target` | `any`, `uri`, `args`, `body`, `ua`, `header`, `cookie` |
 | `action` | `deny`, `challenge`, `ban`, `log` |
 | `severity` | `low`, `medium`, `high`, `critical` |
 
-Ma luat tu tao luon duoc them tien to `custom-`. Bieu thuc duoc kiem tra cu phap
-truoc khi luu.
+Custom rule ids are always prefixed with `custom-`. Patterns are syntax checked
+before they are stored.
 
 ### `PUT /api/rules/{id}` · `POST /api/rules/{id}/toggle` · `DELETE /api/rules/{id}`
 
@@ -124,54 +125,74 @@ truoc khi luu.
 { "enabled": false }
 ```
 
-Luat goc chi duoc **tat**, khong xoa duoc - de lan nang cap sau con doi chieu.
+Built-in rules can only be **disabled**, never deleted, so a later upgrade still
+has something to compare against.
 
 ---
 
-## Danh sach IP
+## IP lists
 
 ### `GET /api/ips?kind=black`
 
-`kind` nhan `black` hoac `white`. Bo trong thi tra ve ca hai.
+`kind` is `black` or `white`. Omit it to get both.
 
 ### `POST /api/ips`
 
 ```json
-{ "cidr": "45.83.122.0/24", "kind": "black", "reason": "Flood tang 7", "minutes": 60 }
+{ "cidr": "45.83.122.0/24", "kind": "black", "reason": "Layer 7 flood", "minutes": 60 }
 ```
 
-`minutes: 0` nghia la vinh vien. Dia chi duoc chuan hoa truoc khi luu
-(`1.2.3.4/24` thanh `1.2.3.0/24`).
+`minutes: 0` means permanent. Addresses are normalised before storage
+(`1.2.3.4/24` becomes `1.2.3.0/24`).
 
 ### `DELETE /api/ips/{id}`
 
 ---
 
-## Nhat ky tan cong
+## Temporary bans
+
+These are created by the engine itself when an IP repeatedly crosses the rate
+limit. They live only in the data plane's shared memory, so the control plane
+proxies these two calls to it.
+
+### `GET /api/bans`
+
+```json
+{ "items": [ { "ip": "45.83.122.9", "reason": "rate_rps", "ttl": 463.8 } ], "total": 1 }
+```
+
+### `DELETE /api/bans/{ip}`
+
+Lifts the ban for one IP. Use `*` as the id to lift every temporary ban.
+
+---
+
+## Attack log
 
 ### `GET /api/events`
 
-| Tham so | Vi du | Y nghia |
-|---------|-------|---------|
-| `hours` | `24` | khoang thoi gian |
-| `site` | `s1a2b3c4d5` | loc theo site |
-| `ip` | `45.83.122.9` | loc theo IP |
+| Parameter | Example | Meaning |
+|-----------|---------|---------|
+| `hours` | `24` | time window |
+| `site` | `s1a2b3c4d5` | filter by site |
+| `ip` | `45.83.122.9` | filter by IP |
 | `action` | `deny` | `deny`, `challenge`, `monitor`, `log` |
-| `severity` | `high` | muc do |
-| `q` | `union` | tim trong URI, User-Agent, ten luat |
-| `limit` / `offset` | `50` / `0` | phan trang, toi da 500 |
+| `severity` | `high` | severity |
+| `q` | `union` | search URI, User-Agent and rule name |
+| `limit` / `offset` | `50` / `0` | paging, 500 maximum |
 
 ```json
 { "items": [ { "id": 1, "ts": "...", "ip": "...", "action": "deny", "rule_name": "SQLi - UNION SELECT" } ],
   "total": 1284, "limit": 50, "offset": 0 }
 ```
 
-Chi request bi chan / bi challenge / khop luat moi duoc ghi. Muon ghi ca luu luong
-binh thuong thi bat `log_allowed` trong cai dat (rat ton dung luong).
+Only requests that were blocked, challenged or matched a rule are recorded. To
+log normal traffic as well, enable `log_allowed` in the settings (it uses a lot
+of disk).
 
 ---
 
-## Thong ke
+## Statistics
 
 ### `GET /api/stats/overview?hours=24`
 
@@ -187,36 +208,39 @@ binh thuong thi bat `log_allowed` trong cai dat (rat ton dung luong).
 
 ### `GET /api/stats/timeseries?hours=6`
 
-Mang diem theo phut: `{ "minute": "...", "total": 0, "blocked": 0, "challenged": 0, "monitored": 0 }`.
+An array of per-minute points:
+`{ "minute": "...", "total": 0, "blocked": 0, "challenged": 0, "monitored": 0 }`.
 
-Phut khong co du lieu se khong xuat hien trong mang - phia hien thi tu dien 0.
+Minutes with no traffic are absent from the array; the dashboard fills them with
+zeros.
 
 ---
 
-## Cai dat
+## Settings
 
 ### `GET /api/settings` · `PUT /api/settings`
 
-Chi can gui nhung truong muon doi; phan con lai giu nguyen.
+Send only the fields you want to change; everything else is preserved.
 
-| Truong | Mac dinh | Y nghia |
-|--------|----------|---------|
-| `under_attack` | `false` | ep moi khach la giai JS challenge |
-| `default_mode` | `protect` | che do cho site khong dat rieng |
-| `global_rate_rps` | `60` | request/giay/IP |
-| `global_rate_burst` | `120` | nguong cua so 10 giay |
-| `ban_seconds` | `600` | thoi gian ban tam thoi |
-| `challenge_difficulty` | `16` | so bit 0 dau cua SHA-256, toi da 24 |
-| `challenge_ttl` | `1800` | cookie challenge song bao lau |
-| `block_status` | `403` | ma tra ve khi chan |
-| `real_ip_header` | `""` | `X-Forwarded-For`, `CF-Connecting-IP`... |
-| `trusted_proxies` | `[]` | chi tin header IP that tu cac dai nay |
-| `scan_body` | `true` | co quet noi dung POST khong |
-| `max_body_scan` | `65536` | so byte body toi da duoc quet |
-| `log_retain_days` | `7` | so ngay giu nhat ky |
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `under_attack` | `false` | force every unknown visitor through the JS challenge |
+| `default_mode` | `protect` | mode for sites that do not set their own |
+| `global_rate_rps` | `60` | requests per second per IP |
+| `global_rate_burst` | `120` | threshold over a 10 second window |
+| `ban_seconds` | `600` | temporary ban duration |
+| `challenge_difficulty` | `16` | leading zero bits of SHA-256, capped at 24 |
+| `challenge_ttl` | `1800` | challenge cookie lifetime |
+| `block_status` | `403` | status code returned when blocking |
+| `real_ip_header` | `""` | `X-Forwarded-For`, `CF-Connecting-IP`, ... |
+| `trusted_proxies` | `[]` | only trust the real-IP header from these ranges |
+| `scan_body` | `true` | scan POST bodies |
+| `max_body_scan` | `65536` | maximum body bytes scanned |
+| `log_retain_days` | `7` | how long the attack log is kept |
 
-> Chi bat `real_ip_header` khi that su co CDN/proxy dung truoc MosWAF va da khai
-> `trusted_proxies`. Neu khong, ke tan cong chi can tu them header la gia mao duoc IP.
+> Only set `real_ip_header` when a CDN or proxy genuinely sits in front of MosWAF
+> and `trusted_proxies` is filled in. Otherwise an attacker just sets the header
+> themselves and spoofs any IP they like.
 
 ### `POST /api/settings/under-attack`
 
@@ -224,15 +248,15 @@ Chi can gui nhung truong muon doi; phan con lai giu nguyen.
 { "enabled": true }
 ```
 
-Tach rieng de bam mot nut la xong khi dang bi tan cong.
+Separated out so it is a single button during an attack.
 
 ---
 
-## He thong
+## System
 
 ### `GET /api/health`
 
-Khong can dang nhap. `200` khi Postgres con song.
+No authentication. Returns `200` while Postgres is reachable.
 
 ### `GET /api/system/status`
 
@@ -243,19 +267,22 @@ Khong can dang nhap. `200` khi Postgres con song.
 
 ### `POST /api/system/publish`
 
-Day lai toan bo cau hinh xuong data plane khi nghi bi lech.
+Republish the whole configuration to the data plane if you suspect it has drifted.
 
 ---
 
-## Endpoint noi bo cua data plane
+## Data plane internal endpoints
 
-Chay tren cong `8081`, chi mo trong mang Docker (`allow` cac dai IP noi bo).
+These listen on port `8081` and are only reachable from inside the Docker network
+(the server block has an `allow` list of private ranges).
 
-| Duong dan | Cong dung |
-|-----------|-----------|
-| `GET /healthz` | trang thai + phien ban cau hinh dang chay |
-| `GET /metrics` | dinh dang Prometheus |
-| `GET /sync` | ep nap lai cau hinh ngay, khong doi chu ky 3 giay |
+| Path | Purpose |
+|------|---------|
+| `GET /healthz` | status and the configuration version in use |
+| `GET /metrics` | Prometheus format |
+| `GET /sync` | load the configuration now, without waiting for the 3s poll |
+| `GET /bans` | list temporary bans |
+| `GET /unban?ip=` | lift one ban, or all of them with `ip=*` |
 
 ```
 moswaf_config_version 1737000000000

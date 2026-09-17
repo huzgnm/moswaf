@@ -2,7 +2,7 @@ name: moswaf
 
 services:
   # ------------------------------------------------------------------
-  # Postgres - nguon su that cua config, rule va attack log
+  # Postgres - source of truth for the config, the rules and the attack log
   # ------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
@@ -23,7 +23,7 @@ services:
     networks: [moswaf]
 
   # ------------------------------------------------------------------
-  # Redis - bus cau hinh (control -> proxy) va hang doi su kien (proxy -> control)
+  # Redis - config bus (control -> proxy) and event queue (proxy -> control)
   # ------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -44,7 +44,7 @@ services:
     networks: [moswaf]
 
   # ------------------------------------------------------------------
-  # Control plane - REST API + dashboard admin (CONG RIENG)
+  # Control plane - REST API and admin dashboard (ON ITS OWN PORT)
   # ------------------------------------------------------------------
   mgmt:
     build:
@@ -73,12 +73,12 @@ services:
       - moswaf-certs:/etc/moswaf/certs
       - ${MOSWAF_DATA_DIR:-./data}/admin-tls:/etc/moswaf/admin-tls
     ports:
-      # Dashboard admin nam o cong rieng, tach hoan toan khoi 80/443
+      # The admin dashboard sits on its own port, fully separate from 80/443
       - "${MOSWAF_ADMIN_BIND:-0.0.0.0}:${MOSWAF_ADMIN_PORT:-9443}:9443"
     networks: [moswaf]
 
   # ------------------------------------------------------------------
-  # Data plane - OpenResty: nhan toan bo traffic 80/443, loc L7
+  # Data plane - OpenResty: takes all traffic on 80/443 and filters it at layer 7
   # ------------------------------------------------------------------
   proxy:
     build:
@@ -104,7 +104,7 @@ services:
       - "${MOSWAF_HTTP_PORT:-80}:80"
       - "${MOSWAF_HTTPS_PORT:-443}:443"
     extra_hosts:
-      # Cho phep tro upstream ve chinh host dang chay MosWAF
+      # Lets a site point its upstream at the host running MosWAF
       - "host.docker.internal:host-gateway"
     ulimits:
       nofile: {soft: 65535, hard: 65535}
