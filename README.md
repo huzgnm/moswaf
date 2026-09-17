@@ -17,7 +17,7 @@ co bang dieu khien admin chay tren **cong rieng** tach khoi luu luong that.
 Tren may chu Linux (Ubuntu/Debian/CentOS/Alma...), chay bang root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mosvpn/moswaf/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | bash
 ```
 
 Hoac khi da co san source:
@@ -125,6 +125,21 @@ moi khach la deu phai giai challenge truoc khi vao site.
 
 Nen bat che do **Chi theo doi** vai ngay dau de xem co luat nao chan nham
 luu luong that khong, roi moi chuyen sang **Bao ve**.
+
+## Kiem tra WAF co that su chan khong
+
+Sau khi them site, ban mot loat request kieu tan cong vao chinh site cua minh
+roi doi chieu ket qua:
+
+```bash
+./scripts/attack-sim.sh https://example.com
+./scripts/attack-sim.sh https://example.com --flood 150   # thu ca rate limit
+```
+
+Script thu SQLi, XSS, path traversal, RCE, do file bi mat, SSRF metadata va
+User-Agent cua cong cu quet, dong thoi kiem tra hai request binh thuong **khong**
+bi chan nham. Nhin dashboard thay "da chan 0" thi khong biet la chua ai tan cong
+hay la minh cau hinh sai - chay script nay se ro ngay.
 
 ## Lenh thuong dung
 

@@ -2,7 +2,7 @@
 #
 #  MosWAF - trinh cai dat one-command
 #
-#    curl -fsSL https://raw.githubusercontent.com/<org>/moswaf/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | bash
 #  hoac chay truc tiep trong thu muc source:
 #    sudo bash install.sh
 #
@@ -18,7 +18,7 @@
 #
 set -euo pipefail
 
-MOSWAF_REPO="${MOSWAF_REPO:-https://github.com/mosvpn/moswaf.git}"
+MOSWAF_REPO="${MOSWAF_REPO:-https://github.com/huzgnm/moswaf.git}"
 MOSWAF_BRANCH="${MOSWAF_BRANCH:-main}"
 INSTALL_DIR="${MOSWAF_DIR:-/opt/moswaf}"
 
