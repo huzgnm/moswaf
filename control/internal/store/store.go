@@ -1,0 +1,141 @@
+// Package store lo phan luu tru: Postgres la nguon su that cua cau hinh,
+// rule va attack log.
+package store
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+func Open(ctx context.Context, dsn string) (*Store, error) {
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("dsn khong hop le: %w", err)
+	}
+	cfg.MaxConns = 10
+	cfg.MaxConnLifetime = time.Hour
+
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("khong tao duoc pool: %w", err)
+	}
+
+	// Postgres co the chua san sang ngay khi container vua len
+	var lastErr error
+	for i := 0; i < 30; i++ {
+		if lastErr = pool.Ping(ctx); lastErr == nil {
+			return &Store{pool: pool}, nil
+		}
+		time.Sleep(time.Second)
+	}
+	pool.Close()
+	return nil, fmt.Errorf("khong ket noi duoc postgres: %w", lastErr)
+}
+
+func (s *Store) Close() { s.pool.Close() }
+
+func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
+
+const schema = `
+CREATE TABLE IF NOT EXISTS users (
+    id            BIGSERIAL PRIMARY KEY,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS sites (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    domains         JSONB NOT NULL DEFAULT '[]',
+    upstream_scheme TEXT NOT NULL DEFAULT 'http',
+    upstream_host   TEXT NOT NULL,
+    upstream_port   INT  NOT NULL DEFAULT 80,
+    mode            TEXT NOT NULL DEFAULT 'protect',
+    challenge       TEXT NOT NULL DEFAULT 'auto',
+    rate_rps        INT  NOT NULL DEFAULT 0,
+    rate_burst      INT  NOT NULL DEFAULT 0,
+    tls_cert        TEXT NOT NULL DEFAULT '',
+    tls_key         TEXT NOT NULL DEFAULT '',
+    force_https     BOOLEAN NOT NULL DEFAULT false,
+    enabled         BOOLEAN NOT NULL DEFAULT true,
+    rules_off       JSONB NOT NULL DEFAULT '[]',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS rules (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    category   TEXT NOT NULL DEFAULT 'custom',
+    target     TEXT NOT NULL DEFAULT 'any',
+    pattern    TEXT NOT NULL,
+    action     TEXT NOT NULL DEFAULT 'deny',
+    severity   TEXT NOT NULL DEFAULT 'medium',
+    enabled    BOOLEAN NOT NULL DEFAULT true,
+    builtin    BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ip_entries (
+    id         BIGSERIAL PRIMARY KEY,
+    cidr       TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    reason     TEXT NOT NULL DEFAULT '',
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (cidr, kind)
+);
+
+CREATE TABLE IF NOT EXISTS events (
+    id        BIGSERIAL PRIMARY KEY,
+    ts        TIMESTAMPTZ NOT NULL,
+    ray       TEXT NOT NULL DEFAULT '',
+    site      TEXT NOT NULL DEFAULT '',
+    ip        TEXT NOT NULL DEFAULT '',
+    method    TEXT NOT NULL DEFAULT '',
+    host      TEXT NOT NULL DEFAULT '',
+    uri       TEXT NOT NULL DEFAULT '',
+    ua        TEXT NOT NULL DEFAULT '',
+    referer   TEXT NOT NULL DEFAULT '',
+    action    TEXT NOT NULL DEFAULT '',
+    reason    TEXT NOT NULL DEFAULT '',
+    rule_id   TEXT NOT NULL DEFAULT '',
+    rule_name TEXT NOT NULL DEFAULT '',
+    severity  TEXT NOT NULL DEFAULT '',
+    status    INT  NOT NULL DEFAULT 0,
+    rt        DOUBLE PRECISION NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS events_ts_idx     ON events (ts DESC);
+CREATE INDEX IF NOT EXISTS events_ip_idx     ON events (ip);
+CREATE INDEX IF NOT EXISTS events_site_idx   ON events (site);
+CREATE INDEX IF NOT EXISTS events_action_idx ON events (action);
+
+CREATE TABLE IF NOT EXISTS stats_minute (
+    minute     TIMESTAMPTZ PRIMARY KEY,
+    total      BIGINT NOT NULL DEFAULT 0,
+    blocked    BIGINT NOT NULL DEFAULT 0,
+    challenged BIGINT NOT NULL DEFAULT 0,
+    monitored  BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value JSONB NOT NULL
+);
+`
+
+func (s *Store) Migrate(ctx context.Context) error {
+	if _, err := s.pool.Exec(ctx, schema); err != nil {
+		return fmt.Errorf("tao schema that bai: %w", err)
+	}
+	return nil
+}

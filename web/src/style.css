@@ -1,0 +1,203 @@
+:root {
+  /* be mat */
+  --bg:        #0b0e14;
+  --surface-1: #11161f;   /* mat nen cua the va bieu do */
+  --surface-2: #161c27;
+  --line:      #1f2733;
+  --line-2:    #2b3544;
+
+  /* chu */
+  --text-primary:   #e6edf3;
+  --text-secondary: #9aa6b2;
+  --text-muted:     #6b7683;
+
+  /* chuoi du lieu tren bieu do - thu tu co dinh, khong xoay vong */
+  --series-1: #3987e5;   /* tong request */
+  --series-2: #d95926;   /* bi chan */
+  --series-3: #199e70;   /* challenge */
+
+  /* trang thai */
+  --good:     #199e70;
+  --warning:  #c98500;
+  --serious:  #d95926;
+  --critical: #e5484d;
+
+  --radius: 10px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  font: 14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--series-1); text-decoration: none; }
+
+h1, h2, h3 { margin: 0; font-weight: 600; }
+
+/* ---------------------------------------------------------- bo cuc */
+
+.layout { display: flex; min-height: 100vh; }
+
+.sidebar {
+  width: 224px;
+  flex: 0 0 224px;
+  background: var(--surface-1);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 18px 12px;
+  gap: 4px;
+}
+
+.brand {
+  font-size: 15px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--text-secondary); padding: 6px 10px 18px;
+}
+.brand b { color: var(--series-1); }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 11px; border-radius: 8px;
+  color: var(--text-secondary); font-size: 13.5px; cursor: pointer;
+  border: 1px solid transparent;
+}
+.nav-item:hover { background: var(--surface-2); color: var(--text-primary); }
+.nav-item.active { background: var(--surface-2); color: var(--text-primary); border-color: var(--line-2); }
+.nav-item .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .6; }
+
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.topbar {
+  height: 58px; flex: 0 0 58px;
+  border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 22px; background: var(--surface-1);
+}
+
+.content { padding: 22px; flex: 1; overflow: auto; }
+
+/* ---------------------------------------------------------- the */
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.card + .card { margin-top: 16px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 12px; }
+.card-title { font-size: 14px; font-weight: 600; }
+.card-sub { font-size: 12px; color: var(--text-muted); }
+
+.grid { display: grid; gap: 16px; }
+.grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px)  { .grid-4, .grid-2 { grid-template-columns: 1fr; } }
+
+/* ---------------------------------------------------------- dieu khien */
+
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
+  border: 1px solid var(--line-2); background: var(--surface-2);
+  color: var(--text-primary); cursor: pointer;
+}
+.btn:hover { border-color: #3d4a5c; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--series-1); border-color: var(--series-1); color: #fff; }
+.btn-primary:hover { filter: brightness(1.08); }
+.btn-danger { background: transparent; border-color: #5a2a2a; color: #f0a0a0; }
+.btn-danger:hover { background: #2a1616; }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+
+.input, .select, textarea.input {
+  width: 100%; padding: 8px 11px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--line-2);
+  color: var(--text-primary); font-size: 13px; font-family: inherit;
+}
+.input:focus, .select:focus { outline: none; border-color: var(--series-1); }
+textarea.input { min-height: 90px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.field { margin-bottom: 14px; }
+.label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.hint { font-size: 11.5px; color: var(--text-muted); margin-top: 5px; }
+
+.switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; }
+.switch input { display: none; }
+.switch .track {
+  width: 38px; height: 21px; border-radius: 99px; background: var(--line-2);
+  position: relative; transition: background .15s;
+}
+.switch .track::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 17px; height: 17px; border-radius: 50%; background: #fff; transition: transform .15s;
+}
+.switch input:checked + .track { background: var(--series-1); }
+.switch input:checked + .track::after { transform: translateX(17px); }
+.switch.danger input:checked + .track { background: var(--critical); }
+
+/* ---------------------------------------------------------- bang */
+
+.table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.table th {
+  text-align: left; font-weight: 500; font-size: 11.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-muted);
+  padding: 0 12px 10px; border-bottom: 1px solid var(--line);
+}
+.table td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.table tr:last-child td { border-bottom: none; }
+.table tr:hover td { background: var(--surface-2); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+.truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 8px; border-radius: 99px; font-size: 11.5px; font-weight: 500;
+  border: 1px solid var(--line-2); color: var(--text-secondary);
+}
+.tag .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.tag-deny     { color: #f0a58a; border-color: #5a3324; }
+.tag-challenge{ color: #7fd3b0; border-color: #1d5240; }
+.tag-monitor  { color: #e0b86a; border-color: #5a4520; }
+.tag-log      { color: var(--text-secondary); }
+.tag-ok       { color: #7fd3b0; border-color: #1d5240; }
+.tag-off      { color: var(--text-muted); }
+
+.empty { padding: 42px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+/* ---------------------------------------------------------- lop phu */
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(4, 6, 10, .72);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 48px 16px; z-index: 50; overflow: auto;
+}
+.modal {
+  width: min(96vw, 620px); background: var(--surface-1);
+  border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow);
+}
+.modal-head { padding: 16px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+.modal-body { padding: 20px; }
+.modal-foot { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 10px; }
+
+.toast {
+  position: fixed; right: 20px; bottom: 20px; z-index: 80;
+  background: var(--surface-2); border: 1px solid var(--line-2);
+  border-left: 3px solid var(--series-1);
+  padding: 12px 16px; border-radius: 8px; box-shadow: var(--shadow);
+  font-size: 13px; max-width: 420px;
+}
+.toast.error { border-left-color: var(--critical); }
+
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.row > .grow { flex: 1; min-width: 160px; }
+.spacer { flex: 1; }

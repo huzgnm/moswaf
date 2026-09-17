@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  control-plane:
+    name: Control plane (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: control/go.sum
+      - name: go vet
+        working-directory: control
+        run: go vet ./...
+      - name: go build
+        working-directory: control
+        run: go build ./...
+      - name: go test
+        working-directory: control
+        run: go test ./...
+
+  dashboard:
+    name: Dashboard (Vue)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Cai dependency
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        working-directory: web
+        run: npm run build
+
+  data-plane:
+    name: Data plane (Lua + nginx)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cai luajit
+        run: sudo apt-get update && sudo apt-get install -y luajit
+      - name: Kiem tra cu phap Lua
+        run: |
+          fail=0
+          for f in $(find dataplane/lua -name '*.lua'); do
+            if ! luajit -b "$f" /dev/null; then
+              echo "::error file=$f::loi cu phap Lua"
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: Kiem tra docker-compose
+        run: docker compose config --quiet
+        env:
+          MOSWAF_VERSION: '0.1.0'
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+          REDIS_PASSWORD: ci
+          MOSWAF_JWT_SECRET: ci
+          MOSWAF_CHALLENGE_SECRET: ci
+          MOSWAF_ADMIN_PASSWORD: ci

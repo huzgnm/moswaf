@@ -1,0 +1,4 @@
+# Thu muc nay chua ban build cua web/ (Vite ghi ra day de Go nhung vao binary).
+# Khong commit file build; chi giu file nay de `go build` luon co thu muc de embed.
+*
+!.gitignore

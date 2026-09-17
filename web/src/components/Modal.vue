@@ -1,0 +1,24 @@
+<script setup>
+defineProps({ title: String, busy: Boolean, okLabel: { type: String, default: 'Luu' } })
+const emit = defineEmits(['close', 'submit'])
+</script>
+
+<template>
+  <div class="modal-backdrop" @click.self="emit('close')">
+    <div class="modal">
+      <div class="modal-head">
+        <div class="card-title">{{ title }}</div>
+        <button class="btn btn-sm" @click="emit('close')">Dong</button>
+      </div>
+      <div class="modal-body">
+        <slot />
+      </div>
+      <div class="modal-foot">
+        <button class="btn" @click="emit('close')">Huy</button>
+        <button class="btn btn-primary" :disabled="busy" @click="emit('submit')">
+          {{ busy ? 'Dang luu...' : okLabel }}
+        </button>
+      </div>
+    </div>
+  </div>
+</template>

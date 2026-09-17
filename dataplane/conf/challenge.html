@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>Dang kiem tra trinh duyet...</title>
+<style>
+  :root{--bg:#0b0e14;--card:#11161f;--line:#1f2733;--fg:#e6edf3;--mut:#8b949e;--acc:#3b82f6}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+       background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  .card{width:min(92vw,440px);background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:32px 28px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+  .logo{font-size:13px;letter-spacing:.18em;color:var(--mut);text-transform:uppercase;margin-bottom:18px}
+  .logo b{color:var(--acc)}
+  h1{font-size:19px;margin:0 0 10px;font-weight:600}
+  p{margin:0;color:var(--mut);font-size:13.5px}
+  .bar{height:5px;background:#0d1117;border-radius:99px;overflow:hidden;margin:24px 0 12px;border:1px solid var(--line)}
+  .fill{height:100%;width:6%;background:linear-gradient(90deg,var(--acc),#60a5fa);border-radius:99px;transition:width .2s}
+  .meta{font-size:12px;color:#5c6672;font-variant-numeric:tabular-nums}
+  .err{color:#f87171;font-size:13px;margin-top:14px;display:none}
+  footer{margin-top:22px;font-size:11.5px;color:#4b5563}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">Mos<b>WAF</b></div>
+  <h1>Dang kiem tra trinh duyet cua ban</h1>
+  <p>Buoc nay dien ra tu dong va chi mat vai giay. Vui long khong dong tab.</p>
+  <div class="bar"><div class="fill" id="fill"></div></div>
+  <div class="meta" id="meta">Dang khoi tao...</div>
+  <div class="err" id="err">Trinh duyet cua ban khong chay duoc JavaScript nen khong the tiep tuc.</div>
+  <footer>Duoc bao ve boi MosWAF</footer>
+</div>
+
+<noscript>
+  <style>.bar,.meta{display:none}.err{display:block!important}</style>
+</noscript>
+
+<script>
+(function () {
+  var SALT = "{{SALT}}", SIG = "{{SIG}}", BITS = parseInt("{{BITS}}", 10) || 16,
+      RET = "{{RET}}", VERIFY = "{{VERIFY}}";
+
+  var K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+
+  function rr(x, n) { return (x >>> n) | (x << (32 - n)); }
+
+  // SHA-256 tren chuoi ASCII, tra ve mang 8 word 32 bit
+  function sha256(str) {
+    var i, j, bytes = [];
+    for (i = 0; i < str.length; i++) bytes.push(str.charCodeAt(i) & 0xff);
+    var bitLen = bytes.length * 8;
+    bytes.push(0x80);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    bytes.push(0, 0, 0, 0,
+      (bitLen >>> 24) & 255, (bitLen >>> 16) & 255, (bitLen >>> 8) & 255, bitLen & 255);
+
+    var H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+    var w = new Array(64);
+
+    for (i = 0; i < bytes.length; i += 64) {
+      for (j = 0; j < 16; j++) {
+        w[j] = (bytes[i + 4*j] << 24) | (bytes[i + 4*j + 1] << 16) |
+               (bytes[i + 4*j + 2] << 8) | bytes[i + 4*j + 3];
+      }
+      for (j = 16; j < 64; j++) {
+        var x = w[j-15], y = w[j-2];
+        var s0 = rr(x,7) ^ rr(x,18) ^ (x >>> 3);
+        var s1 = rr(y,17) ^ rr(y,19) ^ (y >>> 10);
+        w[j] = (w[j-16] + s0 + w[j-7] + s1) | 0;
+      }
+      var a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+      for (j = 0; j < 64; j++) {
+        var S1 = rr(e,6) ^ rr(e,11) ^ rr(e,25);
+        var ch = (e & f) ^ ((~e) & g);
+        var t1 = (h + S1 + ch + K[j] + w[j]) | 0;
+        var S0 = rr(a,2) ^ rr(a,13) ^ rr(a,22);
+        var mj = (a & b) ^ (a & c) ^ (b & c);
+        var t2 = (S0 + mj) | 0;
+        h=g; g=f; f=e; e=(d + t1)|0; d=c; c=b; b=a; a=(t1 + t2)|0;
+      }
+      H = [(H[0]+a)|0,(H[1]+b)|0,(H[2]+c)|0,(H[3]+d)|0,(H[4]+e)|0,(H[5]+f)|0,(H[6]+g)|0,(H[7]+h)|0];
+    }
+    return H;
+  }
+
+  function leadingZeroBits(H) {
+    var n = 0;
+    for (var i = 0; i < 8; i++) {
+      var v = H[i] >>> 0;
+      if (v === 0) { n += 32; continue; }
+      var c = 0, m = 0x80000000;
+      while (m && (v & m) === 0) { c++; m >>>= 1; }
+      return n + c;
+    }
+    return n;
+  }
+
+  var fill = document.getElementById("fill"),
+      meta = document.getElementById("meta"),
+      nonce = 0, started = Date.now(), CHUNK = 4000,
+      expected = Math.pow(2, BITS);
+
+  function done(n) {
+    meta.textContent = "Xac thuc thanh cong, dang chuyen huong...";
+    fill.style.width = "100%";
+    var url = VERIFY + "?s=" + encodeURIComponent(SALT) +
+              "&g=" + encodeURIComponent(SIG) +
+              "&n=" + encodeURIComponent(String(n)) +
+              "&r=" + encodeURIComponent(RET);
+    setTimeout(function () { window.location.replace(url); }, 120);
+  }
+
+  function work() {
+    var end = nonce + CHUNK;
+    for (; nonce < end; nonce++) {
+      if (leadingZeroBits(sha256(SALT + nonce)) >= BITS) { done(nonce); return; }
+    }
+    var pct = Math.min(96, Math.round((nonce / expected) * 100));
+    fill.style.width = Math.max(6, pct) + "%";
+    meta.textContent = "Dang xu ly " + nonce.toLocaleString("vi-VN") + " phep tinh - " +
+                       ((Date.now() - started) / 1000).toFixed(1) + "s";
+    setTimeout(work, 0);
+  }
+
+  setTimeout(work, 30);
+})();
+</script>
+</body>
+</html>
