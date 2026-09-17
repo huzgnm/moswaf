@@ -195,3 +195,7 @@ Nhung phan **chua** co, can biet truoc khi dua ra san xuat:
   chu ky + tan suat.
 - Chua co xac thuc hai lop cho dashboard.
 - Chua co canh bao qua Telegram/email khi bi tan cong.
+
+## Tai lieu
+
+- [Tai lieu REST API](docs/API.md) - toan bo endpoint cua control plane, kem vi du curl.
