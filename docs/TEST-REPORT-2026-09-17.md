@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `17e68f2` (PRs #4, #5, #7, #8, #10)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PRs #4, #5, #7, #8, #10, #12
 
 ---
 
@@ -20,12 +20,11 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across three rounds, **18 findings were raised and 17 fixed and re-verified** (PRs #4,
-#5, #7, #8, #10). Every High/Critical finding is closed. The two rate-limit findings
-(#7 fail-open, #8 boundary doubling) were first held back as possible trade-offs;
-deterministic tests settled them — one plain bug, one small trade-off — and both are
-now fixed. The single item still open is **#12**, the source-IP-only guard on the
-internal API, being handled by the peer.
+Across four rounds, **18 findings were raised and all 18 fixed and re-verified**
+(PRs #4, #5, #7, #8, #10, #12). Round 4 pushed on deeper evasion — multipart uploads,
+WebSocket upgrades, unusual methods, HTTP/2 (confirmed end-to-end) and request
+smuggling — and raised **no new findings**: the WAF holds up on all of them. Every
+finding is closed.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -41,7 +40,7 @@ internal API, being handled by the peer.
 | 9 | Medium | Rules validated with RE2, run with PCRE; PCRE errors were swallowed | `TestValidateRuleAcceptsPCRELookahead` | **Fixed ✓** |
 | 10 | Medium | `/__moswaf/verify` runs before every ban / rate-limit check | source (access.lua ordering) | **Fixed ✓ (PR #8)** |
 | 11 | Medium | `loginGuard` leaked memory forever | `TestLoginGuardReleasesInertEntries` | **Fixed ✓** |
-| 12 | Medium | `/unban?ip=*` on port 8081 is unauthenticated, allows all of RFC1918 | — | Open |
+| 12 | Medium | `/unban?ip=*` on port 8081 is unauthenticated, allows all of RFC1918 | black-box token checks | **Fixed ✓ (PR #12)** |
 | 13 | Low | Open redirect via `/\` in the verify `r` parameter | `is_local_path` checks (Lua) | **Fixed ✓ (PR #8)** |
 | 14 | Low | Changing the password does not revoke existing JWTs | `auth_test.go` | **Fixed ✓ (PR #8)** |
 | 15 | Medium | URL-encoding ≥ 3 layers bypasses the engine (`expand` decodes only 2) | `verify.sh` triple-encode row | **Fixed ✓ (PR #5)** |
@@ -240,14 +239,73 @@ flood cannot. The test asserts the degraded path reports `DICT_FULL` specificall
 a future "fix" that returned a normal rate reason (and so could trigger a ban on a
 bogus count) would fail the test.
 
-### Still open after round 3
+### The one item left open after round 3
 
-- **#12** the port-8081 internal API (`/sync`, `/unban?ip=*`, `/bans`) is guarded by
-  source IP only, and the allow list covers all of RFC1918; add a shared secret
-  (`MOSWAF_INTERNAL_TOKEN`) checked before the handler runs, keeping the `allow` list
-  as a second layer. Being handled by the peer.
+- **#12** the port-8081 internal API (`/sync`, `/unban?ip=*`, `/bans`) was guarded by
+  source IP only, and the allow list covered all of RFC1918. Closed in round 4 — see
+  below.
 
-Everything else raised across the three rounds is fixed and re-verified.
+---
+
+## Round 4 — deep evasion, and the last finding closed
+
+### #12 — internal API now requires a shared token — FIXED (PR #12)
+
+`/sync`, `/bans` and `/unban` now require an `X-MosWAF-Token` header matching
+`MOSWAF_INTERNAL_TOKEN`, compared with `util.const_eq` (constant time); the IP allow
+list stays as a second layer. `/healthz` and `/metrics` stay open, since the
+container healthcheck and metrics scrapers depend on them and neither returns anything
+sensitive. Verified against the running stack:
+
+```
+/unban  no token    403      /unban  correct token   200
+/unban  wrong token 403      /bans   correct token   200
+/bans   no token    403      /sync   correct token   200
+/sync   no token    403      /healthz 200   /metrics 200
+```
+
+Upgrade-safe: if `MOSWAF_INTERNAL_TOKEN` is unset (an install from before the token
+existed), the API keeps working on the allow list alone and logs a warning on every
+call rather than breaking `unban`. The variable is present in `.env.example` and for
+both the `mgmt` and `proxy` services in `docker-compose.yml`. One caveat worth noting:
+an install that never runs `install.sh --repair` stays at the old allow-list-only
+protection indefinitely, surfaced only by that log line — an accepted trade-off to
+avoid breaking `unban` on upgrade.
+
+### Deep evasion — no new findings
+
+Round 4 pushed on the vectors a signature WAF most often misses. All are curl-checked
+in `scripts/attack-sim.sh` (the multipart/upgrade/method cases) or by the raw-socket
+probe kept alongside the report; none got through.
+
+- **Multipart uploads.** A payload in a form field, a filename, or a file part is
+  scanned as raw body and blocked (`403`). A part carrying `Content-Transfer-Encoding:
+  base64` does pass the engine, but this is **not** a practical bypass: RFC 7578
+  deprecates that header in `multipart/form-data`, so a compliant upstream never
+  decodes it and the payload never materialises. Tested, not a concern.
+- **WebSocket upgrade.** An attack in the URL or headers of an `Upgrade: websocket`
+  request is still scanned and blocked — declaring an upgrade buys no exemption.
+  Frames *after* the upgrade are outside any layer-7 HTTP WAF by nature, which is
+  expected, not a defect.
+- **Unusual methods.** A SQLi body on `PATCH` (and other body methods) is scanned;
+  duplicated `Content-Type` headers do not confuse the engine.
+- **Request smuggling.** Raw-socket probes for `CL.TE`, an obfuscated
+  `Transfer-Encoding :` (space before the colon), and duplicate `Transfer-Encoding`
+  headers are each rejected by the frontend with a single `400 Bad Request` — no
+  second response, so no desync. A correctly framed chunked body is still scanned
+  (`403`). OpenResty/nginx refuses the ambiguous framing before any upstream can
+  disagree, so no strict upstream was needed to confirm it.
+- **HTTP/2.** Rule scanning runs in `access_by_lua`, which nginx executes after it has
+  normalised the request, identically for HTTP/1.1 and HTTP/2; the h2-specific framing
+  (HPACK, pseudo-headers) is handled by nginx core, not by MosWAF. Confirmed
+  end-to-end against the site's TLS/h2 listener: over HTTP/2, a clean request returns
+  `200` while SQLi, XSS and a scanner User-Agent each return `403` — the same verdicts
+  as HTTP/1.1.
+
+  ```
+  clean h2       -> 200 h2      SQLi h2         -> 403 h2
+  XSS h2         -> 403 h2      sqlmap UA h2    -> 403 h2
+  ```
 
 ---
 
@@ -278,11 +336,9 @@ Not everything was broken — these were verified and are solid:
 
 ## Not yet covered
 
-- **Deeper evasion** the peer asked for: multipart upload, WebSocket upgrade, HTTP/2
-  specifics, request smuggling between nginx and the upstream. Next round.
 - **`install.sh`** beyond the secret-generation path.
-- **Load-based attacks** (slowloris, PoW bypass with a headless browser) — need a
-  dedicated load rig.
+- **Load-based attacks** (slowloris, PoW bypass with a headless browser, h2
+  rapid-reset / CONTINUATION flood) — need a dedicated load rig.
 
 ---
 
@@ -292,7 +348,7 @@ Not everything was broken — these were verified and are solid:
 cd control && go test ./...     # control plane (Go)
 make lua-test                   # data plane pure-Lua units (needs luajit)
 make lua-check                  # Lua syntax
-.local/verify.sh http://127.0.0.1:8088   # black-box re-verification (needs a running stack)
+./scripts/attack-sim.sh http://127.0.0.1:8088   # black-box: does it block? (needs a running stack)
 ```
 
 Reproduction tests:
@@ -311,10 +367,14 @@ Reproduction tests:
   window boundary no longer doubles the rate), with the shared dict and the clock
   stubbed. Also wired into CI.
 
+`scripts/attack-sim.sh` also carries the round-4 vectors — a SQLi in a multipart
+field and filename, in a WebSocket-upgrade URL and in a `PATCH` body, plus a clean
+multipart control. The request-smuggling probes are raw-socket (curl normalises the
+framing away) and live in the report's companion script rather than in `attack-sim.sh`.
+
 When round 1 started the repo had **zero** test files, so `go test ./...` in CI was
 green without verifying anything. Every finding above now has a test that goes green
-when — and only when — the underlying bug is fixed; `run.lua` uses a **soft** check
-for the one documented open gap (#18) so CI stays honest without staying red.
+when — and only when — the underlying bug is fixed.
 
 ---
 
