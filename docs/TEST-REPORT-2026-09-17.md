@@ -20,11 +20,14 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across four rounds, **18 findings were raised and all 18 fixed and re-verified**
-(PRs #4, #5, #7, #8, #10, #12). Round 4 pushed on deeper evasion — multipart uploads,
-WebSocket upgrades, unusual methods, HTTP/2 (confirmed end-to-end) and request
-smuggling — and raised **no new findings**: the WAF holds up on all of them. Every
-finding is closed.
+The first four rounds raised **18 findings, all fixed and re-verified** (the WAF core,
+the control plane, deployment, and the deep-evasion sweep in round 4). Round 5 then
+reviewed a newer feature — **automatic certificates over ACME HTTP-01** — and opened
+**5 more (1 medium, 4 low)**, all on that feature. The medium is the notable one: the
+ACME challenge path is meant to sit outside every WAF check so a site can always renew,
+but it does not — `access_by_lua` is inherited into its location, so under-attack mode
+(and a ban or rate-limit) blocks the CA and breaks renewal. Details in the round-5
+section.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -47,6 +50,11 @@ finding is closed.
 | 16 | Low | Zero-padded IPv4 octets evade a ban (`01.2.3.4` ≠ `1.2.3.4` as a key) | `normalize_ip: zero-padded octets collapse` (Lua) | **Fixed ✓ (PR #5)** |
 | 17 | Low | `SeedRules` freezes rule name/category on first run (`ON CONFLICT DO NOTHING`) | — | **Fixed ✓ (PR #5)** |
 | 18 | Low | `normalize_ip` does not canonicalise IPv6 → `::1` ≠ `0:0:0:0:0:0:0:1` as a key | `normalize_ip: IPv6 forms collapse` (Lua) | **Fixed ✓ (PR #7)** |
+| 19 | Medium | ACME challenge path is not exempt from the WAF → under-attack / ban / rate-limit blocks the CA and breaks renewal | black-box (ban + under-attack) | **Open (round 5)** |
+| 20 | Low | `cert_expires_at` is settable via `PUT /api/sites` → renewal can be frozen | — | **Open (round 5)** |
+| 21 | Low | Wildcard domain accepted for HTTP-01 ACME → renewal fails forever | `TestValidateSiteACMERejectsWildcard` (skipped) | **Open (round 5)** |
+| 22 | Low | Trailing-dot IP `1.2.3.4.` slips the IP guard for ACME | `TestValidateSiteACMERejectsTrailingDotIP` (skipped) | **Open (round 5)** |
+| 23 | Low | Manual `POST /api/sites/{id}/certificate` has no rate-limit / ignores backoff → can burn CA limits | — | **Open (round 5)** |
 
 ---
 
@@ -306,6 +314,106 @@ probe kept alongside the report; none got through.
   clean h2       -> 200 h2      SQLi h2         -> 403 h2
   XSS h2         -> 403 h2      sqlmap UA h2    -> 403 h2
   ```
+
+---
+
+## Round 5 — automatic certificates (ACME HTTP-01)
+
+Review of the ACME feature: the control plane obtains and renews certificates by
+answering `http://<domain>/.well-known/acme-challenge/<token>`, with the token passed
+to the data plane through Redis (`moswaf:acme:<token>`, 10-minute TTL).
+
+### 19. The ACME challenge path is not exempt from the WAF — MEDIUM
+
+Both the Lua handler and the config generator state the path is meant to sit *before*
+every check ("reachable before every other check in access.lua"; "sits outside every
+check on purpose ... a block here would stop the CA from ever reaching the token").
+It does not. `renderSite` emits `access_by_lua_block`, `limit_req` and `limit_conn`
+at **server** level and the ACME `location` has no override, so nginx inherits them —
+`access.run()` executes for the challenge path like any other request.
+
+Confirmed against the running stack:
+
+```
+banned IP        -> /.well-known/acme-challenge/<tok>   403 "banned"   (not the 404 acme.serve returns)
+flood the path   -> 257×403 + 43×429                    (ban + rate-limit both apply)
+token "..%2Fetc" -> 403                                 (the traversal rule fired)
+under-attack ON  -> /.well-known/acme-challenge/<tok>   503 "Checking" (the JS challenge page)
+```
+
+The good news is what the peer feared — an unauthenticated flood channel bypassing
+every check — is **not** the case; the path is fully rate-limited and ban-checked.
+The bad news is the opposite of the intent: a certificate authority runs no
+JavaScript and carries no cookie, so **under-attack mode returns it the challenge page
+instead of the token, and validation fails.** A site under a sustained attack — or one
+configured `challenge = "always"`, or one whose validating IP is caught by the rate
+limiter — cannot renew, and a `challenge = "always"` site can never obtain its *first*
+certificate (a chicken-and-egg). The certificate then expires during the very incident
+the WAF is there to weather, adding a TLS outage to the attack.
+
+**Fix:** make the location genuinely exempt — `access_by_lua_block { return }` inside
+the ACME `location` (and drop the inherited `limit_req`/`limit_conn` there) — while
+keeping a modest dedicated `limit_req` on that location so the flood concern the
+comment worries about is still covered. This is a rare case where the safest thing is
+to *stop* the WAF running on one specific path.
+
+### 20. `cert_expires_at` can be set through `PUT /api/sites` — LOW
+
+`CertExpiresAt` carries the JSON tag `cert_expires_at`, `handleUpdateSite` overlays
+the request onto the stored site (partial update) without pinning it the way it pins
+`ID` and `CreatedAt`, and `UpsertSite` writes `cert_expires_at = EXCLUDED`. So an
+authenticated `PUT {"cert_expires_at":"3000-01-01T00:00:00Z"}` freezes renewal —
+`NeedsCertificate` sees a date far in the future and never renews, so the real
+certificate expires silently. It is a system-managed field and should not be accepted
+from the client. **Fix:** in `handleUpdateSite`, `in.CertExpiresAt = cur.CertExpiresAt`
+before validating. (`acme_last_error` / `acme_last_try` are *not* in `UpsertSite`, so
+they are already safe.)
+
+### 21. Wildcard domain accepted for HTTP-01 — LOW
+
+`net.ParseIP("*.example.com")` is nil and the string has a dot, so a wildcard slips
+the ACME domain guard. HTTP-01 can never validate a wildcard (only DNS-01 can), so the
+order fails forever and retries every hour. **Fix:** reject a leading `*.` when
+`acme_enabled`. Pinned by `TestValidateSiteACMERejectsWildcard` (skipped until fixed).
+
+### 22. Trailing-dot IP slips the IP guard — LOW
+
+`net.ParseIP("1.2.3.4.")` returns nil because of the trailing dot, so a dotted-quad
+with a trailing dot passes the "no IP address" check while still being an IP to any CA.
+More broadly there is no hostname-format validation, so empty labels or over-long names
+also reach the CA (which rejects them). **Fix:** strip a trailing dot before the IP
+check, or validate the hostname shape. Pinned by `TestValidateSiteACMERejectsTrailingDotIP`
+(skipped until fixed).
+
+### 23. Manual certificate endpoint has no rate-limit — LOW
+
+`POST /api/sites/{id}/certificate` is authenticated (good) but drives a real ACME
+order synchronously on every call and ignores the `retryAfterFailure` backoff that
+guards the renewal sweep. Repeated calls — a frustrated operator on a misconfigured
+site, or a script — hammer the CA and can burn its per-account rate limits. **Fix:**
+apply the same per-site cooldown to the manual path.
+
+### Checked and defended
+
+- **Redis key escape** (via the challenge token): not possible. `acme.serve` extracts
+  the token with `[%w%-_]+$`, and nginx rejects the rest; `%3A` (colon) → 404, `%00` →
+  400, `..%2F` → 403, `%0d%0a` → 404. The `moswaf:acme:` prefix cannot be escaped.
+- **Email header injection**: `hasControlChar` rejects a CRLF in `acme_email` before it
+  reaches the CA's Contact field.
+- **Partial update**: `PUT /api/sites` correctly overlays onto the stored site and
+  re-validates, so toggling one ACME field does not wipe the rest.
+- **The order flow** (`acme.go`) uses `golang.org/x/crypto/acme`, reuses the account
+  key across restarts, and backs off an hour after a failure.
+
+### Not yet covered — the real ACME order end-to-end
+
+The full register → authorize → accept → poll → finalize flow has only been read and
+unit-tested, never run against a live CA. Running it locally against Pebble (a test
+CA) needs the ACME client to trust Pebble's self-signed directory — the process's
+`InsecureSkipVerify` is only on the healthcheck client, not the ACME client — plus
+container-network resolution from Pebble back to the data plane. A small dev-only knob
+(trust an extra CA / an insecure-ACME flag) would make this runnable; recommended as
+the next step for this feature.
 
 ---
 
