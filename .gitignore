@@ -20,3 +20,6 @@ certs/
 *.key
 
 .DS_Store
+
+# Moi truong chay thu tren may dev (scripts/dev-local.sh)
+.local/
