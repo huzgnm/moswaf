@@ -117,6 +117,20 @@ echo "Bots and scanners:"
 probe "User-Agent sqlmap"   block "$TARGET/" -A "sqlmap/1.7.2#stable"
 probe "User-Agent nikto"    block "$TARGET/" -A "Mozilla/5.00 (Nikto/2.5.0)"
 
+echo
+echo "Where a payload can hide (body, multipart, upgrade, unusual methods):"
+SQLI='1 UNION ALL SELECT password FROM users'
+# A multipart form is scanned as raw body, so a payload in any field is visible.
+probe "SQLi in a multipart field"    block "$TARGET/" -F "q=$SQLI"
+probe "SQLi in a multipart filename" block "$TARGET/" -F "f=@/dev/null;filename=$SQLI"
+# Declaring a WebSocket upgrade must not exempt the request from scanning.
+probe "SQLi in a WS-upgrade URL"     block "$TARGET/?id=1%20UNION%20ALL%20SELECT%20NULL" \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13"
+# A body on a non-standard method is still a body.
+probe "SQLi in a PATCH body"         block "$TARGET/" -X PATCH -H "Content-Type: text/plain" --data "$SQLI"
+# Control: an ordinary multipart form must not be blocked.
+probe "Clean multipart form"         allow "$TARGET/" -F "name=alice" -F "qty=3"
+
 if [[ "$FLOOD" -gt 0 ]]; then
   echo
   echo "Rate limiting - $FLOOD requests in parallel ($CONCURRENCY at a time):"
