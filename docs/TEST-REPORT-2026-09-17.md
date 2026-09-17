@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `4017d87` (PR #4 + PR #5)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `4bdbc16` (PRs #4, #5, #7, #8)
 
 ---
 
@@ -20,11 +20,10 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Round 1 raised 14 findings; **8 were fixed and re-verified** (PR #4). Round 2 added
-3 more (one newly found during verification); **all 3 are now fixed** (PR #5). As of
-`4017d87` every High/Critical finding is closed. What remains is the medium/low tail
-from round 1 (rate-limit hardening, the verify-endpoint ordering, the internal API,
-JWT revocation) plus one documented IPv6 key-canonicalisation gap.
+Across three rounds, **18 findings were raised and 15 fixed and re-verified** (PRs #4,
+#5, #7, #8). Every High/Critical finding is closed. What remains: **#7** and **#8**,
+two rate-limit *trade-offs* now pinned with deterministic tests so the owner can
+decide with evidence, and **#12**, the source-IP-only guard on the internal API.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -35,18 +34,18 @@ JWT revocation) plus one documented IPv6 key-canonicalisation gap.
 | 5 | **High** | Body > 64 KB or `Transfer-Encoding: chunked` not scanned | — | **Fixed ✓** |
 | 6a | **High** | `real_ip_header` without `trusted_proxies` → IP spoofing | `TestValidateSettingsRequiresTrustedProxiesWithRealIPHeader` | **Fixed ✓** |
 | 6b | **High** | `X-Forwarded-For` read left-to-right → spoofing even when configured correctly | `client_ip: XFF is read right to left` (Lua) | **Fixed ✓ (PR #5)** |
-| 7 | Medium | Rate limit fails open when the shared dict is full | — | Open |
-| 8 | Medium | Fixed counting windows → up to 2× the configured limit at the boundary | — | Open |
+| 7 | Medium | Rate limit fails open when the shared dict is full | `ratelimit.lua` #7 checks | **Open — trade-off, measured (round 3)** |
+| 8 | Medium | Fixed counting windows → up to 2× the configured limit at the boundary | `ratelimit.lua` #8 checks | **Open — trade-off, measured (round 3)** |
 | 9 | Medium | Rules validated with RE2, run with PCRE; PCRE errors were swallowed | `TestValidateRuleAcceptsPCRELookahead` | **Fixed ✓** |
-| 10 | Medium | `/__moswaf/verify` runs before every ban / rate-limit check | — | Open |
+| 10 | Medium | `/__moswaf/verify` runs before every ban / rate-limit check | source (access.lua ordering) | **Fixed ✓ (PR #8)** |
 | 11 | Medium | `loginGuard` leaked memory forever | `TestLoginGuardReleasesInertEntries` | **Fixed ✓** |
 | 12 | Medium | `/unban?ip=*` on port 8081 is unauthenticated, allows all of RFC1918 | — | Open |
-| 13 | Low | Open redirect via `/\` in the verify `r` parameter | — | Open |
-| 14 | Low | Changing the password does not revoke existing JWTs | — | Open |
+| 13 | Low | Open redirect via `/\` in the verify `r` parameter | `is_local_path` checks (Lua) | **Fixed ✓ (PR #8)** |
+| 14 | Low | Changing the password does not revoke existing JWTs | `auth_test.go` | **Fixed ✓ (PR #8)** |
 | 15 | Medium | URL-encoding ≥ 3 layers bypasses the engine (`expand` decodes only 2) | `verify.sh` triple-encode row | **Fixed ✓ (PR #5)** |
 | 16 | Low | Zero-padded IPv4 octets evade a ban (`01.2.3.4` ≠ `1.2.3.4` as a key) | `normalize_ip: zero-padded octets collapse` (Lua) | **Fixed ✓ (PR #5)** |
 | 17 | Low | `SeedRules` freezes rule name/category on first run (`ON CONFLICT DO NOTHING`) | — | **Fixed ✓ (PR #5)** |
-| 18 | Low | `normalize_ip` does not canonicalise IPv6 → `::1` ≠ `0:0:0:0:0:0:0:1` as a key | `normalize_ip: IPv6 forms should collapse` (Lua, soft) | Open |
+| 18 | Low | `normalize_ip` does not canonicalise IPv6 → `::1` ≠ `0:0:0:0:0:0:0:1` as a key | `normalize_ip: IPv6 forms collapse` (Lua) | **Fixed ✓ (PR #7)** |
 
 ---
 
@@ -159,35 +158,87 @@ control. Not one I raised — recording it so the round is complete.
 
 ---
 
-## Round 2 — one gap left open
+## Round 2 — the gap it opened, since fixed (PR #7)
 
-### 18. `normalize_ip` does not canonicalise IPv6 — LOW
+### 18. `normalize_ip` did not canonicalise IPv6 — LOW — FIXED
 
-`normalize_ip` returns an IPv6 address verbatim, so `::1` and `0:0:0:0:0:0:0:1` are
+`normalize_ip` returned an IPv6 address verbatim, so `::1` and `0:0:0:0:0:0:0:1` were
 the same host but two different ban/counter keys — the #16 many-identities problem,
-one layer down, for IPv6 clients. Low impact today (IPv6 clients behind the WAF are
-rare and the CIDR match still works), but it should be closed for symmetry with the
-IPv4 fix. Flagged as a **soft** (non-failing) check in `run.lua` so CI stays green
-while the gap is not forgotten; promote it to a hard check when it is fixed.
-
-**Fix:** expand IPv6 to its full form (or compress to the canonical RFC 5952 form)
-inside `normalize_ip` before returning it.
+one layer down, for IPv6 clients. I flagged it as a **soft** (non-failing) check in
+`run.lua` so it would not be lost. PR #7 rewrites IPv6 into the single RFC 5952 form
+(lowercase, leading zeros dropped, the longest zero run compressed to `::`, zone
+index removed, an IPv4-mapped tail folded to hex, and a syntactically invalid address
+rejected rather than passed through). The soft check was promoted to a hard check and
+8 more cases added; the harness is 57/57.
 
 ---
 
-## Still open from round 1 (unchanged, not yet addressed)
+## Round 3 — three more fixed (PR #8), two measured for a decision
 
-- **#7** rate limit fails open when `moswaf_cnt` is full — worst-case mode for an
-  anti-DDoS product; prefer challenge over pass when `incr` fails.
-- **#8** fixed counting windows allow ~2× the configured rate at a window boundary;
-  use a sliding window or two overlapping windows.
-- **#10** `/__moswaf/verify` is handled before the ban and rate-limit checks, so a
-  banned IP can still spend the server's CPU on HMAC + SHA-256 at will.
+### Verified fixed
+
+- **#10 — `/__moswaf/verify` ordering.** The verify handler now sits *after* the
+  allowlist, ban and blocklist checks but *before* the rate limiter
+  (`access.lua` lines 126/132/136 → 150). A banned or blocklisted IP can no longer
+  reach the handler and spend the server's CPU on HMAC + SHA-256, while a client that
+  was merely rate-limited can still solve its challenge — putting verify after the
+  rate limiter instead would trap such a client in a loop where it is challenged for
+  exceeding the limit yet can never call the endpoint that clears it. The ordering
+  chosen is the correct one.
+- **#13 — open redirect.** The check moved into `util.is_local_path`, which now
+  rejects a second leading `/`, a leading `\`, control characters and any string
+  carrying a scheme. Pinned by 9 cases in `run.lua` (`//evil`, `/\evil`,
+  `https://evil`, `/redir?u=https://evil`, a CRLF case, empty, `nil`, …).
+- **#14 — JWT after a password change.** Tokens now carry `iat`, and `requireAuth`
+  compares it against `users.updated_at`, so a token minted before the last password
+  change is rejected. Costs one indexed query per authenticated API request — an
+  admin-plane path, not the data plane, so acceptable. Covered in `auth_test.go`.
+
+### Measured for the owner to decide — #7 and #8
+
+Both are genuine behaviour trade-offs, not clear-cut bugs, so they are left for the
+owner. Round 3 pins each with a **deterministic** test in
+`dataplane/test/ratelimit.lua` — the shared dict and the clock are stubbed, so the
+effects are shown exactly and repeatably rather than fished out of noisy HTTP timing.
+
+**#8 — fixed counting windows let ~2× the rate through at a boundary.** The
+per-second bucket is keyed on `floor(ngx.now())`, so it resets on the wall-clock
+second. Firing `rps` requests at `t = 5.90` and `rps` more at `t = 6.00` puts each
+half in a different bucket; neither bucket exceeds `rps`, so **nothing is blocked**
+even though `2 × rps` arrived inside ~100 ms. The 10-second window is the intended
+backstop and does catch a large mid-window burst — but it has the same flaw one order
+of magnitude up (`floor(now / 10)`), so a burst straddling the 10-second boundary
+doubles there too. Both are proven in the test.
+
+A black-box burst against the running stack corroborated that the limiter is live and
+escalates correctly: 200 sequential requests returned ~60 × `200` (roughly one
+`rps=60` window's worth) before the limiter tripped and the IP was auto-banned
+(`403`) after three violations. Precise boundary doubling is hard to show over HTTP
+timing, which is exactly why the deterministic test carries that claim.
+
+*Fix options:* a sliding window (weighted sum of the current and previous bucket) is
+the standard remedy, but it changes how requests are counted, so the dashboard
+numbers will shift. Owner's call.
+
+**#7 — the limiter fails open when the shared dict is full.** `bump()` returns `0`
+when `cnt:incr` returns `nil`, and a full `moswaf_cnt` is exactly what a flood from
+many IPs produces (one key per IP per second). The test fills the dict and then sends
+1000 requests over an `rps = 10` limit: **0 are blocked.** The protection turns
+itself off under precisely the load it exists to stop.
+
+*Fix options:* on an `incr` failure, run `flush_expired` once and retry; if it still
+fails, count it as a violation (degrade toward challenge) instead of passing. That
+trades a full-dict edge into blocking real users, so — owner's call. Monitoring
+`cnt:free_space()` and alerting before it fills is the low-risk half of the fix.
+
+### Still open after round 3
+
+- **#7** rate limit fail-open (trade-off, measured above).
+- **#8** fixed counting windows (trade-off, measured above).
 - **#12** the port-8081 internal API (`/sync`, `/unban?ip=*`, `/bans`) is guarded by
   source IP only, and the allow list covers all of RFC1918; add a shared secret.
-- **#13** open redirect: `challenge.lua` blocks `//host` but not `/\host`.
-- **#14** changing the password / deleting the account does not invalidate a live
-  JWT (12 h default TTL); `requireAuth` also never checks the account still exists.
+
+Everything else raised across the three rounds is fixed and re-verified.
 
 ---
 
@@ -244,8 +295,11 @@ Reproduction tests:
 - `control/internal/engine/nginxconf_test.go` — the rendered nginx output.
 - `control/internal/api/auth_test.go` — JWT, `requireAuth`, login throttling.
 - `dataplane/test/run.lua` — pure-Lua units for IP parsing, normalisation and
-  client-IP resolution (this is where #6b, #16 and the #18 gap are pinned; the repo
-  had no Lua tests before). Now wired into CI's data-plane job.
+  client-IP resolution (this is where #6b, #16 and #18 are pinned; the repo had no
+  Lua tests before). Wired into CI's data-plane job.
+- `dataplane/test/ratelimit.lua` — deterministic proof of #7 (fail-open on a full
+  shared dict) and #8 (2× the rate at a window boundary), with the shared dict and
+  the clock stubbed. Also wired into CI.
 
 When round 1 started the repo had **zero** test files, so `go test ./...` in CI was
 green without verifying anything. Every finding above now has a test that goes green
