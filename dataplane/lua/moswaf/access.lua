@@ -164,6 +164,13 @@ function _M.run()
     local hit, rreason, c1, c10 = ratelimit.check(site_id ~= "" and site_id or "g", ip, rps, burst)
     ctx.rps = c1
     if hit then
+        -- The counters are unusable (shared dict exhausted). Challenge everyone
+        -- rather than pass them through, but never escalate to a ban: the count
+        -- that a ban would be based on does not mean anything right now.
+        if rreason == ratelimit.DICT_FULL then
+            return do_challenge(ctx, mode, "counters_unavailable")
+        end
+
         local violations = ratelimit.mark_violation(ip)
         -- repeat offender -> ban temporarily instead of rejecting request by request
         if violations >= 3 then

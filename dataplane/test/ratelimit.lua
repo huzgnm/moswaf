@@ -5,14 +5,14 @@
 -- rate-limit findings can be shown exactly and repeatably, without booting the
 -- stack or fighting sub-second HTTP timing:
 --
---   #8  Fixed counting windows. The 1-second bucket is keyed on floor(now), so it
---       resets on the wall-clock second. Sending a burst just before the boundary
---       and another just after lets ~2x the configured rps through unblocked.
+--   #8  Sliding windows. A fixed bucket keyed on floor(now) reset on the wall-clock
+--       second, so a burst either side of a boundary let ~2x the configured rps
+--       through. Each window now carries the weighted tail of the previous bucket.
 --
---   #7  Fail-open. When cnt:incr returns nil (the shared dict is full - exactly what
---       a large flood causes), bump() returns 0, so every count reads as 0 and the
---       limiter never trips. The protection turns itself off under the load it exists
---       to stop.
+--   #7  A full shared dict no longer disables the limiter. cnt:incr returning nil
+--       used to read as a count of zero, so the protection switched itself off under
+--       exactly the load it exists to stop. It now reclaims once and, failing that,
+--       reports DICT_FULL, which access.lua turns into a challenge.
 --
 --   luajit dataplane/test/ratelimit.lua      (or: make lua-test, which runs both)
 
@@ -34,6 +34,8 @@ function dict:incr(key, value, init, _ttl)
     return v
 end
 
+function dict:get(key) return self.store[key] end
+function dict:flush_expired(_n) return 0 end
 function dict:reset() self.store = {}; self.full = false end
 function dict:free_space() return self.full and 0 or 1024 end
 function dict:capacity() return 65536 end
@@ -72,7 +74,7 @@ local function fire(n, rps, burst)
     return blocked
 end
 
--- ------------------------------------------------------------------ #8 fixed window
+-- ------------------------------------------------------------------ #8 sliding window
 
 -- Sanity: inside a single second, request rps+1 trips the limiter.
 dict:reset()
@@ -85,9 +87,10 @@ do
         "sent rps+5, expected 5 blocked, got " .. blocked)
 end
 
--- The bug: straddle the boundary. rps of the requests land at t=0.90 (second bucket
--- 5) and rps more at t=1.00 (second bucket 6). Each bucket sees only rps requests,
--- so none are blocked - yet 2*rps arrived inside 100ms.
+-- Straddle the boundary: rps requests land at t=5.90 and rps more at t=6.00. With
+-- fixed buckets each side saw only rps and nothing was blocked, so 2x the rate got
+-- through in 100ms. The sliding estimate still carries almost all of the first
+-- burst at t=6.00 (10% into the new bucket), so the second one is blocked.
 dict:reset()
 do
     local rps, burst = 10, 1000       -- burst high enough not to interfere
@@ -95,12 +98,13 @@ do
     local b1 = fire(rps, rps, burst)
     clock = 6.00
     local b2 = fire(rps, rps, burst)
-    check("#8: a burst straddling the second boundary is NOT blocked",
-        b1 == 0 and b2 == 0,
-        "expected 0+0 blocked across the boundary, got " .. b1 .. "+" .. b2)
-    check("#8: 2x the configured rps got through in ~100ms",
-        (2 * rps) == 20,
-        "this documents the effective ceiling is double the configured rps")
+    check("#8: a burst straddling the second boundary IS blocked now",
+        b2 > 0,
+        "expected the second half of the burst to be blocked, got " .. b2 ..
+        " blocked (first half: " .. b1 .. ")")
+    check("#8: the effective ceiling is no longer 2x the configured rps",
+        (b1 + b2) >= rps - 1,
+        "sent 2*rps across the boundary and only " .. (b1 + b2) .. " were blocked")
 end
 
 -- The 10-second window is the backstop that is *supposed* to catch this, and it does
@@ -118,12 +122,12 @@ do
     dict:reset()
     clock = 9.95                       -- 10s bucket 0
     local c1 = fire(burst, rps + 1000, burst)   -- rps set high so only the 10s window matters
-    clock = 10.05                      -- 10s bucket 1 - resets the burst window
+    clock = 10.05                      -- 10s bucket 1, only 0.5% in
     local c2 = fire(burst, rps + 1000, burst)
-    check("#8: the 10s window ALSO doubles at its own boundary",
-        c1 == 0 and c2 == 0,
-        "sent burst+burst straddling the 10s boundary, expected 0+0 blocked, got "
-        .. c1 .. "+" .. c2)
+    check("#8: the 10s window no longer doubles at its own boundary",
+        c2 > 0,
+        "sent burst+burst straddling the 10s boundary, expected the second half to "
+        .. "be blocked, got " .. c1 .. "+" .. c2)
 end
 
 -- ------------------------------------------------------------------ #7 fail-open
@@ -141,10 +145,17 @@ do
     -- Now the shared dict is full - the exact condition a flood from many IPs creates.
     dict.full = true
     local during = fire(1000, rps, burst)
-    check("#7: when the shared dict is FULL, the limiter blocks NOTHING (fail-open)",
-        during == 0,
-        "sent 1000 requests over a rps=10 limit with the dict full; " ..
-        during .. " were blocked (a fail-closed or degraded limiter would block most)")
+    check("#7: a FULL shared dict no longer disables the limiter",
+        during == 1000,
+        "sent 1000 requests over a rps=10 limit with the dict full; only " ..
+        during .. " were reported over the limit")
+
+    -- What matters is *how* it degrades: the reason has to say the counters are
+    -- unusable, so access.lua challenges instead of banning on a meaningless count.
+    local _, reason = ratelimit.check("g", "198.51.100.9", rps, burst)
+    check("#7: the degraded path reports DICT_FULL rather than a rate reason",
+        reason == ratelimit.DICT_FULL,
+        "got reason " .. tostring(reason))
 end
 
 -- ------------------------------------------------------------------ report
@@ -152,9 +163,8 @@ end
 io.write("\n\n")
 if #failures == 0 then
     print(string.format("%d/%d checks passed", total, total))
-    print("\nBoth are behaviour trade-offs for the project owner, now with evidence:")
-    print("  #8  effective ceiling is ~2x the configured rate at a window boundary")
-    print("  #7  a full shared dict disables rate limiting entirely (fail-open)")
+    print("\n  #8  sliding windows: a burst across a boundary no longer doubles the rate")
+    print("  #7  a full shared dict degrades to a challenge instead of passing everything")
     os.exit(0)
 end
 print(string.format("%d of %d checks FAILED:\n", #failures, total))
