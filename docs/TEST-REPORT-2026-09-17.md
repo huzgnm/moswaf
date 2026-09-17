@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `4bdbc16` (PRs #4, #5, #7, #8)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** `17e68f2` (PRs #4, #5, #7, #8, #10)
 
 ---
 
@@ -20,10 +20,12 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across three rounds, **18 findings were raised and 15 fixed and re-verified** (PRs #4,
-#5, #7, #8). Every High/Critical finding is closed. What remains: **#7** and **#8**,
-two rate-limit *trade-offs* now pinned with deterministic tests so the owner can
-decide with evidence, and **#12**, the source-IP-only guard on the internal API.
+Across three rounds, **18 findings were raised and 17 fixed and re-verified** (PRs #4,
+#5, #7, #8, #10). Every High/Critical finding is closed. The two rate-limit findings
+(#7 fail-open, #8 boundary doubling) were first held back as possible trade-offs;
+deterministic tests settled them — one plain bug, one small trade-off — and both are
+now fixed. The single item still open is **#12**, the source-IP-only guard on the
+internal API, being handled by the peer.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -34,8 +36,8 @@ decide with evidence, and **#12**, the source-IP-only guard on the internal API.
 | 5 | **High** | Body > 64 KB or `Transfer-Encoding: chunked` not scanned | — | **Fixed ✓** |
 | 6a | **High** | `real_ip_header` without `trusted_proxies` → IP spoofing | `TestValidateSettingsRequiresTrustedProxiesWithRealIPHeader` | **Fixed ✓** |
 | 6b | **High** | `X-Forwarded-For` read left-to-right → spoofing even when configured correctly | `client_ip: XFF is read right to left` (Lua) | **Fixed ✓ (PR #5)** |
-| 7 | Medium | Rate limit fails open when the shared dict is full | `ratelimit.lua` #7 checks | **Open — trade-off, measured (round 3)** |
-| 8 | Medium | Fixed counting windows → up to 2× the configured limit at the boundary | `ratelimit.lua` #8 checks | **Open — trade-off, measured (round 3)** |
+| 7 | Medium | Rate limit fails open when the shared dict is full | `ratelimit.lua` #7 checks | **Fixed ✓ (PR #10)** |
+| 8 | Medium | Fixed counting windows → up to 2× the configured limit at the boundary | `ratelimit.lua` #8 checks | **Fixed ✓ (PR #10)** |
 | 9 | Medium | Rules validated with RE2, run with PCRE; PCRE errors were swallowed | `TestValidateRuleAcceptsPCRELookahead` | **Fixed ✓** |
 | 10 | Medium | `/__moswaf/verify` runs before every ban / rate-limit check | source (access.lua ordering) | **Fixed ✓ (PR #8)** |
 | 11 | Medium | `loginGuard` leaked memory forever | `TestLoginGuardReleasesInertEntries` | **Fixed ✓** |
@@ -173,7 +175,7 @@ rejected rather than passed through). The soft check was promoted to a hard chec
 
 ---
 
-## Round 3 — three more fixed (PR #8), two measured for a decision
+## Round 3 — three more fixed (PR #8), two measured then fixed (PR #10)
 
 ### Verified fixed
 
@@ -194,49 +196,56 @@ rejected rather than passed through). The soft check was promoted to a hard chec
   change is rejected. Costs one indexed query per authenticated API request — an
   admin-plane path, not the data plane, so acceptable. Covered in `auth_test.go`.
 
-### Measured for the owner to decide — #7 and #8
+### Measured, then fixed — #7 and #8
 
-Both are genuine behaviour trade-offs, not clear-cut bugs, so they are left for the
-owner. Round 3 pins each with a **deterministic** test in
-`dataplane/test/ratelimit.lua` — the shared dict and the clock are stubbed, so the
-effects are shown exactly and repeatably rather than fished out of noisy HTTP timing.
+Both were first raised as *possible* trade-offs. Round 3 pinned each with a
+**deterministic** test in `dataplane/test/ratelimit.lua` — the shared dict and the
+clock are stubbed, so the effects are shown exactly and repeatably rather than fished
+out of noisy HTTP timing. On the evidence, one turned out to be a plain bug and the
+other a small trade-off, and PR #10 fixed both.
 
 **#8 — fixed counting windows let ~2× the rate through at a boundary.** The
-per-second bucket is keyed on `floor(ngx.now())`, so it resets on the wall-clock
-second. Firing `rps` requests at `t = 5.90` and `rps` more at `t = 6.00` puts each
-half in a different bucket; neither bucket exceeds `rps`, so **nothing is blocked**
-even though `2 × rps` arrived inside ~100 ms. The 10-second window is the intended
-backstop and does catch a large mid-window burst — but it has the same flaw one order
-of magnitude up (`floor(now / 10)`), so a burst straddling the 10-second boundary
-doubles there too. Both are proven in the test.
+per-second bucket was keyed on `floor(ngx.now())`, so it reset on the wall-clock
+second. Firing `rps` requests at `t = 5.90` and `rps` more at `t = 6.00` put each half
+in a different bucket; neither exceeded `rps`, so nothing was blocked even though
+`2 × rps` arrived inside ~100 ms. The 10-second backstop had the same flaw one order
+of magnitude up (`floor(now / 10)`).
 
-A black-box burst against the running stack corroborated that the limiter is live and
-escalates correctly: 200 sequential requests returned ~60 × `200` (roughly one
-`rps=60` window's worth) before the limiter tripped and the IP was auto-banned
-(`403`) after three violations. Precise boundary doubling is hard to show over HTTP
-timing, which is exactly why the deterministic test carries that claim.
+> **Correction.** Round 3 first flagged this as a decision because a sliding window
+> "would shift the dashboard numbers." That premise was wrong: the rate-limit counters
+> live in `ngx.shared.moswaf_cnt`, while the dashboard figures live in a *separate*
+> dict, `ngx.shared.moswaf_stats`, written by `log.lua`. Changing how the limiter
+> counts touches neither. With no metric cost, #8 was just a bug — thanks to the peer
+> for checking the assumption that was holding it up.
 
-*Fix options:* a sliding window (weighted sum of the current and previous bucket) is
-the standard remedy, but it changes how requests are counted, so the dashboard
-numbers will shift. Owner's call.
+PR #10 makes both windows *sliding*: each carries the weighted tail of the previous
+bucket, `estimate = current + previous * (1 − elapsed_fraction)`, so the count decays
+smoothly instead of dropping to zero at a boundary. Verified on the stack — 120
+requests around a second boundary at `rps = 60`: the 60 before pass, and after the
+boundary 53 × `403` / 2 × `503` / 1 × `429` / 4 × `200`, where before all 120 passed.
+The `ratelimit.lua` checks now assert the fixed behaviour (8/8).
 
-**#7 — the limiter fails open when the shared dict is full.** `bump()` returns `0`
-when `cnt:incr` returns `nil`, and a full `moswaf_cnt` is exactly what a flood from
-many IPs produces (one key per IP per second). The test fills the dict and then sends
-1000 requests over an `rps = 10` limit: **0 are blocked.** The protection turns
-itself off under precisely the load it exists to stop.
+**#7 — the limiter failed open when the shared dict was full.** `bump()` returned `0`
+when `cnt:incr` returned `nil`, and a full `moswaf_cnt` is exactly what a flood from
+many IPs produces (one key per IP per second). The test filled the dict and sent 1000
+requests over an `rps = 10` limit: **0 were blocked** — the protection turned itself
+off under precisely the load it exists to stop.
 
-*Fix options:* on an `incr` failure, run `flush_expired` once and retry; if it still
-fails, count it as a violation (degrade toward challenge) instead of passing. That
-trades a full-dict edge into blocking real users, so — owner's call. Monitoring
-`cnt:free_space()` and alerting before it fills is the low-risk half of the fix.
+PR #10 makes `bump` run `flush_expired` once and retry; if it still fails it returns
+`nil`, and `check` reports `DICT_FULL`. `access.lua` turns that into a **challenge**
+for everyone (`access.lua:170`) and deliberately does **not** escalate to a ban, since
+the count a ban would rest on is meaningless in that state. Fail-closed would have
+blocked real users; challenging instead lets a real browser through silently while a
+flood cannot. The test asserts the degraded path reports `DICT_FULL` specifically, so
+a future "fix" that returned a normal rate reason (and so could trigger a ban on a
+bogus count) would fail the test.
 
 ### Still open after round 3
 
-- **#7** rate limit fail-open (trade-off, measured above).
-- **#8** fixed counting windows (trade-off, measured above).
 - **#12** the port-8081 internal API (`/sync`, `/unban?ip=*`, `/bans`) is guarded by
-  source IP only, and the allow list covers all of RFC1918; add a shared secret.
+  source IP only, and the allow list covers all of RFC1918; add a shared secret
+  (`MOSWAF_INTERNAL_TOKEN`) checked before the handler runs, keeping the `allow` list
+  as a second layer. Being handled by the peer.
 
 Everything else raised across the three rounds is fixed and re-verified.
 
@@ -297,9 +306,10 @@ Reproduction tests:
 - `dataplane/test/run.lua` — pure-Lua units for IP parsing, normalisation and
   client-IP resolution (this is where #6b, #16 and #18 are pinned; the repo had no
   Lua tests before). Wired into CI's data-plane job.
-- `dataplane/test/ratelimit.lua` — deterministic proof of #7 (fail-open on a full
-  shared dict) and #8 (2× the rate at a window boundary), with the shared dict and
-  the clock stubbed. Also wired into CI.
+- `dataplane/test/ratelimit.lua` — deterministic coverage of #7 (a full shared dict
+  degrades to a challenge instead of passing everything) and #8 (a burst across a
+  window boundary no longer doubles the rate), with the shared dict and the clock
+  stubbed. Also wired into CI.
 
 When round 1 started the repo had **zero** test files, so `go test ./...` in CI was
 green without verifying anything. Every finding above now has a test that goes green
