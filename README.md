@@ -171,6 +171,11 @@ While testing, point at the staging endpoint to avoid the production rate limits
 MOSWAF_ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
 ```
 
+The challenge location is the one place in the config that is exempt from the WAF,
+and it has to be: an authority cannot solve a JavaScript challenge, and a random
+token can look like an attack payload. It keeps its own much smaller rate limit, so
+being exempt does not make it a cheap way to flood the server.
+
 ## Verifying that it actually blocks
 
 After adding a site, fire a batch of common attacks at your own site and compare

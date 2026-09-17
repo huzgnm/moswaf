@@ -90,3 +90,63 @@ func TestValidateSiteRequiresEmailForACME(t *testing.T) {
 		t.Fatal("ACME was accepted with no contact address")
 	}
 }
+
+// Domains a certificate authority can never validate over HTTP-01. Each failed
+// order counts against the per-domain rate limit and the sweep would retry hourly
+// forever, so they have to be refused when the site is saved.
+func TestValidateSiteRejectsUnusableACMEDomains(t *testing.T) {
+	cases := []struct {
+		domain string
+		why    string
+	}{
+		{"*.example.com", "wildcards need DNS-01"},
+		{"1.2.3.4.", "an address with a trailing dot is still an address"},
+		{"1.2.3.4", "a bare address"},
+		{"localhost", "no public domain"},
+		{"acme..test", "an empty label"},
+		{"-bad.example.com", "a label starting with a hyphen"},
+		{"bad-.example.com", "a label ending with a hyphen"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.domain, func(t *testing.T) {
+			s := &store.Site{
+				Name: "demo", Domains: []string{c.domain}, UpstreamHost: "10.0.0.5",
+				UpstreamPort: 8080, UpstreamScheme: "http",
+				AcmeEnabled: true, AcmeEmail: "ops@example.com",
+			}
+			if err := store.ValidateSite(s); err == nil {
+				t.Errorf("accepted %q: %s", c.domain, c.why)
+			}
+		})
+	}
+}
+
+func TestValidateSiteAcceptsOrdinaryACMEDomains(t *testing.T) {
+	s := &store.Site{
+		Name: "demo", Domains: []string{"example.com", "www.example.com"},
+		UpstreamHost: "10.0.0.5", UpstreamPort: 8080, UpstreamScheme: "http",
+		AcmeEnabled: true, AcmeEmail: "ops@example.com",
+	}
+	if err := store.ValidateSite(s); err != nil {
+		t.Fatalf("a normal ACME site was rejected: %v", err)
+	}
+}
+
+// The dashboard button places a real order, so it needs a floor between attempts -
+// but a short one, since it exists to retry immediately after fixing DNS.
+func TestManualIssueCooldown(t *testing.T) {
+	now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+
+	if w := store.ManualIssueCooldown(&store.Site{}, now); w != 0 {
+		t.Errorf("a site that has never been tried should be allowed, got %v", w)
+	}
+	recent := now.Add(-time.Minute)
+	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &recent}, now); w <= 0 {
+		t.Error("an attempt a minute ago should still be cooling down")
+	}
+	old := now.Add(-10 * time.Minute)
+	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &old}, now); w != 0 {
+		t.Errorf("an attempt ten minutes ago should be allowed, got %v", w)
+	}
+}

@@ -5,8 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -25,10 +28,10 @@ type Config struct {
 	AdminUser     string
 	AdminPassword string // only used to create the very first account
 
-	SitesDir   string // where per-site nginx config files are written
-	CertsDir   string // where site certificates are written
-	AdminTLS   string // certificate directory for the dashboard itself
-	ProxySync  string // data plane /sync endpoint URL
+	SitesDir  string // where per-site nginx config files are written
+	CertsDir  string // where site certificates are written
+	AdminTLS  string // certificate directory for the dashboard itself
+	ProxySync string // data plane /sync endpoint URL
 
 	// Shared with the data plane so its internal API can tell us apart from
 	// anything else that happens to sit on the same Docker network.
@@ -38,7 +41,12 @@ type Config struct {
 	// staging endpoint while testing: production has strict rate limits and a
 	// handful of failed attempts can lock a domain out for a week.
 	ACMEDirectory string
-	RetainDays int    // how many days to keep the attack log
+
+	// Skip certificate verification when talking to the ACME directory. Only for a
+	// local test authority such as Pebble, which signs with its own throwaway CA.
+	// Guarded so it cannot be turned on against a public authority.
+	ACMEInsecure bool
+	RetainDays   int // how many days to keep the attack log
 
 	// Ports the generated site server blocks listen on. Always 80/443 inside the
 	// container; configurable so it can run on a dev machine without the privilege
@@ -108,6 +116,34 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// acmeInsecure honours MOSWAF_ACME_INSECURE only for a directory that is clearly a
+// local test server. Without that guard, one environment variable would turn off
+// certificate verification against Let's Encrypt itself - an easy thing to leave set
+// after a debugging session and impossible to notice afterwards.
+func acmeInsecure() bool {
+	if os.Getenv("MOSWAF_ACME_INSECURE") != "1" {
+		return false
+	}
+	dir := os.Getenv("MOSWAF_ACME_DIRECTORY")
+	if dir == "" {
+		return false
+	}
+	u, err := url.Parse(dir)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" ||
+		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".internal") ||
+		host == "pebble" || strings.HasPrefix(host, "pebble.") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return true
+	}
+	return false
+}
+
 func internalToken() string {
 	if v := os.Getenv("MOSWAF_INTERNAL_TOKEN"); v != "" {
 		return v
@@ -142,8 +178,8 @@ func Load() *Config {
 		// token: it is published with the configuration, and the data plane picks it
 		// up on its next sync. Only the two planes ever see it.
 		InternalToken: internalToken(),
-		RetainDays:      envInt("MOSWAF_LOG_RETAIN_DAYS", 7),
-		SiteHTTPPort:    envInt("MOSWAF_SITE_HTTP_PORT", 80),
-		SiteHTTPSPort:   envInt("MOSWAF_SITE_HTTPS_PORT", 443),
+		RetainDays:    envInt("MOSWAF_LOG_RETAIN_DAYS", 7),
+		SiteHTTPPort:  envInt("MOSWAF_SITE_HTTP_PORT", 80),
+		SiteHTTPSPort: envInt("MOSWAF_SITE_HTTPS_PORT", 443),
 	}
 }
