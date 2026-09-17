@@ -22,8 +22,42 @@ function blank() {
     rate_rps: 0,
     rate_burst: 0,
     force_https: false,
+    acme_enabled: false,
+    acme_email: '',
     tls_cert: '',
     tls_key: '',
+  }
+}
+
+// Certificate column: what an operator needs at a glance is whether TLS works and
+// how long it keeps working.
+function certLabel(s) {
+  if (!s.has_tls) return s.acme_enabled ? 'Pending' : 'None'
+  if (!s.cert_expires_at) return s.force_https ? 'Forced' : 'Certificate'
+  const days = Math.floor((new Date(s.cert_expires_at) - Date.now()) / 86400000)
+  if (days < 0) return 'Expired'
+  return `${days}d left`
+}
+
+function certTone(s) {
+  if (!s.has_tls) return s.acme_enabled ? 'tag-monitor' : 'tag-off'
+  if (!s.cert_expires_at) return 'tag-ok'
+  const days = Math.floor((new Date(s.cert_expires_at) - Date.now()) / 86400000)
+  return days < 0 ? 'tag-deny' : days < 15 ? 'tag-monitor' : 'tag-ok'
+}
+
+const issuing = ref('')
+
+async function issueCert(site) {
+  issuing.value = site.id
+  try {
+    await api.post(`/api/sites/${site.id}/certificate`)
+    notify(`Certificate issued for ${site.name}`)
+    await load()
+  } catch (e) {
+    notify(e.message, true)
+  } finally {
+    issuing.value = ''
   }
 }
 
@@ -142,12 +176,19 @@ onMounted(load)
             {{ s.rate_rps ? `${s.rate_rps} r/s` : 'default' }}
           </td>
           <td>
-            <span class="tag" :class="s.has_tls ? 'tag-ok' : 'tag-off'">
-              <span class="dot"></span>{{ s.has_tls ? (s.force_https ? 'Forced' : 'Certificate') : 'None' }}
+            <span class="tag" :class="certTone(s)" :title="s.acme_last_error || ''">
+              <span class="dot"></span>{{ certLabel(s) }}
             </span>
+            <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">auto</span>
           </td>
           <td style="text-align:right; white-space:nowrap">
-            <button class="btn btn-sm" @click="openEdit(s)">Edit</button>
+            <button
+              v-if="s.acme_enabled"
+              class="btn btn-sm" :disabled="issuing === s.id"
+              title="Ask the certificate authority now instead of waiting for the renewal sweep"
+              @click="issueCert(s)"
+            >{{ issuing === s.id ? 'Asking...' : 'Get cert' }}</button>
+            <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">Edit</button>
             <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">Delete</button>
           </td>
         </tr>
@@ -226,14 +267,34 @@ onMounted(load)
       </div>
     </div>
 
-    <div class="field">
+    <label class="switch" style="margin-bottom:14px">
+      <input v-model="form.acme_enabled" type="checkbox" />
+      <span class="track"></span>
+      <span>Get and renew the certificate automatically (Let&apos;s Encrypt)</span>
+    </label>
+
+    <div v-if="form.acme_enabled" class="field">
+      <label class="label">Contact email for the certificate authority</label>
+      <input v-model="form.acme_email" class="input" placeholder="ops@example.com" />
+      <div class="hint">
+        The domain must already resolve to this server and port 80 must be reachable
+        from the internet - that is how the authority verifies you own it. Renewal
+        happens on its own once there are 30 days left.
+      </div>
+    </div>
+
+    <div v-if="editing && editing.acme_last_error" class="hint" style="color:#f0a0a0; margin-bottom:14px">
+      Last attempt failed: {{ editing.acme_last_error }}
+    </div>
+
+    <div v-show="!form.acme_enabled" class="field">
       <label class="label">TLS certificate (PEM)</label>
       <textarea
         v-model="form.tls_cert" class="input"
         :placeholder="editing && editing.has_tls ? 'Leave empty to keep the current certificate' : '-----BEGIN CERTIFICATE-----'"
       ></textarea>
     </div>
-    <div class="field">
+    <div v-show="!form.acme_enabled" class="field">
       <label class="label">Private key (PEM)</label>
       <textarea
         v-model="form.tls_key" class="input"

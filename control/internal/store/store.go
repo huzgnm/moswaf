@@ -131,6 +131,14 @@ CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value JSONB NOT NULL
 );
+
+-- Added after the first release, so they have to be applied to existing installs
+-- as well as new ones.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_enabled    BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_email      TEXT NOT NULL DEFAULT '';
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS cert_expires_at TIMESTAMPTZ;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_last_error TEXT NOT NULL DEFAULT '';
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_last_try   TIMESTAMPTZ;
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

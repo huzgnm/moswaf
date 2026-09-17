@@ -11,6 +11,7 @@ function _M.init()
     require "moswaf.challenge"
     require "moswaf.log"
     require "moswaf.access"
+    require "moswaf.acme"
 
     config.bootstrap()
     ngx.log(ngx.NOTICE, "moswaf: engine loaded")

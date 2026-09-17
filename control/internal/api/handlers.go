@@ -162,6 +162,42 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// handleIssueCertificate runs an ACME order for one site immediately, instead of
+// waiting for the renewal sweep. Useful right after pointing DNS at the server,
+// and it returns the CA's actual complaint when validation fails - which is the
+// thing an operator needs to see.
+func (s *Server) handleIssueCertificate(w http.ResponseWriter, r *http.Request) {
+	site, err := s.db.GetSite(r.Context(), r.PathValue("id"))
+	if errors.Is(err, store.ErrNotFound) {
+		writeErr(w, http.StatusNotFound, "site not found")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !site.AcmeEnabled {
+		writeErr(w, http.StatusBadRequest, "automatic certificates are not enabled for this site")
+		return
+	}
+
+	if err := s.certifier.Issue(r.Context(), site); err != nil {
+		_ = s.db.RecordACMEAttempt(r.Context(), site.ID, err.Error())
+		writeErr(w, http.StatusBadGateway, "the certificate authority refused: "+err.Error())
+		return
+	}
+	if !s.publish(w, r) {
+		return
+	}
+
+	updated, err := s.db.GetSite(r.Context(), site.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, sanitizeSite(updated))
+}
+
 // --------------------------------------------------------------- rules
 
 func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {

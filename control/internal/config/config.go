@@ -33,6 +33,11 @@ type Config struct {
 	// Shared with the data plane so its internal API can tell us apart from
 	// anything else that happens to sit on the same Docker network.
 	InternalToken string
+
+	// ACME directory to obtain certificates from. Point it at Let's Encrypt's
+	// staging endpoint while testing: production has strict rate limits and a
+	// handful of failed attempts can lock a domain out for a week.
+	ACMEDirectory string
 	RetainDays int    // how many days to keep the attack log
 
 	// Ports the generated site server blocks listen on. Always 80/443 inside the
