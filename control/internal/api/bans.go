@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// Ban tam thoi do engine tu sinh khi phat hien flood. Chung chi ton tai trong
-// shared dict cua data plane (het han la tu bay), Postgres khong biet gi ve
-// chung - nen control plane phai hoi thang data plane qua API noi bo.
+// Temporary bans are created by the engine when it detects a flood. They only exist
+// in the data plane shared dict and expire on their own; Postgres knows nothing about
+// them, so the control plane has to ask the data plane over its internal API.
 
 var dataplaneClient = &http.Client{Timeout: 3 * time.Second}
 
@@ -21,14 +21,14 @@ func (s *Server) dataplaneURL(path string) string {
 func (s *Server) callDataplane(w http.ResponseWriter, target string) {
 	resp, err := dataplaneClient.Get(target)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "khong hoi duoc data plane: "+err.Error())
+		writeErr(w, http.StatusBadGateway, "cannot reach the data plane: "+err.Error())
 		return
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "doc phan hoi that bai: "+err.Error())
+		writeErr(w, http.StatusBadGateway, "failed to read the response: "+err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -40,11 +40,11 @@ func (s *Server) handleListBans(w http.ResponseWriter, r *http.Request) {
 	s.callDataplane(w, s.dataplaneURL("/bans"))
 }
 
-// handleUnban go ban cho mot IP, hoac tat ca khi id la "*".
+// handleUnban lifts the ban for one IP, or for every IP when the id is "*".
 func (s *Server) handleUnban(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
 	if ip == "" {
-		writeErr(w, http.StatusBadRequest, "thieu dia chi IP")
+		writeErr(w, http.StatusBadRequest, "missing IP address")
 		return
 	}
 	s.callDataplane(w, s.dataplaneURL("/unban")+"?ip="+url.QueryEscape(ip))

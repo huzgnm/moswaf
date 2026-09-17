@@ -1,5 +1,5 @@
-// Package web nhung giao dien dashboard (ban build cua Vue) vao binary,
-// nho vay container control plane chi can mot file duy nhat.
+// Package web embeds the built Vue dashboard into the binary so the control plane
+// container needs nothing but a single executable.
 package web
 
 import "embed"

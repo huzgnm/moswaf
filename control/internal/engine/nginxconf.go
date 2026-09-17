@@ -1,6 +1,6 @@
-// Package engine noi control plane voi data plane:
-// sinh file cau hinh nginx cho tung site, day chinh sach qua Redis,
-// va doc nguoc hang doi su kien tu OpenResty ve Postgres.
+// Package engine connects the control plane to the data plane: it renders the nginx
+// config for each site, publishes policy through Redis, and drains the event queue
+// from OpenResty back into Postgres.
 package engine
 
 import (
@@ -15,8 +15,8 @@ import (
 
 var idRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{3,31}$`)
 
-// SiteRender gom nhung thu can de sinh file cau hinh site.
-// Trong container luon la 80/443; doi cong duoc de chay thu tren may dev.
+// SiteRender carries what is needed to render a site config file.
+// Always 80/443 in the container; the ports are configurable for local development.
 type SiteRender struct {
 	CertsDir  string
 	HTTPPort  int
@@ -33,17 +33,17 @@ func (o SiteRender) normalized() SiteRender {
 	return o
 }
 
-// renderSite sinh noi dung file .conf cho mot site.
+// renderSite produces the .conf contents for one site.
 //
-// Hai kich ban:
-//   - co chung chi : mot server block cho cong HTTP (chuyen huong hoac phuc vu)
-//     va mot cho cong HTTPS
-//   - khong chung chi: chi server block HTTP
+// Two shapes:
+//   - with a certificate: one server block on the HTTP port (redirect or serve)
+//     and one on the HTTPS port
+//   - without a certificate: only the HTTP server block
 func renderSite(s *store.Site, opt SiteRender) (string, error) {
 	opt = opt.normalized()
 	certsDir := opt.CertsDir
 	if !idRe.MatchString(s.ID) {
-		return "", fmt.Errorf("id site khong hop le: %q", s.ID)
+		return "", fmt.Errorf("invalid site id: %q", s.ID)
 	}
 	if err := store.ValidateSite(s); err != nil {
 		return "", err
@@ -58,7 +58,7 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 
 	w("# ====================================================================")
 	w("# MosWAF - %s (%s)", s.Name, s.ID)
-	w("# File nay do control plane sinh tu dong. Dung sua tay.")
+	w("# Generated automatically by the control plane. Do not edit by hand.")
 	w("# ====================================================================")
 	w("")
 	w("upstream %s {", upstream)
@@ -67,7 +67,7 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 	w("}")
 	w("")
 
-	// Than chung: WAF + chuyen tiep
+	// Shared body: WAF plus proxying
 	body := func(indent string) {
 		w("%sset $moswaf_site \"%s\";", indent, s.ID)
 		w("%slimit_conn moswaf_conn 200;", indent)
@@ -139,9 +139,9 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 	return b.String(), nil
 }
 
-// WriteSiteConfigs ghi lai toan bo file cau hinh site va chung chi,
-// xoa nhung file cua site da bi go. Watcher trong container proxy
-// se tu phat hien thay doi va reload.
+// WriteSiteConfigs rewrites every site config file and certificate and removes the
+// files of deleted sites. The watcher inside the proxy container notices the change
+// and reloads on its own.
 func WriteSiteConfigs(sites []*store.Site, sitesDir string, opt SiteRender) error {
 	opt = opt.normalized()
 	certsDir := opt.CertsDir
@@ -176,7 +176,7 @@ func WriteSiteConfigs(sites []*store.Site, sitesDir string, opt SiteRender) erro
 		name := s.ID + ".conf"
 		keep[name] = true
 
-		// ghi tam roi doi ten -> nginx khong bao gio doc phai file dang viet do
+		// write to a temp file then rename, so nginx never reads a half-written file
 		tmp := filepath.Join(sitesDir, "."+name+".tmp")
 		if err := os.WriteFile(tmp, []byte(conf), 0o644); err != nil {
 			return err

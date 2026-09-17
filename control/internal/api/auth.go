@@ -18,7 +18,7 @@ type ctxKey string
 
 const ctxUser ctxKey = "moswaf.user"
 
-// ------------------------------------------------------- chong do mat khau
+// ------------------------------------------------------- brute force guard
 
 type attempt struct {
 	fails int
@@ -48,7 +48,7 @@ func (g *loginGuard) cleanup() {
 	}
 }
 
-// blocked tra ve so giay con phai cho, 0 neu duoc thu tiep.
+// blocked returns how many seconds are left to wait, or 0 when a retry is allowed.
 func (g *loginGuard) blocked(ip string) int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -110,7 +110,7 @@ func (s *Server) issueToken(u *store.User) (string, time.Time, error) {
 func (s *Server) parseToken(raw string) (*store.User, error) {
 	tok, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
 		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("thuat toan ky khong duoc chap nhan")
+			return nil, errors.New("unsupported signing algorithm")
 		}
 		return s.cfg.JWTSecret, nil
 	}, jwt.WithValidMethods([]string{"HS256"}))
@@ -119,12 +119,12 @@ func (s *Server) parseToken(raw string) (*store.User, error) {
 	}
 	claims, ok := tok.Claims.(jwt.MapClaims)
 	if !ok || !tok.Valid {
-		return nil, errors.New("token khong hop le")
+		return nil, errors.New("invalid token")
 	}
 	sub, _ := claims["sub"].(string)
 	id, err := strconv.ParseInt(sub, 10, 64)
 	if err != nil {
-		return nil, errors.New("token thieu chu the")
+		return nil, errors.New("token has no subject")
 	}
 	usr, _ := claims["usr"].(string)
 	return &store.User{ID: id, Username: usr}, nil
@@ -134,12 +134,12 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
 		if !strings.HasPrefix(h, "Bearer ") {
-			writeErr(w, http.StatusUnauthorized, "chua dang nhap")
+			writeErr(w, http.StatusUnauthorized, "not signed in")
 			return
 		}
 		u, err := s.parseToken(strings.TrimPrefix(h, "Bearer "))
 		if err != nil {
-			writeErr(w, http.StatusUnauthorized, "phien dang nhap khong hop le hoac da het han")
+			writeErr(w, http.StatusUnauthorized, "session is invalid or has expired")
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxUser, u)))
@@ -151,14 +151,14 @@ func userFrom(r *http.Request) *store.User {
 	return u
 }
 
-// ------------------------------------------------------- handler
+// ------------------------------------------------------- handlers
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
 	if wait := s.login.blocked(ip); wait > 0 {
 		w.Header().Set("Retry-After", strconv.Itoa(wait))
 		writeErr(w, http.StatusTooManyRequests,
-			"Sai qua nhieu lan. Thu lai sau "+strconv.Itoa(wait)+" giay.")
+			"Too many failed attempts. Try again in "+strconv.Itoa(wait)+" seconds.")
 		return
 	}
 
@@ -173,14 +173,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	u, err := s.db.Authenticate(r.Context(), strings.TrimSpace(req.Username), req.Password)
 	if err != nil {
 		s.login.fail(ip)
-		writeErr(w, http.StatusUnauthorized, "Sai tai khoan hoac mat khau")
+		writeErr(w, http.StatusUnauthorized, "Wrong username or password")
 		return
 	}
 	s.login.success(ip)
 
 	token, exp, err := s.issueToken(u)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "khong tao duoc phien dang nhap")
+		writeErr(w, http.StatusInternalServerError, "could not create a session")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -194,7 +194,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r)
 	full, err := s.db.GetUser(r.Context(), u.ID)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "tai khoan khong con ton tai")
+		writeErr(w, http.StatusUnauthorized, "this account no longer exists")
 		return
 	}
 	writeJSON(w, http.StatusOK, full)
@@ -210,16 +210,16 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.db.Authenticate(r.Context(), u.Username, req.Current); err != nil {
-		writeErr(w, http.StatusUnauthorized, "Mat khau hien tai khong dung")
+		writeErr(w, http.StatusUnauthorized, "Current password is incorrect")
 		return
 	}
 	if len(req.New) < 8 {
-		writeErr(w, http.StatusBadRequest, "Mat khau moi phai tu 8 ky tu tro len")
+		writeErr(w, http.StatusBadRequest, "The new password must be at least 8 characters")
 		return
 	}
 	if err := s.db.SetPassword(r.Context(), u.Username, req.New); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "da doi mat khau"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
 }

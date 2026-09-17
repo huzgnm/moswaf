@@ -1,5 +1,5 @@
-// Package store lo phan luu tru: Postgres la nguon su that cua cau hinh,
-// rule va attack log.
+// Package store owns persistence: Postgres is the source of truth for the
+// configuration, the rules and the attack log.
 package store
 
 import (
@@ -17,17 +17,17 @@ type Store struct {
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("dsn khong hop le: %w", err)
+		return nil, fmt.Errorf("invalid dsn: %w", err)
 	}
 	cfg.MaxConns = 10
 	cfg.MaxConnLifetime = time.Hour
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("khong tao duoc pool: %w", err)
+		return nil, fmt.Errorf("cannot create the pool: %w", err)
 	}
 
-	// Postgres co the chua san sang ngay khi container vua len
+	// Postgres may not be ready the instant its container comes up
 	var lastErr error
 	for i := 0; i < 30; i++ {
 		if lastErr = pool.Ping(ctx); lastErr == nil {
@@ -36,7 +36,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		time.Sleep(time.Second)
 	}
 	pool.Close()
-	return nil, fmt.Errorf("khong ket noi duoc postgres: %w", lastErr)
+	return nil, fmt.Errorf("cannot connect to postgres: %w", lastErr)
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -135,7 +135,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, schema); err != nil {
-		return fmt.Errorf("tao schema that bai: %w", err)
+		return fmt.Errorf("failed to create the schema: %w", err)
 	}
 	return nil
 }

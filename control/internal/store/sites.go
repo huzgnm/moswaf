@@ -62,32 +62,32 @@ func (s *Store) GetSite(ctx context.Context, id string) (*Site, error) {
 	return site, err
 }
 
-// ValidateSite chuan hoa va kiem tra du lieu truoc khi ghi.
+// ValidateSite normalises and checks a site before it is written.
 func ValidateSite(s *Site) error {
 	s.Name = strings.TrimSpace(s.Name)
 	s.UpstreamHost = strings.TrimSpace(s.UpstreamHost)
 
 	if s.Name == "" {
-		return fmt.Errorf("thieu ten site")
+		return fmt.Errorf("the site name is required")
 	}
 	if len(s.Domains) == 0 {
-		return fmt.Errorf("phai khai bao it nhat mot ten mien")
+		return fmt.Errorf("at least one domain is required")
 	}
 	for i, d := range s.Domains {
 		d = strings.ToLower(strings.TrimSpace(d))
 		if d == "" || strings.ContainsAny(d, " /\\:;{}\"'$") {
-			return fmt.Errorf("ten mien khong hop le: %q", s.Domains[i])
+			return fmt.Errorf("invalid domain: %q", s.Domains[i])
 		}
 		s.Domains[i] = d
 	}
 	if s.UpstreamHost == "" {
-		return fmt.Errorf("thieu dia chi upstream")
+		return fmt.Errorf("the upstream host is required")
 	}
 	if strings.ContainsAny(s.UpstreamHost, " /\\;{}\"'$") {
-		return fmt.Errorf("dia chi upstream khong hop le")
+		return fmt.Errorf("invalid upstream host")
 	}
 	if s.UpstreamPort <= 0 || s.UpstreamPort > 65535 {
-		return fmt.Errorf("cong upstream khong hop le")
+		return fmt.Errorf("invalid upstream port")
 	}
 	if s.UpstreamScheme != "http" && s.UpstreamScheme != "https" {
 		s.UpstreamScheme = "http"
@@ -103,13 +103,13 @@ func ValidateSite(s *Site) error {
 		s.Challenge = "auto"
 	}
 	if s.RateRPS < 0 || s.RateBurst < 0 {
-		return fmt.Errorf("gioi han toc do khong duoc am")
+		return fmt.Errorf("rate limits cannot be negative")
 	}
 	if (s.TLSCert == "") != (s.TLSKey == "") {
-		return fmt.Errorf("phai cung cap ca chung chi va khoa rieng")
+		return fmt.Errorf("both the certificate and the private key are required")
 	}
 	if s.ForceHTTPS && s.TLSCert == "" {
-		return fmt.Errorf("bat ep HTTPS thi phai co chung chi")
+		return fmt.Errorf("forcing HTTPS requires a certificate")
 	}
 	if s.RulesOff == nil {
 		s.RulesOff = []string{}

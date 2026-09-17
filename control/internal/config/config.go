@@ -1,4 +1,4 @@
-// Package config doc cau hinh runtime cua control plane tu bien moi truong.
+// Package config reads the control plane runtime configuration from the environment.
 package config
 
 import (
@@ -10,7 +10,7 @@ import (
 )
 
 type Config struct {
-	Listen string // dia chi lang nghe cua dashboard admin, vd ":9443"
+	Listen string // admin dashboard listen address, e.g. ":9443"
 
 	DBDSN         string
 	RedisAddr     string
@@ -22,16 +22,17 @@ type Config struct {
 	TokenTTL        time.Duration
 
 	AdminUser     string
-	AdminPassword string // chi dung de tao tai khoan lan dau
+	AdminPassword string // only used to create the very first account
 
-	SitesDir   string // noi ghi file cau hinh nginx cho tung site
-	CertsDir   string // noi ghi chung chi cua site
-	AdminTLS   string // thu muc chung chi cua chinh dashboard
-	ProxySync  string // URL endpoint /sync cua data plane
-	RetainDays int    // so ngay giu attack log
+	SitesDir   string // where per-site nginx config files are written
+	CertsDir   string // where site certificates are written
+	AdminTLS   string // certificate directory for the dashboard itself
+	ProxySync  string // data plane /sync endpoint URL
+	RetainDays int    // how many days to keep the attack log
 
-	// Cong ma cac server block cua site se lang nghe. Trong container luon la
-	// 80/443; doi duoc de chay thu tren may dev khi khong co quyen bind cong thap.
+	// Ports the generated site server blocks listen on. Always 80/443 inside the
+	// container; configurable so it can run on a dev machine without the privilege
+	// to bind low ports.
 	SiteHTTPPort  int
 	SiteHTTPSPort int
 }
@@ -63,7 +64,7 @@ func randomSecret() string {
 func Load() *Config {
 	secret := env("MOSWAF_JWT_SECRET", "")
 	if secret == "" {
-		// Khong co secret => sinh tam, phien dang nhap se mat khi restart.
+		// No secret provided, so generate a throwaway one; sessions will not survive a restart.
 		secret = randomSecret()
 	}
 

@@ -1,6 +1,6 @@
-// Command moswafd la control plane cua MosWAF:
-// REST API + dashboard admin (cong rieng), dong bo chinh sach xuong data plane,
-// va thu gom attack log tu OpenResty ve Postgres.
+// Command moswafd is the MosWAF control plane: the REST API and admin dashboard
+// on their own port, policy publishing down to the data plane, and collection of
+// the attack log from OpenResty into Postgres.
 package main
 
 import (
@@ -35,9 +35,9 @@ var version = "0.1.0"
 
 func main() {
 	var (
-		healthcheck   = flag.Bool("healthcheck", false, "kiem tra dich vu roi thoat (dung cho docker healthcheck)")
-		resetPassword = flag.String("reset-password", "", "dat lai mat khau admin roi thoat")
-		showVersion   = flag.Bool("version", false, "in phien ban roi thoat")
+		healthcheck   = flag.Bool("healthcheck", false, "check the service and exit (used by the docker healthcheck)")
+		resetPassword = flag.String("reset-password", "", "reset the admin password and exit")
+		showVersion   = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Parse()
 
@@ -57,7 +57,7 @@ func main() {
 	}
 
 	if err := run(cfg); err != nil {
-		log.Fatalf("khong khoi dong duoc: %v", err)
+		log.Fatalf("failed to start: %v", err)
 	}
 }
 
@@ -91,14 +91,14 @@ func run(cfg *config.Config) error {
 	defer rdb.Close()
 
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("khong ket noi duoc redis: %w", err)
+		return fmt.Errorf("cannot connect to redis: %w", err)
 	}
 
 	// --- day cau hinh xuong data plane ---
 	pub := engine.NewPublisher(db, rdb, cfg)
 	if err := pub.Publish(ctx); err != nil {
-		// Khong chet han: admin van vao dashboard duoc de xu ly
-		log.Printf("canh bao: chua day duoc cau hinh ban dau: %v", err)
+		// Not fatal: the admin can still reach the dashboard and fix things
+		log.Printf("warning: could not publish the initial configuration: %v", err)
 	}
 
 	// --- thu gom log + don dep ---
@@ -127,21 +127,21 @@ func run(cfg *config.Config) error {
 	}
 
 	go func() {
-		log.Printf("dashboard admin dang lang nghe tren https://0.0.0.0%s", cfg.Listen)
+		log.Printf("admin dashboard listening on https://0.0.0.0%s", cfg.Listen)
 		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server dung bat thuong: %v", err)
+			log.Fatalf("server stopped unexpectedly: %v", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("nhan tin hieu dung, dang tat...")
+	log.Println("shutdown signal received, stopping...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
 }
 
-// ensureAdmin tao tai khoan quan tri dau tien tu bien moi truong.
+// ensureAdmin creates the first administrator account from the environment.
 func ensureAdmin(ctx context.Context, db *store.Store, cfg *config.Config) error {
 	n, err := db.CountUsers(ctx)
 	if err != nil {
@@ -157,12 +157,12 @@ func ensureAdmin(ctx context.Context, db *store.Store, cfg *config.Config) error
 			return err
 		}
 		pass = fmt.Sprintf("%x", b)
-		log.Printf("CHU Y: chua dat MOSWAF_ADMIN_PASSWORD, mat khau tam thoi la: %s", pass)
+		log.Printf("NOTE: MOSWAF_ADMIN_PASSWORD is unset, temporary password is: %s", pass)
 	}
 	if err := db.CreateUser(ctx, cfg.AdminUser, pass); err != nil {
-		return fmt.Errorf("tao tai khoan admin that bai: %w", err)
+		return fmt.Errorf("failed to create the admin account: %w", err)
 	}
-	log.Printf("da tao tai khoan quan tri %q", cfg.AdminUser)
+	log.Printf("created administrator account %q", cfg.AdminUser)
 	return nil
 }
 
@@ -172,16 +172,16 @@ func doResetPassword(cfg *config.Config, newPass string) int {
 
 	db, err := store.Open(ctx, cfg.DBDSN)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "khong ket noi duoc DB:", err)
+		fmt.Fprintln(os.Stderr, "cannot connect to the database:", err)
 		return 1
 	}
 	defer db.Close()
 
 	if err := db.SetPassword(ctx, cfg.AdminUser, newPass); err != nil {
-		fmt.Fprintln(os.Stderr, "doi mat khau that bai:", err)
+		fmt.Fprintln(os.Stderr, "password change failed:", err)
 		return 1
 	}
-	fmt.Println("da doi mat khau cho", cfg.AdminUser)
+	fmt.Println("password changed for", cfg.AdminUser)
 	return 0
 }
 
@@ -204,17 +204,17 @@ func doHealthcheck(listen string) int {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintln(os.Stderr, "trang thai:", resp.Status)
+		fmt.Fprintln(os.Stderr, "status:", resp.Status)
 		return 1
 	}
 	fmt.Println("ok")
 	return 0
 }
 
-// loadOrCreateCert dung chung chi tu ky cho dashboard. Dashboard nam o cong
-// rieng va thuong truy cap bang IP nen khong xin duoc chung chi cong cong;
-// admin co the thay bang chung chi that bang cach de file cert.pem/key.pem
-// vao dung thu muc.
+// loadOrCreateCert uses a self-signed certificate for the dashboard. The dashboard
+// sits on its own port and is usually reached by IP, so a public certificate is not
+// an option; an admin can swap in a real one by dropping cert.pem and key.pem into
+// the same directory.
 func loadOrCreateCert(dir string) (tls.Certificate, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return tls.Certificate{}, err
@@ -265,7 +265,7 @@ func loadOrCreateCert(dir string) (tls.Certificate, error) {
 	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
 		return tls.Certificate{}, err
 	}
-	log.Printf("da sinh chung chi tu ky cho dashboard tai %s", dir)
+	log.Printf("generated a self-signed dashboard certificate in %s", dir)
 
 	return tls.X509KeyPair(certPEM, keyPEM)
 }

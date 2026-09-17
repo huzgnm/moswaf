@@ -13,18 +13,18 @@ import (
 	"github.com/mosvpn/moswaf/control/internal/store"
 )
 
-// newSiteID sinh dinh danh ngan, hop le cho ca ten file nginx lan key Redis.
+// newSiteID generates a short id that is valid both as an nginx filename and a Redis key.
 func newSiteID() string {
 	b := make([]byte, 5)
 	_, _ = rand.Read(b)
 	return "s" + hex.EncodeToString(b)
 }
 
-// publish day cau hinh moi xuong data plane; loi o day phai bao cho admin
-// vi thay doi coi nhu chua co hieu luc.
+// publish pushes the new configuration down to the data plane. A failure here must be
+// surfaced to the admin, because the change has not actually taken effect.
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) bool {
 	if err := s.pub.Publish(r.Context()); err != nil {
-		writeErr(w, http.StatusInternalServerError, "luu duoc nhung chua ap duoc xuong data plane: "+err.Error())
+		writeErr(w, http.StatusInternalServerError, "saved, but could not apply it to the data plane: "+err.Error())
 		return false
 	}
 	return true
@@ -32,7 +32,7 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) bool {
 
 func sanitizeSite(s *store.Site) *store.Site {
 	c := *s
-	c.TLSKey = "" // khoa rieng khong bao gio roi khoi server
+	c.TLSKey = "" // the private key never leaves the server
 	return &c
 }
 
@@ -54,7 +54,7 @@ func (s *Server) handleListSites(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetSite(w http.ResponseWriter, r *http.Request) {
 	site, err := s.db.GetSite(r.Context(), r.PathValue("id"))
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "khong tim thay site")
+		writeErr(w, http.StatusNotFound, "site not found")
 		return
 	}
 	if err != nil {
@@ -104,7 +104,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cur, err := s.db.GetSite(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "khong tim thay site")
+		writeErr(w, http.StatusNotFound, "site not found")
 		return
 	}
 	if err != nil {
@@ -119,7 +119,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 
 	in.ID = cur.ID
 	in.CreatedAt = cur.CreatedAt
-	// Giao dien khong gui lai khoa rieng -> giu nguyen cai dang dung
+	// The UI does not resend the private key -> keep the one already in use
 	if in.TLSCert == "" && in.TLSKey == "" {
 		in.TLSCert, in.TLSKey = cur.TLSCert, cur.TLSKey
 	} else if in.TLSKey == "" {
@@ -144,7 +144,7 @@ func (s *Server) handleUpdateSite(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.DeleteSite(r.Context(), r.PathValue("id")); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeErr(w, http.StatusNotFound, "khong tim thay site")
+			writeErr(w, http.StatusNotFound, "site not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -153,7 +153,7 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	if !s.publish(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "da xoa"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // --------------------------------------------------------------- rules
@@ -185,7 +185,7 @@ func (s *Server) handleCreateRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.db.GetRule(r.Context(), rule.ID); err == nil {
-		writeErr(w, http.StatusConflict, "ma rule da ton tai")
+		writeErr(w, http.StatusConflict, "that rule id already exists")
 		return
 	}
 	if err := s.db.UpsertRule(r.Context(), &rule); err != nil {
@@ -202,7 +202,7 @@ func (s *Server) handleUpdateRule(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	cur, err := s.db.GetRule(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		writeErr(w, http.StatusNotFound, "khong tim thay rule")
+		writeErr(w, http.StatusNotFound, "rule not found")
 		return
 	}
 	if err != nil {
@@ -239,7 +239,7 @@ func (s *Server) handleToggleRule(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.db.SetRuleEnabled(r.Context(), r.PathValue("id"), req.Enabled); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeErr(w, http.StatusNotFound, "khong tim thay rule")
+			writeErr(w, http.StatusNotFound, "rule not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -259,7 +259,7 @@ func (s *Server) handleDeleteRule(w http.ResponseWriter, r *http.Request) {
 	if !s.publish(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "da xoa"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // --------------------------------------------------------------- IP
@@ -298,12 +298,12 @@ func (s *Server) handleAddIP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteIP(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "id khong hop le")
+		writeErr(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	if err := s.db.DeleteIP(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			writeErr(w, http.StatusNotFound, "khong tim thay")
+			writeErr(w, http.StatusNotFound, "not found")
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -312,7 +312,7 @@ func (s *Server) handleDeleteIP(w http.ResponseWriter, r *http.Request) {
 	if !s.publish(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "da xoa"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // --------------------------------------------------------------- events
@@ -437,7 +437,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// giai ma de len ban hien tai -> client chi can gui truong muon doi
+	// decode over the current values, so a client only has to send what it changes
 	body := cur
 	if !readJSON(w, r, &body) {
 		return
@@ -456,8 +456,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// handleUnderAttack bat/tat che do "dang bi tan cong" - cong tac quan trong nhat
-// khi dang bi flood, nen tach rieng cho bam mot nut la xong.
+// handleUnderAttack toggles under-attack mode. It is the switch that matters most
+// during a flood, so it gets its own endpoint and a single button in the UI.
 func (s *Server) handleUnderAttack(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Enabled bool `json:"enabled"`
@@ -487,7 +487,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	if !s.publish(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "da dong bo", "version": s.pub.Version()})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "published", "version": s.pub.Version()})
 }
 
 func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
@@ -499,16 +499,16 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 		"dataplane":      "unknown",
 	}
 	if err := s.db.Ping(ctx); err != nil {
-		out["database"] = "loi: " + err.Error()
+		out["database"] = "error: " + err.Error()
 	}
 	if err := s.rdb.Ping(ctx).Err(); err != nil {
-		out["redis"] = "loi: " + err.Error()
+		out["redis"] = "error: " + err.Error()
 	}
 	if n, err := s.rdb.LLen(ctx, "moswaf:events").Result(); err == nil {
 		out["event_queue"] = n
 	}
 
-	// hoi thang data plane
+	// ask the data plane directly
 	client := &http.Client{Timeout: 2 * time.Second}
 	if resp, err := client.Get(strings.Replace(s.cfg.ProxySync, "/sync", "/healthz", 1)); err == nil {
 		defer resp.Body.Close()
@@ -519,7 +519,7 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 			out["dataplane"] = "ok"
 		}
 	} else {
-		out["dataplane"] = "khong ket noi duoc: " + err.Error()
+		out["dataplane"] = "unreachable: " + err.Error()
 	}
 
 	writeJSON(w, http.StatusOK, out)

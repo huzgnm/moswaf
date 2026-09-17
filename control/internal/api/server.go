@@ -1,4 +1,4 @@
-// Package api phuc vu REST API va dashboard admin tren cong rieng.
+// Package api serves the REST API and the admin dashboard on their own port.
 package api
 
 import (
@@ -34,11 +34,11 @@ func New(cfg *config.Config, db *store.Store, rdb *redis.Client, pub *engine.Pub
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 
-	// --- cong khai ---
+	// --- public ---
 	api.HandleFunc("POST /api/auth/login", s.handleLogin)
 	api.HandleFunc("GET /api/health", s.handleHealth)
 
-	// --- can dang nhap ---
+	// --- authenticated ---
 	auth := http.NewServeMux()
 	auth.HandleFunc("GET /api/auth/me", s.handleMe)
 	auth.HandleFunc("POST /api/auth/password", s.handleChangePassword)
@@ -90,8 +90,8 @@ func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				log.Printf("moswaf: panic khi xu ly %s %s: %v\n%s", r.Method, r.URL.Path, v, debug.Stack())
-				http.Error(w, `{"error":"loi noi bo"}`, http.StatusInternalServerError)
+				log.Printf("moswaf: panic while handling %s %s: %v\n%s", r.Method, r.URL.Path, v, debug.Stack())
+				http.Error(w, `{"error":"internal error"}`, http.StatusInternalServerError)
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -139,19 +139,19 @@ func logging(next http.Handler) http.Handler {
 func (s *Server) spaHandler() http.Handler {
 	dist, err := fs.Sub(web.Dist, "dist")
 	if err != nil {
-		log.Printf("moswaf: khong doc duoc giao dien nhung: %v", err)
+		log.Printf("moswaf: cannot read the embedded dashboard: %v", err)
 		return http.NotFoundHandler()
 	}
 	if _, err := fs.Stat(dist, "index.html"); err != nil {
-		// Binary duoc build ma chua build frontend - noi ro thay vi tra 404 trong tron
-		log.Printf("moswaf: chua co ban build giao dien (chay `make web-build`)")
+		// The binary was built without a frontend build - say so instead of a bare 404
+		log.Printf("moswaf: no dashboard build found (run `make web-build`)")
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write([]byte(`<!doctype html><meta charset="utf-8">
 <body style="font-family:system-ui;background:#0b0e14;color:#c9d1d9;padding:40px">
-<h2>MosWAF</h2><p>Giao dien chua duoc build. Chay <code>make web-build</code> roi khoi dong lai control plane.</p>
-<p>API van hoat dong binh thuong tai <code>/api/</code>.</p></body>`))
+<h2>MosWAF</h2><p>The dashboard has not been built. Run <code>make web-build</code> and restart the control plane.</p>
+<p>The API at <code>/api/</code> works normally.</p></body>`))
 		})
 	}
 
@@ -163,7 +163,7 @@ func (s *Server) spaHandler() http.Handler {
 			p = "index.html"
 		}
 		if _, err := fs.Stat(dist, p); err != nil {
-			// duong dan cua vue-router -> tra ve index.html de SPA tu dinh tuyen
+			// vue-router path -> serve index.html and let the SPA route it
 			r = r.Clone(r.Context())
 			r.URL.Path = "/"
 		}
@@ -176,14 +176,14 @@ func (s *Server) spaHandler() http.Handler {
 	})
 }
 
-// ------------------------------------------------------------- tien ich
+// ------------------------------------------------------------- helpers
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	if v != nil {
 		if err := json.NewEncoder(w).Encode(v); err != nil {
-			log.Printf("moswaf: ghi JSON that bai: %v", err)
+			log.Printf("moswaf: failed to write JSON: %v", err)
 		}
 	}
 }
@@ -196,11 +196,11 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	defer r.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "khong doc duoc noi dung yeu cau")
+		writeErr(w, http.StatusBadRequest, "could not read the request body")
 		return false
 	}
 	if err := json.Unmarshal(body, dst); err != nil {
-		writeErr(w, http.StatusBadRequest, "JSON khong hop le: "+err.Error())
+		writeErr(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return false
 	}
 	return true

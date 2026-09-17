@@ -9,8 +9,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-var ErrNotFound = errors.New("khong tim thay")
-var ErrBadCredentials = errors.New("sai tai khoan hoac mat khau")
+var ErrNotFound = errors.New("not found")
+var ErrBadCredentials = errors.New("wrong username or password")
 
 func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	var n int
@@ -37,7 +37,7 @@ func (s *Store) Authenticate(ctx context.Context, username, password string) (*U
 		`SELECT id, username, password_hash, created_at FROM users WHERE username = $1`,
 		username).Scan(&u.ID, &u.Username, &hash, &u.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// van chay bcrypt mot lan de thoi gian phan hoi khong lo ra tai khoan co ton tai hay khong
+		// still run bcrypt once so response time does not reveal whether the account exists
 		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidin"), []byte(password))
 		return nil, ErrBadCredentials
 	}
@@ -63,7 +63,7 @@ func (s *Store) GetUser(ctx context.Context, id int64) (*User, error) {
 
 func (s *Store) SetPassword(ctx context.Context, username, password string) error {
 	if len(password) < 8 {
-		return fmt.Errorf("mat khau phai tu 8 ky tu tro len")
+		return fmt.Errorf("the password must be at least 8 characters")
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

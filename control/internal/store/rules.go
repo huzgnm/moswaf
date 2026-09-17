@@ -10,23 +10,23 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// BuiltinRules phai trung ID va bieu thuc voi bo mac dinh trong
-// dataplane/lua/moswaf/rules.lua. Chung duoc seed vao DB lan chay dau tien
-// de admin bat/tat va chinh sua tren dashboard.
+// BuiltinRules must match the ids and patterns of the default set in
+// dataplane/lua/moswaf/rules.lua. They are seeded into the database on first run
+// so an admin can toggle and edit them from the dashboard.
 var BuiltinRules = []Rule{
 	{ID: "sqli-union", Name: "SQLi - UNION SELECT", Category: "sqli", Target: "any",
 		Pattern: `(?i)union[\s/*()]+(all[\s/*()]+)?select`, Action: "deny", Severity: "high"},
-	{ID: "sqli-common", Name: "SQLi - cu phap pho bien", Category: "sqli", Target: "any",
+	{ID: "sqli-common", Name: "SQLi - common syntax", Category: "sqli", Target: "any",
 		Pattern: `(?i)(\bselect\b[\s\S]{1,60}\bfrom\b|\binsert\b\s+into\b|\bdrop\b\s+table\b|\bupdate\b[\s\S]{1,40}\bset\b[\s\S]{1,40}=)`,
 		Action:  "deny", Severity: "high"},
 	{ID: "sqli-blind", Name: "SQLi - blind / time based", Category: "sqli", Target: "any",
 		Pattern: `(?i)(sleep\s*\(\s*\d|benchmark\s*\(|pg_sleep\s*\(|waitfor\s+delay|\bor\b\s+\d+\s*=\s*\d+|'\s*or\s*'1'\s*=\s*'1)`,
 		Action:  "deny", Severity: "high"},
-	{ID: "sqli-meta", Name: "SQLi - do metadata", Category: "sqli", Target: "any",
+	{ID: "sqli-meta", Name: "SQLi - metadata probing", Category: "sqli", Target: "any",
 		Pattern: `(?i)(information_schema|load_file\s*\(|into\s+(out|dump)file|@@version|version\s*\(\s*\))`,
 		Action:  "deny", Severity: "high"},
 
-	{ID: "xss-tag", Name: "XSS - the nguy hiem", Category: "xss", Target: "any",
+	{ID: "xss-tag", Name: "XSS - dangerous tags", Category: "xss", Target: "any",
 		Pattern: `(?i)<\s*(script|iframe|object|embed|svg\b[^>]*onload)`, Action: "deny", Severity: "high"},
 	{ID: "xss-event", Name: "XSS - event handler / js:", Category: "xss", Target: "any",
 		Pattern: `(?i)(javascript\s*:|on(error|load|click|mouseover|focus)\s*=|document\.cookie|eval\s*\(|atob\s*\()`,
@@ -34,37 +34,37 @@ var BuiltinRules = []Rule{
 
 	{ID: "lfi-traversal", Name: "Path traversal", Category: "lfi", Target: "any",
 		Pattern: `(?i)(\.\./|\.\.\\|%2e%2e[/%5c]|\.\.%2f)`, Action: "deny", Severity: "high"},
-	{ID: "lfi-file", Name: "Doc file he thong", Category: "lfi", Target: "any",
+	{ID: "lfi-file", Name: "System file access", Category: "lfi", Target: "any",
 		Pattern: `(?i)(/etc/(passwd|shadow|hosts)|/proc/self/(environ|cmdline)|boot\.ini|win\.ini)`,
 		Action:  "deny", Severity: "high"},
 	{ID: "lfi-wrapper", Name: "PHP wrapper", Category: "lfi", Target: "any",
 		Pattern: `(?i)(php://(input|filter|memory)|data://text|expect://|zip://)`, Action: "deny", Severity: "high"},
 
-	{ID: "rce-shell", Name: "RCE - chen lenh shell", Category: "rce", Target: "any",
+	{ID: "rce-shell", Name: "RCE - shell command injection", Category: "rce", Target: "any",
 		Pattern: `(?i)([;|&` + "`" + `]\s*(cat|ls|id|pwd|whoami|uname|wget|curl|nc|ncat|bash|sh|python|perl)\b|\$\([^)]{1,40}\))`,
 		Action:  "deny", Severity: "critical"},
-	{ID: "rce-php", Name: "RCE - ham PHP nguy hiem", Category: "rce", Target: "any",
+	{ID: "rce-php", Name: "RCE - dangerous PHP functions", Category: "rce", Target: "any",
 		Pattern: `(?i)\b(system|exec|passthru|shell_exec|popen|proc_open|assert|base64_decode)\s*\(`,
 		Action:  "deny", Severity: "critical"},
 
-	{ID: "path-secret", Name: "Do file bi mat", Category: "recon", Target: "uri",
+	{ID: "path-secret", Name: "Secret file probing", Category: "recon", Target: "uri",
 		Pattern: `(?i)/(\.env|\.git/|\.svn/|\.ssh/|\.aws/|wp-config\.php(\.bak)?|config\.php\.(bak|old|save)|\.DS_Store|docker-compose\.ya?ml|backup\.(sql|zip|tar\.gz))`,
 		Action:  "deny", Severity: "medium"},
-	{ID: "path-admin", Name: "Do bang dieu khien", Category: "recon", Target: "uri",
+	{ID: "path-admin", Name: "Admin panel probing", Category: "recon", Target: "uri",
 		Pattern: `(?i)/(phpmyadmin|pma|adminer\.php|phpinfo\.php)`, Action: "log", Severity: "low"},
 
-	{ID: "ua-scanner", Name: "Cong cu quet lo hong", Category: "bot", Target: "ua",
+	{ID: "ua-scanner", Name: "Vulnerability scanner", Category: "bot", Target: "ua",
 		Pattern: `(?i)(sqlmap|nikto|nmap|masscan|zgrab|acunetix|nessus|openvas|dirbuster|gobuster|feroxbuster|wpscan|joomscan|hydra|havij|netsparker|arachni|w3af|xsstrike)`,
 		Action:  "deny", Severity: "high"},
-	{ID: "ua-empty", Name: "Thieu User-Agent", Category: "bot", Target: "ua",
+	{ID: "ua-empty", Name: "Missing User-Agent", Category: "bot", Target: "ua",
 		Pattern: `^$`, Action: "challenge", Severity: "low"},
-	{ID: "ua-lib", Name: "HTTP client tu dong", Category: "bot", Target: "ua",
+	{ID: "ua-lib", Name: "Automated HTTP client", Category: "bot", Target: "ua",
 		Pattern: `(?i)^(python-requests|python-urllib|go-http-client|java/|okhttp|libwww-perl|axios/|scrapy|node-fetch)`,
 		Action:  "log", Severity: "low"},
 
-	{ID: "hdr-inject", Name: "Chen header / CRLF", Category: "proto", Target: "any",
+	{ID: "hdr-inject", Name: "Header injection / CRLF", Category: "proto", Target: "any",
 		Pattern: `(?i)(%0d%0a|\r\n)(set-cookie|location|content-length)\s*:`, Action: "deny", Severity: "medium"},
-	{ID: "ssrf-meta", Name: "SSRF - metadata cloud", Category: "ssrf", Target: "any",
+	{ID: "ssrf-meta", Name: "SSRF - cloud metadata", Category: "ssrf", Target: "any",
 		Pattern: `(?i)(169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200)`,
 		Action:  "deny", Severity: "high"},
 }
@@ -81,8 +81,8 @@ func scanRule(row pgx.Row) (*Rule, error) {
 	return &r, nil
 }
 
-// SeedRules nap bo rule goc, chi chen khi chua ton tai -> khong de len
-// chinh sua cua admin sau nay.
+// SeedRules loads the built-in rules, inserting only what is missing so it never
+// overwrites an admin's later edits.
 func (s *Store) SeedRules(ctx context.Context) error {
 	for _, r := range BuiltinRules {
 		_, err := s.pool.Exec(ctx, `
@@ -91,7 +91,7 @@ func (s *Store) SeedRules(ctx context.Context) error {
 			ON CONFLICT (id) DO NOTHING`,
 			r.ID, r.Name, r.Category, r.Target, r.Pattern, r.Action, r.Severity)
 		if err != nil {
-			return fmt.Errorf("seed rule %s: %w", r.ID, err)
+			return fmt.Errorf("seeding rule %s: %w", r.ID, err)
 		}
 	}
 	return nil
@@ -128,24 +128,24 @@ func ValidateRule(r *Rule) error {
 	r.Name = strings.TrimSpace(r.Name)
 
 	if r.Name == "" {
-		return fmt.Errorf("thieu ten rule")
+		return fmt.Errorf("the rule name is required")
 	}
 	if r.Pattern == "" {
-		return fmt.Errorf("thieu bieu thuc")
+		return fmt.Errorf("the pattern is required")
 	}
-	// Cu phap PCRE cua OpenResty rong hon RE2, nhung bat duoc phan lon loi go nham.
+	// OpenResty's PCRE syntax is broader than RE2, but this still catches most typos.
 	if _, err := regexp.Compile(r.Pattern); err != nil {
-		return fmt.Errorf("bieu thuc khong hop le: %v", err)
+		return fmt.Errorf("invalid pattern: %v", err)
 	}
 	switch r.Target {
 	case "uri", "args", "body", "ua", "header", "cookie", "any":
 	default:
-		return fmt.Errorf("target khong hop le: %s", r.Target)
+		return fmt.Errorf("invalid target: %s", r.Target)
 	}
 	switch r.Action {
 	case "deny", "challenge", "ban", "log":
 	default:
-		return fmt.Errorf("action khong hop le: %s", r.Action)
+		return fmt.Errorf("invalid action: %s", r.Action)
 	}
 	switch r.Severity {
 	case "low", "medium", "high", "critical":
@@ -181,15 +181,15 @@ func (s *Store) SetRuleEnabled(ctx context.Context, id string, enabled bool) err
 	return nil
 }
 
-// DeleteRule chi xoa rule tu tao; rule goc chi duoc tat, khong duoc xoa
-// de lan nang cap sau con doi chieu duoc.
+// DeleteRule only removes custom rules. Built-in rules can be disabled but not
+// deleted, so a later upgrade still has something to compare against.
 func (s *Store) DeleteRule(ctx context.Context, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM rules WHERE id = $1 AND builtin = false`, id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("khong xoa duoc: rule khong ton tai hoac la rule goc (hay tat thay vi xoa)")
+		return fmt.Errorf("cannot delete: the rule does not exist or is built in (disable it instead)")
 	}
 	return nil
 }

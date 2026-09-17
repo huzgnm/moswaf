@@ -25,10 +25,10 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 		return DefaultSettings(), err
 	}
 
-	// Bat dau tu mac dinh roi de len -> them truong moi sau nay khong lam vo cau hinh cu
+	// Start from the defaults and overlay, so adding a field later never breaks an old row
 	st := DefaultSettings()
 	if err := json.Unmarshal(raw, &st); err != nil {
-		return DefaultSettings(), fmt.Errorf("cau hinh trong DB hong: %w", err)
+		return DefaultSettings(), fmt.Errorf("the stored configuration is corrupt: %w", err)
 	}
 	return st, nil
 }
@@ -40,14 +40,14 @@ func ValidateSettings(st *Settings) error {
 		st.DefaultMode = "protect"
 	}
 	if st.GlobalRateRPS < 0 || st.GlobalRateBurst < 0 {
-		return fmt.Errorf("gioi han toc do khong duoc am")
+		return fmt.Errorf("rate limits cannot be negative")
 	}
 	if st.ChallengeDifficulty < 8 {
 		st.ChallengeDifficulty = 8
 	}
 	if st.ChallengeDifficulty > 24 {
-		// tren 24 bit thi may yeu cua khach co the treo hang chuc giay
-		return fmt.Errorf("do kho challenge toi da la 24 bit")
+		// above 24 bits a slow visitor machine can hang for tens of seconds
+		return fmt.Errorf("the challenge difficulty is capped at 24 bits")
 	}
 	if st.ChallengeTTL < 60 {
 		st.ChallengeTTL = 60
@@ -70,7 +70,7 @@ func ValidateSettings(st *Settings) error {
 	for i, p := range st.TrustedProxies {
 		norm, err := NormalizeCIDR(p)
 		if err != nil {
-			return fmt.Errorf("proxy tin cay khong hop le: %v", err)
+			return fmt.Errorf("invalid trusted proxy: %v", err)
 		}
 		st.TrustedProxies[i] = norm
 	}

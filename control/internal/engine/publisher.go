@@ -16,8 +16,8 @@ import (
 
 const configKey = "moswaf:config"
 
-// Cau truc duoi day chinh la thu ma dataplane/lua/moswaf/config.lua doc.
-// Doi ten truong o day thi phai doi ca ben Lua.
+// The structures below are exactly what dataplane/lua/moswaf/config.lua reads.
+// Renaming a field here means renaming it on the Lua side too.
 
 type luaSite struct {
 	ID        string   `json:"id"`
@@ -67,32 +67,32 @@ func (p *Publisher) Version() int64 {
 	return p.version
 }
 
-// Publish doc toan bo cau hinh tu DB, day sang Redis cho engine Lua,
-// ghi lai file nginx, roi bao data plane nap ngay.
-// Goi ham nay sau moi thay doi cua admin.
+// Publish reads the whole configuration from the database, pushes it to Redis for
+// the Lua engine, rewrites the nginx files and tells the data plane to reload now.
+// Call it after every admin change.
 func (p *Publisher) Publish(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	settings, err := p.db.GetSettings(ctx)
 	if err != nil {
-		return fmt.Errorf("doc settings: %w", err)
+		return fmt.Errorf("reading settings: %w", err)
 	}
 	sites, err := p.db.ListSites(ctx)
 	if err != nil {
-		return fmt.Errorf("doc sites: %w", err)
+		return fmt.Errorf("reading sites: %w", err)
 	}
 	rules, err := p.db.ListRules(ctx)
 	if err != nil {
-		return fmt.Errorf("doc rules: %w", err)
+		return fmt.Errorf("reading rules: %w", err)
 	}
 	blacks, err := p.db.ListIPs(ctx, "black")
 	if err != nil {
-		return fmt.Errorf("doc blacklist: %w", err)
+		return fmt.Errorf("reading the blocklist: %w", err)
 	}
 	whites, err := p.db.ListIPs(ctx, "white")
 	if err != nil {
-		return fmt.Errorf("doc whitelist: %w", err)
+		return fmt.Errorf("reading the allowlist: %w", err)
 	}
 
 	cfg := luaConfig{
@@ -134,7 +134,7 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		return err
 	}
 	if err := p.rdb.Set(ctx, configKey, raw, 0).Err(); err != nil {
-		return fmt.Errorf("day config sang redis: %w", err)
+		return fmt.Errorf("publishing the config to redis: %w", err)
 	}
 
 	if err := WriteSiteConfigs(sites, p.cfg.SitesDir, SiteRender{
@@ -142,7 +142,7 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		HTTPPort:  p.cfg.SiteHTTPPort,
 		HTTPSPort: p.cfg.SiteHTTPSPort,
 	}); err != nil {
-		return fmt.Errorf("ghi cau hinh nginx: %w", err)
+		return fmt.Errorf("writing the nginx config: %w", err)
 	}
 
 	p.version = cfg.Version
@@ -150,8 +150,8 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	return nil
 }
 
-// notifyProxy giuc data plane nap cau hinh ngay thay vi doi chu ky 3 giay.
-// That bai o day khong phai loi nghiem trong: timer se tu keo ve sau.
+// notifyProxy nudges the data plane to load the config immediately instead of waiting
+// for the 3 second poll. A failure here is not serious: the timer will catch up.
 func (p *Publisher) notifyProxy() {
 	if p.cfg.ProxySync == "" {
 		return
@@ -165,7 +165,7 @@ func (p *Publisher) notifyProxy() {
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			log.Printf("moswaf: khong goi duoc /sync cua data plane (%v), se dong bo theo chu ky", err)
+			log.Printf("moswaf: could not call the data plane /sync (%v), falling back to the poll", err)
 			return
 		}
 		_ = resp.Body.Close()

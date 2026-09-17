@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// InsertEvents ghi mot lo su kien bang COPY - nhanh hon nhieu so voi INSERT tung dong
-// khi dang bi tan cong va hang doi dai.
+// InsertEvents writes a batch of events with COPY, which is far faster than one
+// INSERT per row when an attack fills the queue.
 func (s *Store) InsertEvents(ctx context.Context, evs []*Event) error {
 	if len(evs) == 0 {
 		return nil
@@ -195,7 +195,7 @@ func (s *Store) PurgeOldEvents(ctx context.Context, days int) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// ---------------------------------------------------------------- thong ke
+// ---------------------------------------------------------------- statistics
 
 func (s *Store) UpsertStat(ctx context.Context, p StatPoint) error {
 	_, err := s.pool.Exec(ctx, `

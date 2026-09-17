@@ -18,7 +18,7 @@ const (
 	batchSize  = 500
 )
 
-// Cau truc JSON do dataplane/lua/moswaf/log.lua day len.
+// The JSON shape pushed by dataplane/lua/moswaf/log.lua.
 type rawEvent struct {
 	TS       int64   `json:"ts"`
 	Ray      string  `json:"ray"`
@@ -42,8 +42,8 @@ type Consumer struct {
 	db  *store.Store
 	rdb *redis.Client
 
-	// OnChange duoc goi khi janitor xoa cac dong IP het han, de day
-	// lai cau hinh cho data plane bo chung khoi blacklist/whitelist.
+	// OnChange fires when the janitor deletes expired IP rows, so the configuration
+	// can be republished and the data plane drops them from its lists.
 	OnChange func(context.Context) error
 }
 
@@ -51,7 +51,7 @@ func NewConsumer(db *store.Store, rdb *redis.Client) *Consumer {
 	return &Consumer{db: db, rdb: rdb}
 }
 
-// Run chay den khi ctx bi huy: keo su kien, gom thong ke, don du lieu cu.
+// Run works until ctx is cancelled: draining events, collecting stats and pruning old data.
 func (c *Consumer) Run(ctx context.Context) {
 	go c.consumeEvents(ctx)
 	go c.collectStats(ctx)
@@ -65,12 +65,12 @@ func (c *Consumer) consumeEvents(ctx context.Context) {
 		}
 		n, err := c.drain(ctx)
 		if err != nil {
-			log.Printf("moswaf: doc hang doi su kien loi: %v", err)
+			log.Printf("moswaf: failed to read the event queue: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		if n < batchSize {
-			// hang doi da can -> nghi mot nhip cho do dot CPU
+			// queue is drained -> pause a beat to keep CPU use flat
 			select {
 			case <-ctx.Done():
 				return
@@ -96,7 +96,7 @@ func (c *Consumer) drain(ctx context.Context) (int, error) {
 	for _, raw := range items {
 		var r rawEvent
 		if err := json.Unmarshal([]byte(raw), &r); err != nil {
-			continue // bo qua dong hong, khong dung ca lo
+			continue // skip a corrupt row rather than losing the whole batch
 		}
 		ts := time.Unix(r.TS, 0)
 		if r.TS == 0 {
@@ -116,7 +116,7 @@ func (c *Consumer) drain(ctx context.Context) (int, error) {
 	return len(items), nil
 }
 
-// collectStats gom bo dem theo phut tu Redis vao bang stats_minute.
+// collectStats folds the per-minute counters from Redis into the stats_minute table.
 func (c *Consumer) collectStats(ctx context.Context) {
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()
@@ -132,7 +132,7 @@ func (c *Consumer) collectStats(ctx context.Context) {
 		for {
 			keys, next, err := c.rdb.Scan(ctx, cursor, statPrefix+"*", 200).Result()
 			if err != nil {
-				log.Printf("moswaf: quet thong ke loi: %v", err)
+				log.Printf("moswaf: failed to scan statistics: %v", err)
 				break
 			}
 			for _, k := range keys {
@@ -167,11 +167,11 @@ func (c *Consumer) absorbStat(ctx context.Context, key string) {
 		Monitored:  num("monitored"),
 	}
 	if err := c.db.UpsertStat(ctx, p); err != nil {
-		log.Printf("moswaf: ghi thong ke loi: %v", err)
+		log.Printf("moswaf: failed to write statistics: %v", err)
 	}
 }
 
-// janitor don log cu, thong ke cu va cac dong IP da het han.
+// janitor prunes old events, old statistics and expired IP rows.
 func (c *Consumer) janitor(ctx context.Context) {
 	run := func() {
 		st, err := c.db.GetSettings(ctx)
@@ -180,18 +180,18 @@ func (c *Consumer) janitor(ctx context.Context) {
 			days = st.LogRetainDays
 		}
 		if n, err := c.db.PurgeOldEvents(ctx, days); err != nil {
-			log.Printf("moswaf: don log cu loi: %v", err)
+			log.Printf("moswaf: failed to prune old events: %v", err)
 		} else if n > 0 {
-			log.Printf("moswaf: da don %d su kien cu hon %d ngay", n, days)
+			log.Printf("moswaf: pruned %d events older than %d days", n, days)
 		}
 		if err := c.db.PurgeOldStats(ctx, days*2); err != nil {
-			log.Printf("moswaf: don thong ke cu loi: %v", err)
+			log.Printf("moswaf: failed to prune old statistics: %v", err)
 		}
 		if n, err := c.db.PurgeExpiredIPs(ctx); err != nil {
-			log.Printf("moswaf: don IP het han loi: %v", err)
+			log.Printf("moswaf: failed to prune expired IPs: %v", err)
 		} else if n > 0 && c.OnChange != nil {
 			if err := c.OnChange(ctx); err != nil {
-				log.Printf("moswaf: day lai cau hinh sau khi don IP loi: %v", err)
+				log.Printf("moswaf: failed to republish after pruning IPs: %v", err)
 			}
 		}
 	}

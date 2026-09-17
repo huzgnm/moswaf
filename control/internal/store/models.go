@@ -2,7 +2,7 @@ package store
 
 import "time"
 
-// Site - mot ten mien (hoac nhom ten mien) duoc MosWAF bao ve.
+// Site is one domain, or a group of domains, protected by MosWAF.
 type Site struct {
 	ID             string    `json:"id"`
 	Name           string    `json:"name"`
@@ -12,7 +12,7 @@ type Site struct {
 	UpstreamPort   int       `json:"upstream_port"`
 	Mode           string    `json:"mode"`      // protect | monitor | off
 	Challenge      string    `json:"challenge"` // auto | always | off
-	RateRPS        int       `json:"rate_rps"`  // 0 = dung muc toan cuc
+	RateRPS        int       `json:"rate_rps"`  // 0 means use the global value
 	RateBurst      int       `json:"rate_burst"`
 	TLSCert        string    `json:"tls_cert,omitempty"`
 	TLSKey         string    `json:"tls_key,omitempty"`
@@ -24,13 +24,13 @@ type Site struct {
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// Rule - mot chu ky phat hien tan cong.
+// Rule is a single attack detection signature.
 type Rule struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Category  string    `json:"category"` // sqli | xss | lfi | rce | bot | recon | ssrf | proto | custom
 	Target    string    `json:"target"`   // uri | args | body | ua | header | cookie | any
-	Pattern   string    `json:"pattern"`  // regex PCRE
+	Pattern   string    `json:"pattern"`  // PCRE regular expression
 	Action    string    `json:"action"`   // deny | challenge | ban | log
 	Severity  string    `json:"severity"` // low | medium | high | critical
 	Enabled   bool      `json:"enabled"`
@@ -38,7 +38,7 @@ type Rule struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// IPEntry - mot dong trong danh sach den hoac trang.
+// IPEntry is one row in the blocklist or the allowlist.
 type IPEntry struct {
 	ID        int64      `json:"id"`
 	CIDR      string     `json:"cidr"`
@@ -48,7 +48,7 @@ type IPEntry struct {
 	CreatedAt time.Time  `json:"created_at"`
 }
 
-// Event - mot request dang chu y do data plane ghi nhan.
+// Event is a noteworthy request recorded by the data plane.
 type Event struct {
 	ID       int64     `json:"id"`
 	TS       time.Time `json:"ts"`
@@ -69,7 +69,7 @@ type Event struct {
 	RT       float64   `json:"rt"`
 }
 
-// Settings - chinh sach toan cuc, luu 1 dong JSONB trong bang settings.
+// Settings is the global policy, stored as a single JSONB row in the settings table.
 type Settings struct {
 	UnderAttack         bool     `json:"under_attack"`
 	DefaultMode         string   `json:"default_mode"`
@@ -106,7 +106,7 @@ func DefaultSettings() Settings {
 	}
 }
 
-// StatPoint - mot diem tren bieu do luu luong (gom theo phut).
+// StatPoint is one point on the traffic chart, bucketed per minute.
 type StatPoint struct {
 	Minute     time.Time `json:"minute"`
 	Total      int64     `json:"total"`
@@ -115,7 +115,7 @@ type StatPoint struct {
 	Monitored  int64     `json:"monitored"`
 }
 
-// User - tai khoan quan tri.
+// User is an administrator account.
 type User struct {
 	ID        int64     `json:"id"`
 	Username  string    `json:"username"`

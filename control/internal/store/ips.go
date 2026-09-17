@@ -8,22 +8,22 @@ import (
 	"time"
 )
 
-// NormalizeCIDR chap nhan ca "1.2.3.4" lan "10.0.0.0/8" va tra ve dang chuan.
+// NormalizeCIDR accepts both "1.2.3.4" and "10.0.0.0/8" and returns a canonical form.
 func NormalizeCIDR(v string) (string, error) {
 	v = strings.TrimSpace(v)
 	if v == "" {
-		return "", fmt.Errorf("dia chi rong")
+		return "", fmt.Errorf("empty address")
 	}
 	if strings.Contains(v, "/") {
 		_, ipnet, err := net.ParseCIDR(v)
 		if err != nil {
-			return "", fmt.Errorf("dai IP khong hop le: %s", v)
+			return "", fmt.Errorf("invalid IP range: %s", v)
 		}
 		return ipnet.String(), nil
 	}
 	ip := net.ParseIP(v)
 	if ip == nil {
-		return "", fmt.Errorf("dia chi IP khong hop le: %s", v)
+		return "", fmt.Errorf("invalid IP address: %s", v)
 	}
 	return ip.String(), nil
 }
@@ -61,7 +61,7 @@ func (s *Store) AddIP(ctx context.Context, cidr, kind, reason string, ttl time.D
 		return nil, err
 	}
 	if kind != "black" && kind != "white" {
-		return nil, fmt.Errorf("loai danh sach khong hop le: %s", kind)
+		return nil, fmt.Errorf("invalid list type: %s", kind)
 	}
 
 	var expires *time.Time
@@ -95,7 +95,7 @@ func (s *Store) DeleteIP(ctx context.Context, id int64) error {
 	return nil
 }
 
-// PurgeExpiredIPs don cac dong da het han (chay dinh ky).
+// PurgeExpiredIPs removes expired rows; called periodically.
 func (s *Store) PurgeExpiredIPs(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM ip_entries WHERE expires_at IS NOT NULL AND expires_at <= now()`)
 	if err != nil {
