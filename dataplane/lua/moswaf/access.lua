@@ -1,17 +1,17 @@
--- moswaf.access - pha access: quyet dinh cho qua / do / chan / ban
+-- moswaf.access - the access phase: allow / monitor / block / ban
 --
--- Thu tu kiem tra duoc sap xep theo chi phi tang dan: cai nao re va loai
--- duoc nhieu request nhat thi chay truoc, quet chu ky (dat CPU nhat) chay cuoi.
+-- Checks are ordered by cost: whatever is cheap and rejects the most requests
+-- runs first, and signature scanning (the most CPU hungry step) runs last.
 --
---   1. endpoint verify cua challenge
---   2. che do bao ve cua site (off / monitor / protect)
---   3. whitelist IP
---   4. ban tam thoi + blacklist
---   5. rate limit theo IP (chong flood)
---   6. che do "dang bi tan cong" -> ep JS challenge
---   7. quet chu ky tren URI / tham so / body / header
+--   1. the challenge verify endpoint
+--   2. the site protection mode (off / monitor / protect)
+--   3. IP allowlist
+--   4. temporary bans and the blocklist
+--   5. per-IP rate limiting (flood protection)
+--   6. under-attack mode -> force a JS challenge
+--   7. signature scanning over URI / query / body / headers
 --
--- Ket qua ghi vao ngx.ctx.moswaf de pha log dung lai.
+-- The outcome is written to ngx.ctx.moswaf for the log phase to pick up.
 
 local config    = require "moswaf.config"
 local util      = require "moswaf.util"
@@ -24,10 +24,10 @@ local _M = {}
 
 local BODY_METHODS = { POST = true, PUT = true, PATCH = true, DELETE = true }
 
--- Ke tan cong hay ma hoa URL de qua mat bo luat: "UNION ALL SELECT" gui di
--- thanh "UNION%20ALL%20SELECT", "<script>" thanh "%3Cscript%3E", tinh vi hon
--- thi ma hoa hai lop ("%2520"). Vi vay truoc khi quet phai chuan hoa: ghep ca
--- ban goc lan cac ban da giai ma lai lam mot, de luat khop o bat ky lop nao.
+-- Attackers URL-encode payloads to slip past the rules: "UNION ALL SELECT" is sent
+-- as "UNION%20ALL%20SELECT", "<script>" as "%3Cscript%3E", and the more careful ones
+-- double-encode ("%2520"). So normalise before scanning: join the raw value with its
+-- decoded forms, and a rule matches at whichever layer the payload hides in.
 local function expand(s)
     if not s or s == "" then return "" end
     local out, prev = s, s
@@ -40,7 +40,7 @@ local function expand(s)
     return out
 end
 
--- --------------------------------------------------------------- phan hoi
+-- --------------------------------------------------------------- responses
 
 local function render_block(ctx, status)
     local html = config.block_html
@@ -57,7 +57,7 @@ local function render_block(ctx, status)
     return ngx.exit(status)
 end
 
--- Ghi nhan quyet dinh chan. O che do monitor thi chi ghi log, van cho qua.
+-- Record a block decision. In monitor mode it is only logged and the request passes.
 local function block(ctx, mode, reason, rule, status)
     ctx.reason   = reason
     ctx.severity = rule and rule.severity or ctx.severity or "medium"
@@ -87,7 +87,7 @@ local function do_challenge(ctx, mode, reason)
     return challenge.serve(ctx.ip, ctx.ua, reason)
 end
 
--- --------------------------------------------------------------- chinh
+-- --------------------------------------------------------------- main
 
 function _M.run()
     local conf = config.get()
@@ -110,26 +110,26 @@ function _M.run()
     }
     ngx.ctx.moswaf = ctx
 
-    -- 1. khach vua giai xong challenge
+    -- 1. a visitor coming back from the challenge
     if uri == challenge.verify_uri then
         ctx.action = "verify"
         return challenge.handle_verify(ip, ua)
     end
 
-    -- 2. che do bao ve
+    -- 2. protection mode
     local mode = site.mode or st.default_mode or "protect"
     if mode == "off" then
         ctx.action = "bypass"
         return
     end
 
-    -- 3. whitelist: bo qua moi kiem tra con lai
+    -- 3. allowlist: skip every remaining check
     if ipset.is_whitelisted(ip) then
         ctx.action = "allow_white"
         return
     end
 
-    -- 4. dang bi ban / nam trong blacklist
+    -- 4. currently banned, or on the blocklist
     local banned, breason = ipset.is_banned(ip)
     if banned then
         return block(ctx, mode, "banned:" .. tostring(breason), nil, 403)
@@ -138,10 +138,10 @@ function _M.run()
         return block(ctx, mode, "blacklist", nil, 403)
     end
 
-    -- 5. rate limit
-    -- Site de 0 nghia la "dung muc toan cuc". Trong Lua so 0 van la gia tri
-    -- dung (khac nil) nen khong duoc viet `tonumber(site.rate_rps) or global`:
-    -- nhu the se ra 0 va tat han rate limit.
+    -- 5. rate limiting
+    -- A site value of 0 means "use the global limit". In Lua the number 0 is still
+    -- truthy, so `tonumber(site.rate_rps) or global` would evaluate to 0 and switch
+    -- rate limiting off entirely.
     local rps = tonumber(site.rate_rps) or 0
     if rps <= 0 then rps = tonumber(st.global_rate_rps) or 60 end
 
@@ -151,30 +151,30 @@ function _M.run()
     ctx.rps = c1
     if hit then
         local violations = ratelimit.mark_violation(ip)
-        -- tai pham lien tuc -> ban tam thoi thay vi chan tung request
+        -- repeat offender -> ban temporarily instead of rejecting request by request
         if violations >= 3 then
             ipset.ban_ip(ip, st.ban_seconds, rreason)
             return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
         end
-        -- lan dau: uu tien challenge de khong chan nham nguoi that
+        -- first offence: prefer a challenge so real people are not blocked by mistake
         if site.challenge ~= "off" then
             return do_challenge(ctx, mode, "flood:" .. rreason)
         end
         return block(ctx, mode, "flood:" .. rreason, nil, 429)
     end
 
-    -- 6. che do dang bi tan cong / site bat challenge bat buoc
+    -- 6. under-attack mode, or a site that always challenges
     if st.under_attack or site.challenge == "always" then
         if not challenge.has_valid_cookie(ip, ua) then
             return do_challenge(ctx, mode, st.under_attack and "under_attack" or "site_challenge")
         end
     end
 
-    -- 7. quet chu ky
+    -- 7. signature scanning
     local headers = ngx.req.get_headers(64)
     local scan = {
-        -- $uri da duoc nginx giai ma va chuan hoa, $request_uri giu nguyen ban
-        -- goc - can ca hai de bat duoc ../ lan cac kieu ma hoa
+        -- nginx has already decoded and normalised $uri while $request_uri keeps the
+        -- raw form; both are needed to catch ../ as well as encoding tricks
         uri     = expand((ngx.var.request_uri or uri) .. "\n" .. uri),
         args    = expand(ngx.var.args or ""),
         ua      = ua,

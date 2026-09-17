@@ -1,8 +1,8 @@
--- moswaf.ipset - danh sach den/trang + ban tam thoi
+-- moswaf.ipset - blocklist, allowlist and temporary bans
 --
--- Danh sach tinh (den/trang) den tu control plane qua config.
--- Ban tam thoi do chinh engine sinh ra khi phat hien flood/quet,
--- luu trong shared dict nen het han tu dong va khong can DB.
+-- The static lists come from the control plane through the config.
+-- Temporary bans are created by the engine itself when it detects a flood or a scan;
+-- they live in a shared dict, so they expire on their own and need no database.
 
 local config = require "moswaf.config"
 local util   = require "moswaf.util"
@@ -10,7 +10,7 @@ local util   = require "moswaf.util"
 local ban = ngx.shared.moswaf_ban
 local _M  = {}
 
--- --------------------------------------------------------- danh sach tinh
+-- --------------------------------------------------------- static lists
 
 function _M.is_whitelisted(ip)
     local conf = config.get()
@@ -22,21 +22,21 @@ function _M.is_blacklisted(ip)
     return (util.ip_in_list(ip, conf.blacklist))
 end
 
--- --------------------------------------------------------- ban tam thoi
+-- --------------------------------------------------------- temporary bans
 
--- Ban IP trong `seconds` giay, kem ly do de ghi log
+-- Ban an IP for `seconds`, with a reason recorded for the log
 function _M.ban_ip(ip, seconds, reason)
     seconds = tonumber(seconds) or 600
     local ok, err = ban:set("b:" .. ip, reason or "auto", seconds)
     if not ok then
-        ngx.log(ngx.WARN, "moswaf: khong ban duoc ", ip, ": ", err)
+        ngx.log(ngx.WARN, "moswaf: could not ban ", ip, ": ", err)
         return false
     end
-    ngx.log(ngx.NOTICE, "moswaf: ban ", ip, " trong ", seconds, "s (", reason or "auto", ")")
+    ngx.log(ngx.NOTICE, "moswaf: banned ", ip, " for ", seconds, "s (", reason or "auto", ")")
     return true
 end
 
--- Tra ve: dang_bi_ban, ly_do, so_giay_con_lai
+-- Returns: banned, reason, seconds remaining
 function _M.is_banned(ip)
     local reason, _, _ = ban:get("b:" .. ip)
     if not reason then return false end
@@ -49,12 +49,12 @@ function _M.unban(ip)
 end
 
 function _M.banned_count()
-    -- get_keys ton kem, chi dung cho endpoint /metrics
+    -- get_keys is expensive; only used by the /metrics endpoint
     return #ban:get_keys(0)
 end
 
--- Dong bo danh sach ban do admin them tay tren dashboard
--- (control plane ghi vao config.blacklist nen ham nay chi don rac ban tu dong)
+-- Manual blocks added on the dashboard arrive through config.blacklist, so this only
+-- sweeps the automatic bans that have expired
 function _M.flush_expired()
     ban:flush_expired(1000)
 end

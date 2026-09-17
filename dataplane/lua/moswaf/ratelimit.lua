@@ -1,10 +1,11 @@
--- moswaf.ratelimit - dem tan suat request theo IP (chong flood L7)
+-- moswaf.ratelimit - per-IP request counters (layer 7 flood protection)
 --
--- Hai cua so chay song song:
---   * 1 giay : chan burst tuc thoi (rps)
---   * 10 giay: chan flood keo dai deu tay ma rps tung giay van duoi nguong
+-- Two windows run side by side:
+--   * 1 second : catches instant bursts (rps)
+--   * 10 seconds: catches a slow, evenly paced flood that stays under the per-second
+--                 threshold
 --
--- Dem nam trong lua_shared_dict nen moi worker deu thay chung so lieu.
+-- The counters live in a lua_shared_dict, so every worker sees the same numbers.
 
 local cnt = ngx.shared.moswaf_cnt
 local _M  = {}
@@ -14,15 +15,15 @@ local floor = math.floor
 local function bump(key, ttl)
     local newval, err = cnt:incr(key, 1, 0, ttl)
     if not newval then
-        -- shared dict day -> khong chan nham, chi ghi log
-        ngx.log(ngx.WARN, "moswaf: khong tang duoc bo dem ", key, ": ", err)
+        -- shared dict is full -> log it rather than block the wrong people
+        ngx.log(ngx.WARN, "moswaf: could not increment counter ", key, ": ", err)
         return 0
     end
     return newval
 end
 
--- scope: "g" (toan cuc) hoac id cua site
--- Tra ve: vuot_nguong(boolean), ly_do(string|nil), so_dem_giay, so_dem_10giay
+-- scope: "g" for global, or a site id
+-- Returns: over_threshold (boolean), reason (string|nil), 1s count, 10s count
 function _M.check(scope, ip, rps, burst)
     local now  = ngx.now()
     local sec  = floor(now)
@@ -43,14 +44,14 @@ function _M.check(scope, ip, rps, burst)
     return false, nil, c1, c10
 end
 
--- Dem so lan mot IP bi chan gan day -> co so de leo thang sang ban
+-- Count how often an IP was blocked recently -> the basis for escalating to a ban
 function _M.mark_violation(ip, window)
     window = window or 60
     local key = "v:" .. ip .. ":" .. floor(ngx.now() / window)
     return bump(key, window * 2)
 end
 
--- Dem so request 404 lien tiep -> dau hieu do thu muc/quet
+-- Count consecutive 404s -> a sign of directory brute forcing or scanning
 function _M.mark_notfound(ip)
     local key = "nf:" .. ip .. ":" .. floor(ngx.now() / 60)
     return bump(key, 120)

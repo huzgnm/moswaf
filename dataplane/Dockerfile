@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------
-# MosWAF data plane: OpenResty + engine Lua
-# alpine-fat da kem luajit, lua-resty-core, lua-resty-string (sha256),
-# lua-resty-redis, lua-cjson va module headers-more.
+# MosWAF data plane: OpenResty plus the Lua engine.
+# alpine-fat already ships luajit, lua-resty-core, lua-resty-string (sha256),
+# lua-resty-redis, lua-cjson and the headers-more module.
 # ---------------------------------------------------------------
 FROM openresty/openresty:1.27.1.2-alpine-fat
 

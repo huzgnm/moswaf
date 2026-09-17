@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------
-# MosWAF control plane: API + dashboard admin
-# Build context la thu muc goc cua du an (xem docker-compose.yml).
+# MosWAF control plane: the API and the admin dashboard.
+# The build context is the project root (see docker-compose.yml).
 #
-# Ba tang: build giao dien Vue -> build binary Go (nhung san giao dien)
-#          -> image chay chi co dung mot file thuc thi.
+# Three stages: build the Vue dashboard -> build the Go binary with the dashboard
+#               embedded -> a runtime image holding a single executable.
 # ---------------------------------------------------------------
 
 FROM node:22-alpine AS web
@@ -11,7 +11,7 @@ WORKDIR /src
 COPY web/package.json web/package-lock.json* ./web/
 RUN cd web && (npm ci --no-audit --no-fund || npm install --no-audit --no-fund)
 COPY web ./web
-# Vite ghi ket qua sang ../control/internal/web/dist (xem web/vite.config.js)
+# Vite writes its output to ../control/internal/web/dist (see web/vite.config.js)
 RUN mkdir -p control/internal/web/dist && cd web && npm run build
 
 

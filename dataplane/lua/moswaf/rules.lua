@@ -1,11 +1,11 @@
--- moswaf.rules - engine chu ky (signature) cho tang ung dung
+-- moswaf.rules - the application layer signature engine
 --
 -- Rule: { id, name, category, target, pattern, action, severity, enabled }
 --   target : uri | args | body | ua | header | cookie | any
 --   action : deny | challenge | ban | log
 --
--- Neu control plane da day rule xuong (conf.rules) thi dung bo do,
--- neu chua thi chay bo mac dinh ben duoi de he thong van co bao ve ngay tu dau.
+-- If the control plane has pushed rules down (conf.rules) that set is used; until it
+-- does, the built-in set below runs so the system is protected from the first request.
 
 local config = require "moswaf.config"
 
@@ -13,9 +13,9 @@ local re_find = ngx.re.find
 local concat  = table.concat
 local _M      = {}
 
--- ------------------------------------------------------------ bo rule goc
--- Nhung rule nay duoc control plane seed vao DB lan dau chay,
--- admin co the tat/sua tren dashboard.
+-- ------------------------------------------------------------ built-in rules
+-- The control plane seeds these into the database on first run, after which an admin
+-- can disable or edit them from the dashboard.
 _M.builtin = {
     { id = "sqli-union",   name = "SQLi - UNION SELECT",      category = "sqli",     target = "any",
       pattern = [[(?i)union[\s/*()]+(all[\s/*()]+)?select]],                       action = "deny", severity = "high" },
@@ -73,7 +73,7 @@ _M.builtin = {
       action = "deny", severity = "high" },
 }
 
--- ------------------------------------------------------------ cache rule
+-- ------------------------------------------------------------ rule cache
 
 local cache_ver, cache_list = -1, nil
 
@@ -96,9 +96,9 @@ local function active_rules()
     return list
 end
 
--- ------------------------------------------------------------ quet
+-- ------------------------------------------------------------ scanning
 
--- Gom noi dung can quet theo tung target, tao lazily de do ton CPU
+-- Build the subject for each target, lazily, to save CPU
 local function subject_for(target, ctx)
     if target == "uri" then
         return ctx.uri
@@ -129,7 +129,7 @@ local function subject_for(target, ctx)
     end
 end
 
--- Tra ve rule dau tien khop, hoac nil
+-- Returns the first matching rule, or nil
 function _M.scan(ctx, site)
     local rules = active_rules()
     local off   = site and site.rules_off or nil

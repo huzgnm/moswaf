@@ -1,8 +1,8 @@
--- moswaf.init - nap engine luc nginx khoi dong
+-- moswaf.init - load the engine when nginx starts
 local _M = {}
 
 function _M.init()
-    -- nap san cac module de moi worker dung chung bytecode
+    -- preload the modules so every worker shares the same bytecode
     local config = require "moswaf.config"
     require "moswaf.util"
     require "moswaf.rules"
@@ -13,7 +13,7 @@ function _M.init()
     require "moswaf.access"
 
     config.bootstrap()
-    ngx.log(ngx.NOTICE, "moswaf: engine da nap")
+    ngx.log(ngx.NOTICE, "moswaf: engine loaded")
 end
 
 function _M.init_worker()
@@ -23,15 +23,15 @@ function _M.init_worker()
 
     math.randomseed(ngx.now() * 1000 + ngx.worker.pid())
 
-    -- Tach pcall cho tung phan: mot phan hong thi phan con lai van chay,
-    -- thay vi dut ca chuoi khoi tao worker nhu truoc.
-    local ok, err = pcall(config.start_sync)   -- keo cau hinh tu control plane
-    if not ok then ngx.log(ngx.ERR, "moswaf: khong khoi dong duoc dong bo config: ", err) end
+    -- Wrap each part in its own pcall: if one fails the rest still runs, instead of
+    -- aborting the whole worker startup as it did before.
+    local ok, err = pcall(config.start_sync)   -- pull configuration from the control plane
+    if not ok then ngx.log(ngx.ERR, "moswaf: could not start the config sync: ", err) end
 
-    ok, err = pcall(log.start_flush)           -- day su kien + thong ke
-    if not ok then ngx.log(ngx.ERR, "moswaf: khong khoi dong duoc bo day log: ", err) end
+    ok, err = pcall(log.start_flush)           -- ship events and statistics
+    if not ok then ngx.log(ngx.ERR, "moswaf: could not start the log shipper: ", err) end
 
-    -- don ban het han (mot worker la du)
+    -- sweep expired bans (one worker is enough)
     if ngx.worker.id() == 0 then
         local function tick(premature)
             if premature then return end

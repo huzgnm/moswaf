@@ -1,4 +1,4 @@
--- moswaf.util - tien ich dung chung cho engine
+-- moswaf.util - shared helpers for the engine
 local redis  = require "resty.redis"
 local bit    = require "bit"
 
@@ -32,14 +32,14 @@ end
 
 function _M.redis_release(red)
     if not red then return end
-    -- tra ve pool thay vi dong han, tranh bat tay lai moi lan
+    -- return it to the pool instead of closing, so we avoid a fresh handshake each time
     local ok = red:set_keepalive(30000, 64)
     if not ok then pcall(function() red:close() end) end
 end
 
 -- ---------------------------------------------------------------- IP
 
--- "1.2.3.4" -> so nguyen 32 bit, nil neu khong phai IPv4
+-- "1.2.3.4" -> a 32 bit integer, or nil when it is not IPv4
 function _M.ipv4_to_int(ip)
     local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
     if not a then return nil end
@@ -48,7 +48,7 @@ function _M.ipv4_to_int(ip)
     return a * 16777216 + b * 65536 + c * 256 + d
 end
 
--- Phan tich "10.0.0.0/8" hoac "1.2.3.4" -> {from, to} dang so nguyen
+-- Parse "10.0.0.0/8" or "1.2.3.4" into an integer {from, to} range
 function _M.parse_cidr(cidr)
     local addr, bits = cidr:match("^([%d%.]+)/(%d+)$")
     if not addr then
@@ -65,7 +65,7 @@ function _M.parse_cidr(cidr)
     return from, from + size - 1
 end
 
--- list: mang cac chuoi CIDR/IP (da chuan hoa tu control plane)
+-- list: an array of CIDR/IP strings, already normalised by the control plane
 function _M.ip_in_list(ip, list)
     if not list or #list == 0 then return false end
     local n = _M.ipv4_to_int(ip)
@@ -75,7 +75,7 @@ function _M.ip_in_list(ip, list)
             local from, to = _M.parse_cidr(item)
             if from and n >= from and n <= to then return true, item end
         end
-        if item == ip then return true, item end   -- IPv6 / so khop tuyet doi
+        if item == ip then return true, item end   -- IPv6 or an exact match
     end
     return false
 end
@@ -89,7 +89,7 @@ function _M.is_private_ip(ip)
         or (n >= 2130706432 and n <= 2147483647)   -- 127/8
 end
 
--- Lay IP that cua client theo cau hinh (CDN / proxy dung truoc MosWAF)
+-- Resolve the real client IP according to the config (a CDN or proxy in front of MosWAF)
 function _M.client_ip(settings)
     local peer = ngx.var.remote_addr or "0.0.0.0"
     local header = settings and settings.real_ip_header
@@ -97,14 +97,14 @@ function _M.client_ip(settings)
 
     local trusted = settings.trusted_proxies
     if trusted and #trusted > 0 and not _M.ip_in_list(peer, trusted) then
-        return peer                       -- peer khong nam trong danh sach tin cay
+        return peer                       -- the peer is not in the trusted list
     end
 
     local v = ngx.req.get_headers()[header]
     if type(v) == "table" then v = v[1] end
     if not v or v == "" then return peer end
 
-    -- X-Forwarded-For: client, proxy1, proxy2 -> lay phan tu trai nhat hop le
+    -- X-Forwarded-For: client, proxy1, proxy2 -> take the leftmost valid entry
     for part in v:gmatch("[^,%s]+") do
         if _M.ipv4_to_int(part) or find(part, ":", 1, true) then
             return part
@@ -113,7 +113,7 @@ function _M.client_ip(settings)
     return peer
 end
 
--- ---------------------------------------------------------------- chuoi
+-- ---------------------------------------------------------------- strings
 
 local b64u_map = { ["+"] = "-", ["/"] = "_", ["="] = "" }
 
@@ -136,7 +136,7 @@ function _M.truncate(s, n)
     return sub(s, 1, n) .. "..."
 end
 
--- so sanh chuoi khong phu thuoc thoi gian (chong timing attack tren chu ky)
+-- constant time string comparison, to resist timing attacks on the signature
 function _M.const_eq(a, b)
     if type(a) ~= "string" or type(b) ~= "string" then return false end
     if #a ~= #b then return false end

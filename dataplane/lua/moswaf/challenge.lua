@@ -1,14 +1,14 @@
--- moswaf.challenge - JS challenge dang proof-of-work
+-- moswaf.challenge - a proof-of-work JS challenge
 --
--- Y tuong: truoc khi cho vao, bat trinh duyet giai mot bai toan bam
--- sha256(salt .. nonce) co N bit 0 dau. Trinh duyet that giai trong ~0.1-0.3s,
--- con bot chay curl/python don gian thi rot, va botnet muon flood se phai
--- tra gia CPU gap hang nghin lan phia tan cong.
+-- The idea: before letting a visitor in, make the browser find a nonce such that
+-- sha256(salt .. nonce) starts with N zero bits. A real browser solves it in about
+-- 0.1-0.3s, a plain curl or python bot fails outright, and a botnet that wants to
+-- keep flooding pays thousands of times more CPU than the server does.
 --
--- Luong:
---   1. Khach chua co cookie hop le  -> tra trang challenge (status 503, khong cache)
---   2. Trang tu giai PoW roi goi     -> GET /__moswaf/verify?s=&g=&n=&r=
---   3. Verify dat                    -> cap cookie ky HMAC, 302 ve URL cu
+-- Flow:
+--   1. No valid cookie      -> serve the challenge page (status 503, never cached)
+--   2. The page solves it   -> GET /__moswaf/verify?s=&g=&n=&r=
+--   3. Verification passes  -> issue an HMAC-signed cookie, 302 back to the URL
 
 local sha256 = require "resty.sha256"
 local config = require "moswaf.config"
@@ -18,7 +18,7 @@ local _M = {}
 
 local COOKIE     = "__moswaf"
 local VERIFY_URI = "/__moswaf/verify"
-local SALT_TTL   = 120        -- salt song 2 phut
+local SALT_TTL   = 120        -- a salt is valid for 2 minutes
 
 local SECRET = os.getenv("MOSWAF_CHALLENGE_SECRET") or "moswaf-insecure-default"
 
@@ -52,7 +52,7 @@ local function set_cookie(ip, ua, ttl)
     ngx.header["Set-Cookie"] = table.concat(parts)
 end
 
--- ------------------------------------------------------------- PoW
+-- ------------------------------------------------------------- proof of work
 
 local function leading_zero_bits(digest)
     local n = 0
@@ -75,7 +75,7 @@ local function pow_ok(salt, nonce, bits)
     return leading_zero_bits(s:final()) >= bits
 end
 
--- salt gan thoi diem phat hanh de tu het han
+-- the salt carries its issue time so it expires on its own
 local function new_salt()
     return util.hex(ngx.md5_bin(ngx.var.request_id or tostring(math.random()))):sub(1, 16)
         .. "-" .. ngx.time()
@@ -89,9 +89,9 @@ local function salt_fresh(salt)
     return age >= 0 and age <= SALT_TTL
 end
 
--- ------------------------------------------------------------- xu ly
+-- ------------------------------------------------------------- handlers
 
--- Tra trang challenge cho khach. Ket thuc request tai day.
+-- Serve the challenge page. The request ends here.
 function _M.serve(ip, ua, reason)
     local st   = config.get().settings
     local bits = tonumber(st.challenge_difficulty) or 16
@@ -115,7 +115,7 @@ function _M.serve(ip, ua, reason)
     return ngx.exit(503)
 end
 
--- Xu ly /__moswaf/verify. Ket thuc request tai day.
+-- Handle /__moswaf/verify. The request ends here.
 function _M.handle_verify(ip, ua)
     local args = ngx.req.get_uri_args(10)
     local salt, sig, nonce, ret = args.s, args.g, args.n, args.r
@@ -126,24 +126,24 @@ function _M.handle_verify(ip, ua)
     local function fail(msg)
         ngx.status = 403
         ngx.header["Content-Type"] = "text/plain; charset=utf-8"
-        ngx.print("MosWAF: challenge that bai (" .. msg .. ")")
+        ngx.print("MosWAF: challenge failed (" .. msg .. ")")
         return ngx.exit(403)
     end
 
     if type(salt) ~= "string" or type(sig) ~= "string" or type(nonce) ~= "string" then
-        return fail("thieu tham so")
+        return fail("missing parameters")
     end
-    if not salt_fresh(salt) then return fail("salt het han") end
-    if not util.const_eq(sig, util.hmac(SECRET, salt)) then return fail("chu ky sai") end
-    if #nonce > 32 then return fail("nonce qua dai") end
-    if not pow_ok(salt, nonce, bits) then return fail("pow sai") end
+    if not salt_fresh(salt) then return fail("salt expired") end
+    if not util.const_eq(sig, util.hmac(SECRET, salt)) then return fail("bad signature") end
+    if #nonce > 32 then return fail("nonce too long") end
+    if not pow_ok(salt, nonce, bits) then return fail("invalid proof of work") end
 
     set_cookie(ip, ua, ttl)
 
     local target = "/"
     if type(ret) == "string" and ret ~= "" then
         local decoded = ngx.decode_base64((ret:gsub("-", "+"):gsub("_", "/")) .. "==")
-        -- chi cho phep duong dan noi bo, chan open redirect
+        -- only allow internal paths, to prevent an open redirect
         if decoded and decoded:sub(1, 1) == "/" and decoded:sub(2, 2) ~= "/" then
             target = decoded
         end

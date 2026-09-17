@@ -1,4 +1,4 @@
--- moswaf.api - endpoint noi bo cua data plane (cong 8081, khong publish ra ngoai)
+-- moswaf.api - the data plane internal endpoints (port 8081, never published)
 local cjson  = require "cjson.safe"
 local config = require "moswaf.config"
 local rules  = require "moswaf.rules"
@@ -23,35 +23,35 @@ function _M.healthz()
     })
 end
 
--- Dinh dang Prometheus, tien cam vao he thong giam sat san co
+-- Prometheus format, so it drops straight into an existing monitoring stack
 function _M.metrics()
     local stats = ngx.shared.moswaf_stats
     local cnt   = ngx.shared.moswaf_cnt
     local minute = math.floor(ngx.time() / 60) * 60
 
     local out = {
-        "# HELP moswaf_config_version Phien ban cau hinh dang chay",
+        "# HELP moswaf_config_version Configuration version currently loaded",
         "# TYPE moswaf_config_version gauge",
         "moswaf_config_version " .. config.version(),
-        "# HELP moswaf_requests_total Request trong phut hien tai",
+        "# HELP moswaf_requests_total Requests in the current minute",
         "# TYPE moswaf_requests_total gauge",
         "moswaf_requests_total " .. (stats:get("t:" .. minute) or 0),
-        "# HELP moswaf_blocked_total Request bi chan trong phut hien tai",
+        "# HELP moswaf_blocked_total Requests blocked in the current minute",
         "# TYPE moswaf_blocked_total gauge",
         "moswaf_blocked_total " .. (stats:get("b:" .. minute) or 0),
-        "# HELP moswaf_challenged_total Request bi challenge trong phut hien tai",
+        "# HELP moswaf_challenged_total Requests challenged in the current minute",
         "# TYPE moswaf_challenged_total gauge",
         "moswaf_challenged_total " .. (stats:get("c:" .. minute) or 0),
-        "# HELP moswaf_rules_active So rule dang bat",
+        "# HELP moswaf_rules_active Number of enabled rules",
         "# TYPE moswaf_rules_active gauge",
         "moswaf_rules_active " .. rules.count(),
-        "# HELP moswaf_banned_ips So IP dang bi ban tam thoi",
+        "# HELP moswaf_banned_ips Number of IPs under a temporary ban",
         "# TYPE moswaf_banned_ips gauge",
         "moswaf_banned_ips " .. ipset.banned_count(),
-        "# HELP moswaf_event_queue So su kien cho day di trong worker nay",
+        "# HELP moswaf_event_queue Events waiting to be shipped from this worker",
         "# TYPE moswaf_event_queue gauge",
         "moswaf_event_queue " .. log.pending(),
-        "# HELP moswaf_counter_free_bytes Bo nho trong cua shared dict bo dem",
+        "# HELP moswaf_counter_free_bytes Free space in the counter shared dict",
         "# TYPE moswaf_counter_free_bytes gauge",
         "moswaf_counter_free_bytes " .. (cnt:free_space() or 0),
         "",
@@ -63,8 +63,9 @@ function _M.metrics()
     return ngx.exit(200)
 end
 
--- Danh sach IP dang bi ban tam thoi. Ban nay do engine tu sinh khi phat hien
--- flood nen chi nam trong bo nho data plane, DB khong biet -> phai hoi o day.
+-- The IPs currently under a temporary ban. These are created by the engine when it
+-- detects a flood, so they only live in data plane memory and the database knows
+-- nothing about them - they have to be read here.
 function _M.bans()
     local ban = ngx.shared.moswaf_ban
     local items = {}
@@ -81,24 +82,25 @@ function _M.bans()
     return json(200, { items = items, total = #items })
 end
 
--- Go ban cho mot IP, hoac tat ca khi ip=*
+-- Lift the ban for one IP, or for all of them when ip=*
 function _M.unban()
     local args = ngx.req.get_uri_args(5)
     local ip = args.ip
     if type(ip) ~= "string" or ip == "" then
-        return json(400, { error = "thieu tham so ip" })
+        return json(400, { error = "the ip parameter is required" })
     end
     if ip == "*" then
         ngx.shared.moswaf_ban:flush_all()
-        ngx.log(ngx.NOTICE, "moswaf: da go toan bo ban tam thoi")
+        ngx.log(ngx.NOTICE, "moswaf: lifted every temporary ban")
         return json(200, { unbanned = "all" })
     end
     ipset.unban(ip)
-    ngx.log(ngx.NOTICE, "moswaf: da go ban cho ", ip)
+    ngx.log(ngx.NOTICE, "moswaf: lifted the ban for ", ip)
     return json(200, { unbanned = ip })
 end
 
--- Control plane goi sau khi admin luu thay doi -> nap cau hinh ngay, khong doi timer
+-- Called by the control plane after an admin saves, so the config loads now
+-- instead of waiting for the poll timer
 function _M.sync()
     local ok = config.sync()
     return json(ok and 200 or 502, { synced = ok, version = config.version() })
