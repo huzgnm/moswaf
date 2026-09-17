@@ -7,12 +7,12 @@ const route = useRoute()
 const router = useRouter()
 
 const nav = [
-  { path: '/',         label: 'Tong quan' },
-  { path: '/sites',    label: 'Trang web' },
-  { path: '/events',   label: 'Nhat ky tan cong' },
-  { path: '/rules',    label: 'Luat phat hien' },
-  { path: '/ips',      label: 'Danh sach IP' },
-  { path: '/settings', label: 'Cai dat' },
+  { path: '/',         label: 'Overview' },
+  { path: '/sites',    label: 'Sites' },
+  { path: '/events',   label: 'Attack log' },
+  { path: '/rules',    label: 'Detection rules' },
+  { path: '/ips',      label: 'IP lists' },
+  { path: '/settings', label: 'Settings' },
 ]
 
 const underAttack = ref(false)
@@ -29,7 +29,7 @@ async function loadContext() {
     session.user = me
     underAttack.value = settings.under_attack
   } catch (e) {
-    /* requireAuth da tu dua ve trang dang nhap khi token hong */
+    /* requireAuth already redirects to the sign-in page on a bad token */
   }
 }
 
@@ -40,8 +40,8 @@ async function toggleUnderAttack() {
     await api.post('/api/settings/under-attack', { enabled: next })
     underAttack.value = next
     notify(next
-      ? 'Da bat che do dang bi tan cong: moi khach la phai qua JS challenge'
-      : 'Da tat che do dang bi tan cong')
+      ? 'Under-attack mode on: every unknown visitor must pass the JS challenge'
+      : 'Under-attack mode off')
   } catch (e) {
     notify(e.message, true)
   } finally {
@@ -74,7 +74,7 @@ function doLogout() {
       </div>
       <div class="spacer"></div>
       <div class="nav-item" @click="doLogout">
-        <span class="dot"></span>Dang xuat
+        <span class="dot"></span>Sign out
       </div>
     </aside>
 
@@ -82,11 +82,11 @@ function doLogout() {
       <header class="topbar">
         <h1 style="font-size:15px">{{ route.meta.title }}</h1>
         <div class="row">
-          <label class="switch danger" :title="'Ep toan bo khach truy cap phai giai JS challenge'">
+          <label class="switch danger" :title="'Force every visitor to solve a JS challenge'">
             <input type="checkbox" :checked="underAttack" :disabled="busy" @change="toggleUnderAttack" />
             <span class="track"></span>
             <span :style="{ color: underAttack ? 'var(--critical)' : 'var(--text-secondary)' }">
-              Che do dang bi tan cong
+              Under-attack mode
             </span>
           </label>
           <span class="card-sub">{{ session.user?.username }}</span>

@@ -42,24 +42,24 @@ async function request(method, path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (e) {
-    throw new Error('Khong ket noi duoc may chu')
+    throw new Error('Cannot reach the server')
   }
 
   if (res.status === 401 && !path.endsWith('/auth/login')) {
     logout()
-    throw new Error('Phien dang nhap da het han')
+    throw new Error('Your session has expired')
   }
 
   const text = await res.text()
   const data = text ? JSON.parse(text) : null
 
-  if (!res.ok) throw new Error((data && data.error) || `Loi ${res.status}`)
+  if (!res.ok) throw new Error((data && data.error) || `Error ${res.status}`)
   return data
 }
 
 export const api = {
   get:  (p) => request('GET', p),
-  // Danh cho endpoint tra ve danh sach: khong bao gio de view nhan undefined
+  // For list endpoints: never hand a view an undefined value
   list: async (p) => {
     const res = await request('GET', p)
     return Array.isArray(res) ? res : []
@@ -69,30 +69,30 @@ export const api = {
   del:  (p) => request('DELETE', p),
 }
 
-// ---------------------------------------------------------------- dinh dang
+// ---------------------------------------------------------------- formatting
 
 export function fmtNumber(n) {
   if (n === null || n === undefined) return '0'
-  return Number(n).toLocaleString('vi-VN')
+  return Number(n).toLocaleString('en-US')
 }
 
 export function fmtTime(ts) {
   if (!ts) return '-'
   const d = new Date(ts)
-  return d.toLocaleString('vi-VN', {
+  return d.toLocaleString('en-US', {
     day: '2-digit', month: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 }
 
 export function fmtShortTime(ts) {
-  return new Date(ts).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
 }
 
 export const ACTION_LABELS = {
-  deny: 'Chan',
-  challenge: 'Challenge',
-  monitor: 'Ghi nhan',
-  log: 'Ghi log',
-  verify: 'Xac thuc',
+  deny: 'Blocked',
+  challenge: 'Challenged',
+  monitor: 'Monitored',
+  log: 'Logged',
+  verify: 'Verified',
 }

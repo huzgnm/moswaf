@@ -35,21 +35,21 @@ async function submit() {
   <div class="login-wrap">
     <form class="login-card" @submit.prevent="submit">
       <div class="brand-big">Mos<b>WAF</b></div>
-      <p class="card-sub" style="margin:0 0 22px">Tuong lua ung dung web &amp; chong DDoS lop 7</p>
+      <p class="card-sub" style="margin:0 0 22px">Layer-7 web application firewall &amp; anti-DDoS</p>
 
       <div class="field">
-        <label class="label">Tai khoan</label>
+        <label class="label">Username</label>
         <input ref="userInput" v-model="username" class="input" autocomplete="username" />
       </div>
       <div class="field">
-        <label class="label">Mat khau</label>
+        <label class="label">Password</label>
         <input v-model="password" type="password" class="input" autocomplete="current-password" />
       </div>
 
       <div v-if="error" class="login-error">{{ error }}</div>
 
       <button class="btn btn-primary" style="width:100%; justify-content:center" :disabled="busy">
-        {{ busy ? 'Dang kiem tra...' : 'Dang nhap' }}
+        {{ busy ? 'Signing in...' : 'Sign in' }}
       </button>
     </form>
   </div>

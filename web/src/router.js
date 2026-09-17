@@ -9,18 +9,18 @@ import Events   from './views/Events.vue'
 import IPLists  from './views/IPLists.vue'
 import Settings from './views/Settings.vue'
 
-// Dung hash history: dashboard co the phuc vu tu bat ky duong dan nao
-// ma khong can cau hinh rewrite phia server.
+// Hash history: the dashboard can be served from any path without
+// needing rewrite rules on the server side.
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/login',    component: Login,    meta: { public: true, title: 'Dang nhap' } },
-    { path: '/',         component: Overview, meta: { title: 'Tong quan' } },
-    { path: '/sites',    component: Sites,    meta: { title: 'Trang web' } },
-    { path: '/rules',    component: Rules,    meta: { title: 'Luat phat hien' } },
-    { path: '/events',   component: Events,   meta: { title: 'Nhat ky tan cong' } },
-    { path: '/ips',      component: IPLists,  meta: { title: 'Danh sach IP' } },
-    { path: '/settings', component: Settings, meta: { title: 'Cai dat' } },
+    { path: '/login',    component: Login,    meta: { public: true, title: 'Sign in' } },
+    { path: '/',         component: Overview, meta: { title: 'Overview' } },
+    { path: '/sites',    component: Sites,    meta: { title: 'Sites' } },
+    { path: '/rules',    component: Rules,    meta: { title: 'Detection rules' } },
+    { path: '/events',   component: Events,   meta: { title: 'Attack log' } },
+    { path: '/ips',      component: IPLists,  meta: { title: 'IP lists' } },
+    { path: '/settings', component: Settings, meta: { title: 'Settings' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

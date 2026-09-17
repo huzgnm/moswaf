@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Truy cap bi chan</title>
+<title>Request blocked</title>
 <style>
   :root{--bg:#0b0e14;--card:#11161f;--line:#1f2733;--fg:#e6edf3;--mut:#8b949e;--red:#f87171}
   *{box-sizing:border-box}
@@ -25,16 +25,16 @@
 <body>
 <div class="card">
   <div class="logo">Mos<b>WAF</b></div>
-  <h1>Yeu cau cua ban da bi chan</h1>
-  <p>He thong tuong lua phat hien yeu cau nay vi pham chinh sach bao mat.
-     Neu ban tin day la nham lan, hay gui ma su kien ben duoi cho quan tri vien.</p>
+  <h1>Your request was blocked</h1>
+  <p>The firewall determined that this request violates the site's security policy.
+     If you believe this is a mistake, send the event id below to the site administrator.</p>
   <table>
-    <tr><td>Ma su kien</td><td>{{RAY}}</td></tr>
-    <tr><td>Dia chi IP</td><td>{{IP}}</td></tr>
-    <tr><td>Ly do</td><td>{{REASON}}</td></tr>
-    <tr><td>Thoi diem</td><td>{{TIME}}</td></tr>
+    <tr><td>Event id</td><td>{{RAY}}</td></tr>
+    <tr><td>IP address</td><td>{{IP}}</td></tr>
+    <tr><td>Reason</td><td>{{REASON}}</td></tr>
+    <tr><td>Time</td><td>{{TIME}}</td></tr>
   </table>
-  <footer>Duoc bao ve boi MosWAF</footer>
+  <footer>Protected by MosWAF</footer>
 </div>
 </body>
 </html>

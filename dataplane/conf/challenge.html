@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Dang kiem tra trinh duyet...</title>
+<title>Checking your browser...</title>
 <style>
   :root{--bg:#0b0e14;--card:#11161f;--line:#1f2733;--fg:#e6edf3;--mut:#8b949e;--acc:#3b82f6}
   *{box-sizing:border-box}
@@ -26,12 +26,12 @@
 <body>
 <div class="card">
   <div class="logo">Mos<b>WAF</b></div>
-  <h1>Dang kiem tra trinh duyet cua ban</h1>
-  <p>Buoc nay dien ra tu dong va chi mat vai giay. Vui long khong dong tab.</p>
+  <h1>Checking your browser</h1>
+  <p>This happens automatically and takes a few seconds. Please keep this tab open.</p>
   <div class="bar"><div class="fill" id="fill"></div></div>
-  <div class="meta" id="meta">Dang khoi tao...</div>
-  <div class="err" id="err">Trinh duyet cua ban khong chay duoc JavaScript nen khong the tiep tuc.</div>
-  <footer>Duoc bao ve boi MosWAF</footer>
+  <div class="meta" id="meta">Starting...</div>
+  <div class="err" id="err">Your browser cannot run JavaScript, so we are unable to continue.</div>
+  <footer>Protected by MosWAF</footer>
 </div>
 
 <noscript>
@@ -55,7 +55,7 @@
 
   function rr(x, n) { return (x >>> n) | (x << (32 - n)); }
 
-  // SHA-256 tren chuoi ASCII, tra ve mang 8 word 32 bit
+  // SHA-256 over an ASCII string, returns eight 32-bit words
   function sha256(str) {
     var i, j, bytes = [];
     for (i = 0; i < str.length; i++) bytes.push(str.charCodeAt(i) & 0xff);
@@ -112,7 +112,7 @@
       expected = Math.pow(2, BITS);
 
   function done(n) {
-    meta.textContent = "Xac thuc thanh cong, dang chuyen huong...";
+    meta.textContent = "Verified, redirecting...";
     fill.style.width = "100%";
     var url = VERIFY + "?s=" + encodeURIComponent(SALT) +
               "&g=" + encodeURIComponent(SIG) +
@@ -128,7 +128,7 @@
     }
     var pct = Math.min(96, Math.round((nonce / expected) * 100));
     fill.style.width = Math.max(6, pct) + "%";
-    meta.textContent = "Dang xu ly " + nonce.toLocaleString("vi-VN") + " phep tinh - " +
+    meta.textContent = nonce.toLocaleString("en-US") + " hashes computed - " +
                        ((Date.now() - started) / 1000).toFixed(1) + "s";
     setTimeout(work, 0);
   }

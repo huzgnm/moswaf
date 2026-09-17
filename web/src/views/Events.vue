@@ -40,10 +40,10 @@ function applyFilters() {
 }
 
 async function banIP(ip) {
-  if (!confirm(`Chan vinh vien IP ${ip}?`)) return
+  if (!confirm(`Permanently block IP ${ip}?`)) return
   try {
-    await api.post('/api/ips', { cidr: ip, kind: 'black', reason: 'Chan tu nhat ky tan cong' })
-    notify(`Da them ${ip} vao danh sach den`)
+    await api.post('/api/ips', { cidr: ip, kind: 'black', reason: 'Blocked from the attack log' })
+    notify(`${ip} added to the blocklist`)
   } catch (e) {
     notify(e.message, true)
   }
@@ -60,55 +60,55 @@ onUnmounted(() => clearInterval(timer))
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Nhat ky tan cong</div>
+        <div class="card-title">Attack log</div>
         <div class="card-sub">
-          Chi ghi nhung request bi chan, bi challenge hoac khop luat - khong ghi luu luong binh thuong
+          Only requests that were blocked, challenged or matched a rule - normal traffic is not recorded
         </div>
       </div>
       <label class="switch">
         <input v-model="auto" type="checkbox" />
         <span class="track"></span>
-        <span class="card-sub">Tu lam moi</span>
+        <span class="card-sub">Auto refresh</span>
       </label>
     </div>
 
     <div class="row" style="margin-bottom:14px">
-      <input v-model="filters.q" class="input grow" placeholder="Tim trong duong dan, User-Agent, ten luat" @keyup.enter="applyFilters" />
+      <input v-model="filters.q" class="input grow" placeholder="Search path, User-Agent or rule name" @keyup.enter="applyFilters" />
       <input v-model="filters.ip" class="input mono" style="width:150px" placeholder="IP" @keyup.enter="applyFilters" />
       <select v-model="filters.action" class="select" style="width:140px">
-        <option value="">Moi hanh dong</option>
-        <option value="deny">Chan</option>
+        <option value="">Any action</option>
+        <option value="deny">Blocked</option>
         <option value="challenge">Challenge</option>
-        <option value="monitor">Ghi nhan</option>
-        <option value="log">Ghi log</option>
+        <option value="monitor">Monitored</option>
+        <option value="log">Logged</option>
       </select>
       <select v-model="filters.severity" class="select" style="width:140px">
-        <option value="">Moi muc do</option>
-        <option value="critical">Nghiem trong</option>
-        <option value="high">Cao</option>
-        <option value="medium">Trung binh</option>
-        <option value="low">Thap</option>
+        <option value="">Any severity</option>
+        <option value="critical">Critical</option>
+        <option value="high">High</option>
+        <option value="medium">Medium</option>
+        <option value="low">Low</option>
       </select>
       <select v-model="filters.hours" class="select" style="width:130px">
-        <option :value="1">1 gio</option>
-        <option :value="24">24 gio</option>
-        <option :value="72">3 ngay</option>
-        <option :value="168">7 ngay</option>
+        <option :value="1">1 hour</option>
+        <option :value="24">24 hours</option>
+        <option :value="72">3 days</option>
+        <option :value="168">7 days</option>
       </select>
-      <button class="btn btn-primary" @click="applyFilters">Loc</button>
+      <button class="btn btn-primary" @click="applyFilters">Filter</button>
     </div>
 
-    <div v-if="loading" class="empty">Dang tai...</div>
-    <div v-else-if="!items.length" class="empty">Khong co su kien nao khop dieu kien loc</div>
+    <div v-if="loading" class="empty">Loading...</div>
+    <div v-else-if="!items.length" class="empty">No events match these filters</div>
 
     <table v-else class="table">
       <thead>
         <tr>
-          <th style="width:150px">Thoi diem</th>
+          <th style="width:150px">Time</th>
           <th style="width:130px">IP</th>
-          <th style="width:110px">Hanh dong</th>
-          <th>Yeu cau</th>
-          <th>Luat / ly do</th>
+          <th style="width:110px">Action</th>
+          <th>Request</th>
+          <th>Rule / reason</th>
           <th></th>
         </tr>
       </thead>
@@ -125,21 +125,21 @@ onUnmounted(() => clearInterval(timer))
             <td class="mono truncate">{{ e.method }} {{ e.uri }}</td>
             <td class="truncate">{{ e.rule_name || e.reason }}</td>
             <td style="text-align:right">
-              <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">Chan IP</button>
+              <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">Block IP</button>
             </td>
           </tr>
           <tr v-if="expanded === e.id">
             <td colspan="6" style="background:var(--surface-2)">
               <div class="detail">
-                <div><span>Ma su kien</span><b class="mono">{{ e.ray || '-' }}</b></div>
-                <div><span>Ten mien</span><b class="mono">{{ e.host }}</b></div>
-                <div><span>Duong dan day du</span><b class="mono">{{ e.uri }}</b></div>
-                <div><span>User-Agent</span><b class="mono">{{ e.ua || '(trong)' }}</b></div>
+                <div><span>Event id</span><b class="mono">{{ e.ray || '-' }}</b></div>
+                <div><span>Host</span><b class="mono">{{ e.host }}</b></div>
+                <div><span>Full path</span><b class="mono">{{ e.uri }}</b></div>
+                <div><span>User-Agent</span><b class="mono">{{ e.ua || '(empty)' }}</b></div>
                 <div><span>Referer</span><b class="mono">{{ e.referer || '-' }}</b></div>
-                <div><span>Ly do</span><b>{{ e.reason || '-' }}</b></div>
-                <div><span>Ma luat</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
-                <div><span>Muc do</span><b>{{ e.severity || '-' }}</b></div>
-                <div><span>Ma tra ve</span><b class="mono">{{ e.status }}</b></div>
+                <div><span>Reason</span><b>{{ e.reason || '-' }}</b></div>
+                <div><span>Rule id</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
+                <div><span>Severity</span><b>{{ e.severity || '-' }}</b></div>
+                <div><span>Status code</span><b class="mono">{{ e.status }}</b></div>
               </div>
             </td>
           </tr>
@@ -148,11 +148,11 @@ onUnmounted(() => clearInterval(timer))
     </table>
 
     <div class="row" style="margin-top:14px">
-      <span class="card-sub">Tong cong {{ fmtNumber(total) }} su kien</span>
+      <span class="card-sub">{{ fmtNumber(total) }} events in total</span>
       <div class="spacer"></div>
-      <button class="btn btn-sm" :disabled="page === 0" @click="page--; load(true)">Truoc</button>
-      <span class="card-sub">Trang {{ page + 1 }}</span>
-      <button class="btn btn-sm" :disabled="(page + 1) * 50 >= total" @click="page++; load(true)">Sau</button>
+      <button class="btn btn-sm" :disabled="page === 0" @click="page--; load(true)">Previous</button>
+      <span class="card-sub">Page {{ page + 1 }}</span>
+      <button class="btn btn-sm" :disabled="(page + 1) * 50 >= total" @click="page++; load(true)">Next</button>
     </div>
   </div>
 </template>

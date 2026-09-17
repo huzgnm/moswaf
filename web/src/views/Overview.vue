@@ -13,14 +13,14 @@ const loading = ref(true)
 let timer = null
 
 const RANGES = [
-  { h: 1, label: '1 gio' },
-  { h: 6, label: '6 gio' },
-  { h: 24, label: '24 gio' },
-  { h: 72, label: '3 ngay' },
+  { h: 1, label: '1 hour' },
+  { h: 6, label: '6 hours' },
+  { h: 24, label: '24 hours' },
+  { h: 72, label: '3 days' },
 ]
 
-// Phut khong co du lieu nghia la khong co request nao -> dien 0 de duong
-// bieu dien dung theo thoi gian thuc, khong bi co lai.
+// A minute with no data means no requests arrived -> fill it with 0 so the
+// line stays true to real time instead of collapsing.
 function densify(points, rangeHours) {
   const step = 60_000
   const end = Math.floor(Date.now() / step) * step
@@ -29,7 +29,7 @@ function densify(points, rangeHours) {
   for (const p of points) {
     map.set(Math.floor(new Date(p.minute).getTime() / step) * step, p)
   }
-  // Voi khoang dai, gop nhieu phut vao mot diem cho bieu do do nang
+  // Over longer ranges, bucket several minutes into one point to keep the chart light
   const bucket = rangeHours > 24 ? 15 : rangeHours > 6 ? 5 : 1
   const out = []
   for (let t = start; t <= end; t += step * bucket) {
@@ -52,10 +52,10 @@ const tiles = computed(() => {
   if (!o) return []
   const blockRate = o.requests > 0 ? ((o.blocked / o.requests) * 100).toFixed(1) : '0.0'
   return [
-    { label: 'Request da xu ly', value: fmtNumber(o.requests), sub: `trong ${o.hours} gio qua` },
-    { label: 'Da chan', value: fmtNumber(o.blocked), sub: `${blockRate}% tong luu luong`, tone: 'serious' },
-    { label: 'Buoc challenge', value: fmtNumber(o.challenged), sub: 'khach nghi van phai giai PoW', tone: 'good' },
-    { label: 'Site dang bao ve', value: `${o.sites_active}/${o.sites_total}`, sub: 'so site bat che do loc' },
+    { label: 'Requests processed', value: fmtNumber(o.requests), sub: `in the last ${o.hours} hours` },
+    { label: 'Blocked', value: fmtNumber(o.blocked), sub: `${blockRate}% of all traffic`, tone: 'serious' },
+    { label: 'Challenged', value: fmtNumber(o.challenged), sub: 'suspicious visitors made to solve a PoW', tone: 'good' },
+    { label: 'Sites protected', value: `${o.sites_active}/${o.sites_total}`, sub: 'sites with filtering enabled' },
   ]
 })
 
@@ -93,7 +93,7 @@ const dataplaneOk = computed(() => {
   return d && typeof d === 'object' && d.status === 'ok'
 })
 
-// Thanh ngang so sanh do lon trong cung mot bang xep hang
+// Horizontal bars comparing magnitude within one ranking
 function barWidth(b, list) {
   const max = Math.max(...list.map((x) => x.count), 1)
   return `${Math.max(3, (b.count / max) * 100)}%`
@@ -102,8 +102,8 @@ function barWidth(b, list) {
 
 <template>
   <div v-if="overview?.under_attack" class="alert">
-    Che do <b>dang bi tan cong</b> dang bat. Moi khach truy cap chua co cookie hop le
-    deu phai giai JS challenge truoc khi vao site.
+    <b>Under-attack mode</b> is on. Every visitor without a valid cookie must solve
+    the JS challenge before reaching the site.
   </div>
 
   <div class="grid grid-4">
@@ -117,8 +117,8 @@ function barWidth(b, list) {
   <div class="card" style="margin-top:16px">
     <div class="card-head">
       <div>
-        <div class="card-title">Luu luong theo thoi gian</div>
-        <div class="card-sub">Tong request, so bi chan va so phai giai challenge</div>
+        <div class="card-title">Traffic over time</div>
+        <div class="card-sub">Total requests, how many were blocked, and how many were challenged</div>
       </div>
       <div class="row">
         <button
@@ -135,10 +135,10 @@ function barWidth(b, list) {
   <div class="grid grid-2" style="margin-top:16px">
     <div class="card">
       <div class="card-head">
-        <div class="card-title">IP tan cong nhieu nhat</div>
-        <button class="btn btn-sm" @click="router.push('/ips')">Quan ly danh sach IP</button>
+        <div class="card-title">Top attacking IPs</div>
+        <button class="btn btn-sm" @click="router.push('/ips')">Manage IP lists</button>
       </div>
-      <div v-if="!overview?.top_attackers?.length" class="empty">Chua ghi nhan IP nao</div>
+      <div v-if="!overview?.top_attackers?.length" class="empty">No IPs recorded yet</div>
       <div v-else>
         <div v-for="b in overview.top_attackers" :key="b.key" class="bar-row">
           <span class="mono bar-label">{{ b.key }}</span>
@@ -152,10 +152,10 @@ function barWidth(b, list) {
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">Luat khop nhieu nhat</div>
-        <button class="btn btn-sm" @click="router.push('/rules')">Xem luat</button>
+        <div class="card-title">Most triggered rules</div>
+        <button class="btn btn-sm" @click="router.push('/rules')">View rules</button>
       </div>
-      <div v-if="!overview?.top_rules?.length" class="empty">Chua co luat nao khop</div>
+      <div v-if="!overview?.top_rules?.length" class="empty">No rule has matched yet</div>
       <div v-else>
         <div v-for="b in overview.top_rules" :key="b.key" class="bar-row">
           <span class="bar-label">{{ b.label }}</span>
@@ -170,8 +170,8 @@ function barWidth(b, list) {
 
   <div class="card" style="margin-top:16px">
     <div class="card-head">
-      <div class="card-title">Trang thai he thong</div>
-      <div class="card-sub">Phien ban cau hinh: {{ status?.config_version ?? '-' }}</div>
+      <div class="card-title">System status</div>
+      <div class="card-sub">Config version: {{ status?.config_version ?? '-' }}</div>
     </div>
     <div class="row" style="gap:26px">
       <span class="tag" :class="status?.database === 'ok' ? 'tag-ok' : 'tag-deny'">
@@ -183,7 +183,7 @@ function barWidth(b, list) {
       <span class="tag" :class="dataplaneOk ? 'tag-ok' : 'tag-deny'">
         <span class="dot"></span>Data plane (OpenResty)
       </span>
-      <span class="card-sub">Hang doi su kien: {{ fmtNumber(status?.event_queue ?? 0) }}</span>
+      <span class="card-sub">Event queue: {{ fmtNumber(status?.event_queue ?? 0) }}</span>
     </div>
   </div>
 </template>

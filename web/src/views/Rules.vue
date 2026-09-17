@@ -24,17 +24,17 @@ function blank() {
 }
 
 const ACTION_LABELS = {
-  deny: 'Chan',
-  challenge: 'Bat challenge',
+  deny: 'Block',
+  challenge: 'Challenge',
   ban: 'Ban IP',
-  log: 'Chi ghi log',
+  log: 'Log only',
 }
 const SEVERITY_LABELS = {
-  low: 'Thap', medium: 'Trung binh', high: 'Cao', critical: 'Nghiem trong',
+  low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical',
 }
 const TARGET_LABELS = {
-  any: 'Toan bo request', uri: 'Duong dan', args: 'Tham so URL',
-  body: 'Noi dung POST', ua: 'User-Agent', header: 'Header', cookie: 'Cookie',
+  any: 'Whole request', uri: 'Path', args: 'Query string',
+  body: 'POST body', ua: 'User-Agent', header: 'Headers', cookie: 'Cookies',
 }
 
 const categories = computed(() => [...new Set(rules.value.map((r) => r.category))].sort())
@@ -62,7 +62,7 @@ async function toggle(rule) {
   try {
     await api.post(`/api/rules/${rule.id}/toggle`, { enabled: next })
     rule.enabled = next
-    notify(next ? `Da bat luat "${rule.name}"` : `Da tat luat "${rule.name}"`)
+    notify(next ? `Rule "${rule.name}" enabled` : `Rule "${rule.name}" disabled`)
   } catch (e) {
     notify(e.message, true)
   }
@@ -85,10 +85,10 @@ async function save() {
   try {
     if (editing.value) {
       await api.put(`/api/rules/${editing.value.id}`, form.value)
-      notify('Da cap nhat luat')
+      notify('Rule updated')
     } else {
       await api.post('/api/rules', form.value)
-      notify('Da them luat moi')
+      notify('Rule added')
     }
     showForm.value = false
     await load()
@@ -100,10 +100,10 @@ async function save() {
 }
 
 async function remove(rule) {
-  if (!confirm(`Xoa luat "${rule.name}"?`)) return
+  if (!confirm(`Delete rule "${rule.name}"?`)) return
   try {
     await api.del(`/api/rules/${rule.id}`)
-    notify('Da xoa luat')
+    notify('Rule deleted')
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -117,32 +117,32 @@ onMounted(load)
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Luat phat hien</div>
+        <div class="card-title">Detection rules</div>
         <div class="card-sub">
-          Luat goc di kem san. Luat tu tao duoc quet cung luc, theo dung thu tu trong bang.
+          Built-in rules ship with MosWAF. Custom rules are scanned alongside them, in table order.
         </div>
       </div>
-      <button class="btn btn-primary" @click="openCreate">Them luat</button>
+      <button class="btn btn-primary" @click="openCreate">Add rule</button>
     </div>
 
     <div class="row" style="margin-bottom:14px">
-      <input v-model="filter" class="input grow" placeholder="Tim theo ten, ma hoac bieu thuc" />
+      <input v-model="filter" class="input grow" placeholder="Search by name, id or pattern" />
       <select v-model="category" class="select" style="width:180px">
-        <option value="">Tat ca nhom</option>
+        <option value="">All categories</option>
         <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
       </select>
     </div>
 
-    <div v-if="loading" class="empty">Dang tai...</div>
+    <div v-if="loading" class="empty">Loading...</div>
     <table v-else class="table">
       <thead>
         <tr>
-          <th style="width:52px">Bat</th>
-          <th>Ten</th>
-          <th>Nhom</th>
-          <th>Quet o</th>
-          <th>Hanh dong</th>
-          <th>Muc do</th>
+          <th style="width:52px">On</th>
+          <th>Name</th>
+          <th>Category</th>
+          <th>Scans</th>
+          <th>Action</th>
+          <th>Severity</th>
           <th></th>
         </tr>
       </thead>
@@ -167,9 +167,9 @@ onMounted(load)
           </td>
           <td class="card-sub">{{ SEVERITY_LABELS[r.severity] || r.severity }}</td>
           <td style="text-align:right; white-space:nowrap">
-            <button class="btn btn-sm" @click="openEdit(r)">Sua</button>
+            <button class="btn btn-sm" @click="openEdit(r)">Edit</button>
             <button v-if="!r.builtin" class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(r)">
-              Xoa
+              Delete
             </button>
           </td>
         </tr>
@@ -179,23 +179,23 @@ onMounted(load)
 
   <Modal
     v-if="showForm"
-    :title="editing ? `Sua luat: ${editing.name}` : 'Them luat moi'"
+    :title="editing ? `Edit rule: ${editing.name}` : 'Add a rule'"
     :busy="busy"
     @close="showForm = false"
     @submit="save"
   >
     <div class="field">
-      <label class="label">Ten luat</label>
-      <input v-model="form.name" class="input" placeholder="Chan truy cap /admin tu ngoai" />
+      <label class="label">Rule name</label>
+      <input v-model="form.name" class="input" placeholder="Block external access to /admin" />
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Nhom</label>
+        <label class="label">Category</label>
         <input v-model="form.category" class="input" />
       </div>
       <div class="field grow">
-        <label class="label">Quet o dau</label>
+        <label class="label">Where to scan</label>
         <select v-model="form.target" class="select">
           <option v-for="(label, key) in TARGET_LABELS" :key="key" :value="key">{{ label }}</option>
         </select>
@@ -203,23 +203,23 @@ onMounted(load)
     </div>
 
     <div class="field">
-      <label class="label">Bieu thuc chinh quy (PCRE)</label>
+      <label class="label">Regular expression (PCRE)</label>
       <textarea v-model="form.pattern" class="input" placeholder="(?i)/admin/(config|backup)"></textarea>
       <div class="hint">
-        Dung <code class="mono">(?i)</code> o dau de khong phan biet hoa thuong.
-        Tranh lookahead/backreference de bieu thuc chay nhanh o data plane.
+        Prefix with <code class="mono">(?i)</code> to make it case-insensitive.
+        Avoid lookahead and backreferences so the pattern stays fast in the data plane.
       </div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Hanh dong khi khop</label>
+        <label class="label">Action on match</label>
         <select v-model="form.action" class="select">
           <option v-for="(label, key) in ACTION_LABELS" :key="key" :value="key">{{ label }}</option>
         </select>
       </div>
       <div class="field grow">
-        <label class="label">Muc do</label>
+        <label class="label">Severity</label>
         <select v-model="form.severity" class="select">
           <option v-for="(label, key) in SEVERITY_LABELS" :key="key" :value="key">{{ label }}</option>
         </select>

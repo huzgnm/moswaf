@@ -7,12 +7,12 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
 })
 
-// Ba chuoi cung don vi (so request) nen dung chung mot truc y.
-// Mau lay theo thu tu co dinh cua bang mau, khong xoay vong.
+// All three series share the same unit (requests), so they share one y axis.
+// Colours are taken in fixed palette order, never cycled.
 const SERIES = [
-  { key: 'total',      label: 'Tong request', color: 'var(--series-1)', area: true },
-  { key: 'blocked',    label: 'Bi chan',      color: 'var(--series-2)' },
-  { key: 'challenged', label: 'Challenge',    color: 'var(--series-3)' },
+  { key: 'total',      label: 'Total requests', color: 'var(--series-1)', area: true },
+  { key: 'blocked',    label: 'Blocked',      color: 'var(--series-2)' },
+  { key: 'challenged', label: 'Challenged',    color: 'var(--series-3)' },
 ]
 
 const W = 900, H = 260
@@ -27,7 +27,7 @@ const yMax = computed(() => {
   let m = 0
   for (const p of props.points) m = Math.max(m, p.total || 0, p.blocked || 0, p.challenged || 0)
   if (m <= 0) return 10
-  // lam tron len cho truc y co so dep
+  // round up so the y axis lands on tidy numbers
   const mag = Math.pow(10, Math.floor(Math.log10(m)))
   return Math.ceil(m / mag) * mag
 })
@@ -74,7 +74,7 @@ const xTicks = computed(() => {
 
 const hovered = computed(() => (hoverIdx.value >= 0 ? props.points[hoverIdx.value] : null))
 
-// Vi tri tooltip theo % chieu rong de khong le ra ngoai khung
+// Position the tooltip by width percentage so it never spills outside the frame
 const tipStyle = computed(() => {
   if (hoverIdx.value < 0) return {}
   const pct = (xAt(hoverIdx.value) / W) * 100
@@ -93,7 +93,7 @@ function onMove(e) {
   hoverIdx.value = Math.max(0, Math.min(n - 1, Math.round(ratio * (n - 1))))
 }
 
-// Nhan truc tiep cho diem cuoi: doc duoc ma khong phai do mau voi chu giai
+// Direct label for the last point: readable without matching colours to the legend
 const lastPoint = computed(() => props.points[props.points.length - 1] || null)
 </script>
 
@@ -105,15 +105,15 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
       </span>
     </div>
 
-    <div v-if="loading" class="empty">Dang tai du lieu...</div>
-    <div v-else-if="!points.length" class="empty">Chua co luu luong nao di qua MosWAF</div>
+    <div v-if="loading" class="empty">Loading data...</div>
+    <div v-else-if="!points.length" class="empty">No traffic has passed through MosWAF yet</div>
 
     <div v-else class="plot">
       <svg
         ref="svgEl" :viewBox="`0 0 ${W} ${H}`"
         @mousemove="onMove" @mouseleave="hoverIdx = -1"
       >
-        <!-- luoi lui ve sau -->
+        <!-- recessive grid -->
         <g>
           <line
             v-for="t in yTicks" :key="'g' + t.v"
@@ -122,7 +122,7 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
           />
         </g>
 
-        <!-- vung + duong -->
+        <!-- area + lines -->
         <path :d="areaPath('total')" fill="var(--series-1)" opacity="0.13" />
         <path
           v-for="s in SERIES" :key="s.key"
@@ -145,14 +145,14 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
         </g>
       </svg>
 
-      <!-- nhan truc y -->
+      <!-- y axis labels -->
       <div class="y-axis">
         <span v-for="t in yTicks" :key="'y' + t.v" :style="{ top: `${(t.y / H) * 100}%` }">
           {{ fmtNumber(Math.round(t.v)) }}
         </span>
       </div>
 
-      <!-- nhan truc x -->
+      <!-- x axis labels -->
       <div class="x-axis">
         <span v-for="t in xTicks" :key="'x' + t.idx" :style="{ left: `${(t.x / W) * 100}%` }">
           {{ t.label }}
@@ -170,9 +170,9 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
     </div>
 
     <div v-if="lastPoint" class="last-line">
-      Phut gan nhat:
-      <b>{{ fmtNumber(lastPoint.total) }}</b> request ·
-      <b>{{ fmtNumber(lastPoint.blocked) }}</b> bi chan ·
+      Latest minute:
+      <b>{{ fmtNumber(lastPoint.total) }}</b> requests ·
+      <b>{{ fmtNumber(lastPoint.blocked) }}</b> blocked ·
       <b>{{ fmtNumber(lastPoint.challenged) }}</b> challenge
     </div>
   </div>
@@ -186,7 +186,7 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
 .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 
 .plot { position: relative; padding-bottom: 20px; }
-/* De svg tu giu ty le cua viewBox -> marker tron van tron, khong bi keo det */
+/* Let the svg keep its viewBox ratio -> round markers stay round, never squashed */
 svg { width: 100%; height: auto; display: block; overflow: visible; }
 
 .y-axis { position: absolute; inset: 0; pointer-events: none; }

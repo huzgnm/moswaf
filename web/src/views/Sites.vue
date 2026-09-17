@@ -28,9 +28,9 @@ function blank() {
 }
 
 const MODE_LABELS = {
-  protect: 'Bao ve',
-  monitor: 'Chi theo doi',
-  off: 'Tat',
+  protect: 'Protect',
+  monitor: 'Monitor only',
+  off: 'Off',
 }
 
 async function load() {
@@ -73,10 +73,10 @@ async function save() {
   try {
     if (editing.value) {
       await api.put(`/api/sites/${editing.value.id}`, payload)
-      notify('Da cap nhat site, cau hinh dang duoc ap xuong data plane')
+      notify('Site updated; the configuration is being pushed to the data plane')
     } else {
       await api.post('/api/sites', payload)
-      notify('Da them site. Tro DNS cua ten mien ve IP may nay de bat dau loc.')
+      notify('Site added. Point the domain\'s DNS at this machine to start filtering.')
     }
     showForm.value = false
     await load()
@@ -88,10 +88,10 @@ async function save() {
 }
 
 async function remove(site) {
-  if (!confirm(`Xoa site "${site.name}"? Luu luong toi ten mien nay se khong con di qua MosWAF.`)) return
+  if (!confirm(`Delete site "${site.name}"? Traffic to this domain will no longer pass through MosWAF.`)) return
   try {
     await api.del(`/api/sites/${site.id}`)
-    notify('Da xoa site')
+    notify('Site deleted')
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -105,25 +105,25 @@ onMounted(load)
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Trang web duoc bao ve</div>
-        <div class="card-sub">Moi site la mot nhom ten mien tro ve mot upstream phia sau</div>
+        <div class="card-title">Protected sites</div>
+        <div class="card-sub">Each site is a group of domains pointing at one upstream behind it</div>
       </div>
-      <button class="btn btn-primary" @click="openCreate">Them site</button>
+      <button class="btn btn-primary" @click="openCreate">Add site</button>
     </div>
 
-    <div v-if="loading" class="empty">Dang tai...</div>
+    <div v-if="loading" class="empty">Loading...</div>
     <div v-else-if="!sites.length" class="empty">
-      Chua co site nao. Bam "Them site" de dua ten mien dau tien vao sau MosWAF.
+      No sites yet. Click "Add site" to put your first domain behind MosWAF.
     </div>
 
     <table v-else class="table">
       <thead>
         <tr>
-          <th>Ten</th>
-          <th>Ten mien</th>
+          <th>Name</th>
+          <th>Domains</th>
           <th>Upstream</th>
-          <th>Che do</th>
-          <th>Gioi han</th>
+          <th>Mode</th>
+          <th>Rate limit</th>
           <th>HTTPS</th>
           <th></th>
         </tr>
@@ -139,16 +139,16 @@ onMounted(load)
             </span>
           </td>
           <td class="mono">
-            {{ s.rate_rps ? `${s.rate_rps} r/s` : 'mac dinh' }}
+            {{ s.rate_rps ? `${s.rate_rps} r/s` : 'default' }}
           </td>
           <td>
             <span class="tag" :class="s.has_tls ? 'tag-ok' : 'tag-off'">
-              <span class="dot"></span>{{ s.has_tls ? (s.force_https ? 'Ep HTTPS' : 'Co chung chi') : 'Chua co' }}
+              <span class="dot"></span>{{ s.has_tls ? (s.force_https ? 'Forced' : 'Certificate') : 'None' }}
             </span>
           </td>
           <td style="text-align:right; white-space:nowrap">
-            <button class="btn btn-sm" @click="openEdit(s)">Sua</button>
-            <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">Xoa</button>
+            <button class="btn btn-sm" @click="openEdit(s)">Edit</button>
+            <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">Delete</button>
           </td>
         </tr>
       </tbody>
@@ -157,94 +157,94 @@ onMounted(load)
 
   <Modal
     v-if="showForm"
-    :title="editing ? `Sua site: ${editing.name}` : 'Them site moi'"
+    :title="editing ? `Edit site: ${editing.name}` : 'Add a site'"
     :busy="busy"
     @close="showForm = false"
     @submit="save"
   >
     <div class="field">
-      <label class="label">Ten hien thi</label>
-      <input v-model="form.name" class="input" placeholder="Website ban hang" />
+      <label class="label">Display name</label>
+      <input v-model="form.name" class="input" placeholder="Online store" />
     </div>
 
     <div class="field">
-      <label class="label">Ten mien (cach nhau bang dau phay)</label>
+      <label class="label">Domains (comma separated)</label>
       <input v-model="form.domains" class="input mono" placeholder="example.com, www.example.com" />
-      <div class="hint">Tro ban ghi A cua cac ten mien nay ve IP may dang chay MosWAF.</div>
+      <div class="hint">Point the A record of these domains at the machine running MosWAF.</div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Giao thuc upstream</label>
+        <label class="label">Upstream scheme</label>
         <select v-model="form.upstream_scheme" class="select">
           <option value="http">http</option>
           <option value="https">https</option>
         </select>
       </div>
       <div class="field grow">
-        <label class="label">Dia chi upstream</label>
-        <input v-model="form.upstream_host" class="input mono" placeholder="10.0.0.5 hoac host.docker.internal" />
+        <label class="label">Upstream host</label>
+        <input v-model="form.upstream_host" class="input mono" placeholder="10.0.0.5 or host.docker.internal" />
       </div>
       <div class="field" style="width:110px">
-        <label class="label">Cong</label>
+        <label class="label">Port</label>
         <input v-model="form.upstream_port" type="number" class="input mono" />
       </div>
     </div>
     <div class="hint" style="margin:-8px 0 14px">
-      Muon tro ve web dang chay tren chinh may chu nay thi dung
+      To reach an app running on this same host, use
       <code class="mono">host.docker.internal</code>.
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Che do bao ve</label>
+        <label class="label">Protection mode</label>
         <select v-model="form.mode" class="select">
-          <option value="protect">Bao ve - chan that</option>
-          <option value="monitor">Chi theo doi - ghi log, khong chan</option>
-          <option value="off">Tat - cho qua het</option>
+          <option value="protect">Protect - actually block</option>
+          <option value="monitor">Monitor only - log, never block</option>
+          <option value="off">Off - let everything through</option>
         </select>
       </div>
       <div class="field grow">
         <label class="label">JS challenge</label>
         <select v-model="form.challenge" class="select">
-          <option value="auto">Tu dong - chi khi nghi ngo</option>
-          <option value="always">Luon bat - moi khach la deu phai giai</option>
-          <option value="off">Tat</option>
+          <option value="auto">Automatic - only when suspicious</option>
+          <option value="always">Always on - every unknown visitor must solve it</option>
+          <option value="off">Off</option>
         </select>
       </div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Gioi han request/giay moi IP</label>
+        <label class="label">Requests per second per IP</label>
         <input v-model="form.rate_rps" type="number" class="input mono" />
-        <div class="hint">0 = dung muc toan cuc trong Cai dat</div>
+        <div class="hint">0 = use the global value from Settings</div>
       </div>
       <div class="field grow">
-        <label class="label">Gioi han trong 10 giay</label>
+        <label class="label">Limit over 10 seconds</label>
         <input v-model="form.rate_burst" type="number" class="input mono" />
       </div>
     </div>
 
     <div class="field">
-      <label class="label">Chung chi TLS (PEM)</label>
+      <label class="label">TLS certificate (PEM)</label>
       <textarea
         v-model="form.tls_cert" class="input"
-        :placeholder="editing && editing.has_tls ? 'De trong de giu chung chi hien tai' : '-----BEGIN CERTIFICATE-----'"
+        :placeholder="editing && editing.has_tls ? 'Leave empty to keep the current certificate' : '-----BEGIN CERTIFICATE-----'"
       ></textarea>
     </div>
     <div class="field">
-      <label class="label">Khoa rieng (PEM)</label>
+      <label class="label">Private key (PEM)</label>
       <textarea
         v-model="form.tls_key" class="input"
-        :placeholder="editing && editing.has_tls ? 'De trong de giu khoa hien tai' : '-----BEGIN PRIVATE KEY-----'"
+        :placeholder="editing && editing.has_tls ? 'Leave empty to keep the current key' : '-----BEGIN PRIVATE KEY-----'"
       ></textarea>
     </div>
 
     <label class="switch">
       <input v-model="form.force_https" type="checkbox" />
       <span class="track"></span>
-      <span>Chuyen huong toan bo HTTP sang HTTPS</span>
+      <span>Redirect all HTTP traffic to HTTPS</span>
     </label>
   </Modal>
 </template>
