@@ -192,16 +192,9 @@ func (c *Certifier) Issue(ctx context.Context, site *store.Site) error {
 		return fmt.Errorf("waiting for the order: %w", err)
 	}
 
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	csr, key, err := newCertificateRequest(site.Domains)
 	if err != nil {
 		return err
-	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
-		Subject:  pkix.Name{CommonName: site.Domains[0]},
-		DNSNames: site.Domains,
-	}, key)
-	if err != nil {
-		return fmt.Errorf("building the CSR: %w", err)
 	}
 
 	chain, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
@@ -209,24 +202,70 @@ func (c *Certifier) Issue(ctx context.Context, site *store.Site) error {
 		return fmt.Errorf("finalising the order: %w", err)
 	}
 
-	leaf, err := x509.ParseCertificate(chain[0])
-	if err != nil {
-		return fmt.Errorf("parsing the issued certificate: %w", err)
-	}
-
-	var certPEM strings.Builder
-	for _, der := range chain {
-		if err := pem.Encode(&certPEM, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
-			return err
-		}
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	certPEM, keyPEM, notAfter, err := encodeIssued(chain, key)
 	if err != nil {
 		return err
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
 
-	return c.db.StoreCertificate(ctx, site.ID, certPEM.String(), string(keyPEM), leaf.NotAfter)
+	return c.db.StoreCertificate(ctx, site.ID, certPEM, keyPEM, notAfter)
+}
+
+// newCertificateRequest builds the CSR and its private key for a set of domains.
+//
+// Split out from Issue so it can be tested without a certificate authority: every
+// domain has to end up in the SAN list, because a browser ignores the common name
+// and a missing SAN means the certificate simply does not cover that host.
+func newCertificateRequest(domains []string) ([]byte, *ecdsa.PrivateKey, error) {
+	if len(domains) == 0 {
+		return nil, nil, fmt.Errorf("a certificate needs at least one domain")
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: domains[0]},
+		DNSNames: domains,
+	}, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("building the CSR: %w", err)
+	}
+	return csr, key, nil
+}
+
+// encodeIssued turns what the authority returned into the two PEM blocks the data
+// plane serves, and reads the expiry that drives renewal.
+//
+// Also split out for testing. It is the last step of an order and therefore the one
+// piece that only ever runs after a real validation has succeeded - the part hardest
+// to reach in a test environment, and the part where a mistake is silent: an
+// incomplete chain still serves fine to a browser that already has the intermediate
+// cached, and only fails for someone else.
+func encodeIssued(chain [][]byte, key *ecdsa.PrivateKey) (certPEM, keyPEM string, notAfter time.Time, err error) {
+	if len(chain) == 0 {
+		return "", "", time.Time{}, fmt.Errorf("the authority returned an empty chain")
+	}
+
+	leaf, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return "", "", time.Time{}, fmt.Errorf("parsing the issued certificate: %w", err)
+	}
+
+	// Every element, not just the leaf: nginx has to serve the intermediates too.
+	var certs strings.Builder
+	for _, der := range chain {
+		if err := pem.Encode(&certs, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+			return "", "", time.Time{}, err
+		}
+	}
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return "", "", time.Time{}, err
+	}
+	keyPEMBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return certs.String(), string(keyPEMBytes), leaf.NotAfter, nil
 }
 
 // solveHTTP01 publishes the challenge response where the data plane can serve it,
