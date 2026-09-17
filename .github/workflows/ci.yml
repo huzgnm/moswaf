@@ -38,7 +38,7 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Cai dependency
+      - name: Install dependencies
         working-directory: web
         run: npm ci --no-audit --no-fund
       - name: Build
@@ -50,19 +50,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Cai luajit
+      - name: Install luajit
         run: sudo apt-get update && sudo apt-get install -y luajit
-      - name: Kiem tra cu phap Lua
+      - name: Check Lua syntax
         run: |
           fail=0
           for f in $(find dataplane/lua -name '*.lua'); do
             if ! luajit -b "$f" /dev/null; then
-              echo "::error file=$f::loi cu phap Lua"
+              echo "::error file=$f::Lua syntax error"
               fail=1
             fi
           done
           exit $fail
-      - name: Kiem tra docker-compose
+      - name: Validate docker-compose
         run: docker compose config --quiet
         env:
           MOSWAF_VERSION: '0.1.0'

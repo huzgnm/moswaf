@@ -11,9 +11,9 @@ control/bin/
 web/node_modules/
 web/dist/
 
-# (ban build cua frontend do control/internal/web/dist/.gitignore quan ly)
+# (the frontend build is handled by control/internal/web/dist/.gitignore)
 
-# Chung chi tu sinh
+# Generated certificates
 certs/
 *.pem
 *.crt
@@ -21,5 +21,5 @@ certs/
 
 .DS_Store
 
-# Moi truong chay thu tren may dev (scripts/dev-local.sh)
+# Local dev runtime (scripts/dev-local.sh)
 .local/
