@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PRs #4, #5, #7, #8, #10, #12
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `cd37c4b` (all 34 findings across 11 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–11 PRs #12/#13/#15/#16/#17/#20/#24)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across six rounds, **25 findings were raised and all 25 fixed and re-verified**. Rounds
+Across eleven rounds, **34 findings were raised and all 34 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -29,6 +29,19 @@ and broke renewal. Round 6 stood up a **real Linux VM and ran `install.sh` end t
 confirming the Docker Compose deployment works and turning up 2 installer findings that
 only a live run exposes (a leftover `.env` copied into production, and a `REPAIR` that
 broke the database while reporting success); the Vue dashboard review found no XSS.
+
+Rounds 7–11 tracked the project as it grew past the WAF core into operations and
+new features (full detail in the **Rounds 7–11** section below). Round 7 found the
+**site watcher dying at boot on a fresh install** — the exact `This domain is not
+configured` symptom the operator hit on the live VPS — plus two installer honesty
+bugs. Round 8 reviewed the new **multilingual dashboard** (layout clipping the last
+column, and a prototype-chain hole that let `constructor`/`__proto__` pass as a
+language). Rounds 9–10 stress-tested the new **distributed-flood defence** and closed
+a **griefing path** where a trickle of 5xx held every visitor in the challenge
+indefinitely. Round 11 attacked the **SafeLine-style metrics** and found a single
+`?hours=0` blanking the entire overview (a division by zero the encoder cannot
+represent), an unclamped `hours` reaching into Redis allocation and an `int64`
+overflow, and a multi-host counter path that silently under-reported by half.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -58,6 +71,15 @@ broke the database while reporting success); the Vue dashboard review found no X
 | 23 | Low | Manual `POST /api/sites/{id}/certificate` has no rate-limit / ignores backoff → can burn CA limits | black-box (429 cooldown) | **Fixed ✓ (PR #4)** |
 | 24 | Medium | `install.sh` copies a leftover source `.env` into production → dev secrets/ports instead of fresh | live VM install | **Fixed ✓ (PR #10)** |
 | 25 | Medium | `REPAIR` regenerates `POSTGRES_PASSWORD`, breaking the DB, and reports success anyway | live VM `--repair` | **Fixed ✓ (PR #10)** |
+| 26 | **High** | Site watcher dies at boot on a fresh install (empty glob under `pipefail`) → sites added after boot never load; the live-VPS `This domain is not configured` symptom | `dataplane/test/entrypoint.sh` | **Fixed ✓ (PR #12)** |
+| 27 | Medium | `UPDATE` run from the install dir matched the copy-from-source branch, fetched nothing, and reported success | live VM `--update` in `/opt/moswaf` | **Fixed ✓ (PR #13)** |
+| 28 | Medium | Re-pasting the one-liner on an installed host did nothing (`[[ -r /dev/tty ]]` is true under `curl \| bash`, then the read fails) | `has_tty()` behaviour | **Fixed ✓ (PR #15)** |
+| 29 | Medium | Dashboard tables wider than `.card` clipped their last column (Edit/Delete unreachable); worse ~20% in Russian | live render at 1024px | **Fixed ✓ (PR #16)** |
+| 30 | Low | i18n table lookups used a truthy / `in` check → `constructor`, `__proto__`, `toString` accepted as a language and written to `localStorage` | `test/locales.js` (own-property) | **Fixed ✓ (PR #16/#17)** |
+| 31 | **High** | Flood error-signal griefing: a trickle of 5xx (≈4 req/s to one broken URL) held every visitor in the JS challenge indefinitely | `dataplane/test/flood_attack.lua` | **Fixed ✓ (PR #20)** |
+| 32 | **High** | `GET /api/overview?hours=0` → `qps` divides by zero → `+Inf`/`NaN` → `encoding/json` fails the whole response → overview blanks | `stats_test.go` (via encoder) | **Fixed ✓ (PR #24)** |
+| 33 | Medium | `hours` never clamped → `?hours=3e6` allocates millions of Redis keys and overflows `time.Duration(hours)*time.Hour` past ~2.5M h | `clampHours` `[1,168]` | **Fixed ✓ (PR #24)** |
+| 34 | Medium | Per-minute counters shipped under one key per minute as absolute values → a two-host deploy overwrote itself and under-reported by ~half, silently | `engine/stats_test.go` (per-host sum) | **Fixed ✓ (PR #24)** |
 
 ---
 
@@ -508,6 +530,149 @@ validated enums, so there is no CSS or class injection either. The token is held
 surface. Live, the built dashboard serves and login works. (The in-app browser would
 not load the self-signed admin TLS certificate, so the visual render was not captured —
 a tooling limit, not a finding.)
+
+---
+
+## Rounds 7–11 — operations, then the new features
+
+After round 6 the engagement shifted from auditing the WAF core to following the
+project as it added operational polish and three sizeable features. The pattern held:
+the bugs were not in the clever code, they were in the seams — a background watcher no
+one watched, an installer that lied about what it did, a metrics field that skipped the
+guard its neighbour was given.
+
+### Round 7 — the installer and the boot-time watcher, on the live VPS
+
+The operator's own symptom drove this round: a freshly installed site answered
+`This domain is not configured` with a self-signed certificate, even though the
+dashboard reported success and ACME had issued a real certificate.
+
+**26. The site watcher dies at boot on a fresh install — HIGH.** `/etc/moswaf/sites`
+is empty on a new install, so the globs in `sites_hash` stayed literal, `cat` failed,
+and `pipefail` handed that failure to the whole pipeline. The watcher's first statement
+is `last="$(sites_hash)"`, so `errexit` killed it before it ever looped — and it runs
+in the background, where dying costs nothing visible. OpenResty kept serving, the
+dashboard kept reporting success, ACME kept issuing certificates, and **every site
+added after boot was written to disk and never loaded**. The watcher only survived if
+at least one site already existed at boot, which is why it was never seen in testing —
+and why deleting the last site broke it again. **Fixed (PR #12):** `sites_hash`
+tolerates an unmatched glob, the watcher runs with `errexit` off so a transient failure
+costs one cycle instead of the watcher, and it logs that it started. `dataplane/test/entrypoint.sh`
+drives the real functions with a stub `openresty`: starts the watcher with zero sites,
+adds one, asserts a reload follows — both checks fail against the unfixed script.
+
+**27. `UPDATE` from the install directory fetched nothing and claimed success — MEDIUM.**
+`cd /opt/moswaf && bash install.sh --update` — the obvious thing to type — matched the
+copy-from-source branch of `fetch_source`, found source and destination were the same
+directory, and returned without fetching. `UPDATE` then rebuilt the code already on
+disk and printed `Updated. All data and configuration were kept.` The operator would
+keep running the version they were trying to leave. **Fixed (PR #13):** the copy branch
+now requires the source to be elsewhere, so this case falls through to the git branch
+and actually fetches; `UPDATE` prints the commit it landed on, and exits non-zero rather
+than printing success when the control plane is unhealthy afterwards.
+
+**28. Re-pasting the one-liner on an installed host did nothing — MEDIUM.** With no
+terminal the installer always chose `INSTALL`, hit `Reinstall over it?`, found nothing
+to read the answer from, and stopped — having done nothing while looking like it ran.
+The test was `[[ -r /dev/tty ]]`, which is wrong: the device node can exist and test as
+readable while *opening* it fails with `Device not configured`, which is exactly the
+`curl | bash` case. **Fixed (PR #15):** `has_tty()` opens the device in a subshell to
+find out; no terminal + already installed now means `UPDATE`, a bare machine still
+installs.
+
+### Round 8 — the multilingual dashboard
+
+The dashboard gained Vietnamese, Russian and Chinese. The review looked at the two
+things translations tend to break: layout, and the language-selection logic.
+
+**29. Wide tables clipped their last column — MEDIUM.** A table sits directly inside
+`.card`, which sets no overflow, so a table wider than the card had its right-hand
+columns clipped with no way to reach them — including the column holding Edit and
+Delete. Measured at a 1024px viewport (container 718px): Sites renders 986px in English
+and 1121px in Russian. The clipping predated the translations, but Russian runs ~20%
+wider, moving the failure from rare to ordinary-laptop. **Fixed (PR #16):**
+`.table-wrap { overflow-x: auto }`.
+
+**30. The language table accepted `Object.prototype` members as languages — LOW.**
+i18n looked its tables up with a truthy check, so every inherited key — `constructor`,
+`toString`, `__proto__` — passed as a real language and was written to `localStorage`;
+`test/locales.js` used `key in table`, which walks the prototype chain too. The effects
+were mild (`t()` falls back to English, `Intl` ignores the tag), but a value that is not
+a language should never be accepted. **Fixed (PR #16/#17):** `Object.hasOwn` everywhere,
+including inside `t()`; and the dashboard now opens in a **fixed default (English)**
+rather than whatever the browser is set to, so screenshots and support match the
+installation rather than whoever is at the keyboard.
+
+### Rounds 9–10 — the distributed-flood defence
+
+The engine gained a site-wide layer-7 flood detector (feature PR #19): every other
+limit counts per IP, and a distributed flood is built precisely to stay under one, so
+this module counts what the *site* receives and what the origin *answers*, turning the
+JS challenge on for everyone when either crosses the line. Two signals: site-wide rps,
+and origin 5xx rate. The rps path was verified against its exact boundary; the error
+path is where the finding was.
+
+**31. Error-signal griefing held every visitor in the challenge indefinitely — HIGH.**
+The 5xx signal engaged on count alone. Twenty answers over a five-second window is four
+requests a second, so anyone who knew one URL that returned 5xx — a broken endpoint, a
+route behind a dead dependency — could hold every visitor on the site in the JS
+challenge indefinitely, for the price of four requests a second, by refreshing the hold
+from traffic that is not a flood by any measure. **The defence itself becomes the denial
+of service.** **Fixed (PR #20):** the error signal now also requires a real *answer
+rate* — `max(20/s, threshold/20)` — so the origin has to be genuinely busy before its
+error rate can engage the defence; the floor is counted over answers, not requests,
+because challenged/blocked requests never reach the origin and say nothing about its
+health. `dataplane/test/flood_attack.lua` (PR #21) is a deterministic harness — it stubs
+the shared dict and the clock and drives `observe`/`evaluate` directly — pinning the
+1000 r/s boundary, a 5000 r/s distributed flood, per-site isolation, and the griefing
+fix (4/s no longer engages; a real 60/s error storm still does). A companion process
+fix (PR #22) found `make lua-test` was silently running only three of five Lua suites.
+
+### Round 11 — the SafeLine-style metrics
+
+The overview grew from four numbers to ten: page views, visitors, unique addresses,
+qps, 4xx/5xx with their shares, and — the point of the batch — "blocked by MosWAF"
+beside the total 4xx, so an operator can tell an attack from a broken origin. Page views
+are counted from response content type rather than path (a stylesheet that 404s is
+served as HTML), unique counts come from per-hour HyperLogLogs merged by union, and
+there is deliberately no tracking cookie. Those design choices held up under review; the
+findings were all in the arithmetic at the edges.
+
+**32. `?hours=0` blanked the entire overview — HIGH.** `qps` was computed inline, one
+line below a carefully guarded `rate()`, dividing `Total` by `hours*3600` — and `hours`
+came straight from the query string with no bound. `?hours=0` produced `+Inf` on a busy
+site and `NaN` on a quiet one; neither is representable in JSON, so `encoding/json`
+rejects the *whole document* rather than that one field, and the `200` and headers are
+already written by then — the client gets a successful response with an empty body. The
+package's own `rate()` test spells out that exact failure mode; the field beside it went
+unguarded, which is the argument for a guarded `perSecond()` function rather than an
+expression. Reproduced deterministically through the encoder before the fix.
+**Fixed (PR #24):** `perSecond()` guards `seconds <= 0`.
+
+**33. `hours` was never clamped — MEDIUM.** The unbounded value reached past the
+division: `uniqueCounts` builds one Redis key per hour and unions them, so `?hours=3e6`
+allocates a slice of millions and hands Redis a matching command, and
+`time.Duration(hours)*time.Hour` overflows `int64` past ~2.5M hours, after which the
+window start is garbage and the totals are quietly wrong. **Fixed (PR #24):** `hours`
+clamped to `[1,168]` in *both* handlers that take it (the timeseries handler used to
+reset out-of-range to a default, which answers a different question than the one asked).
+
+**34. Multi-host counters under-reported by half, silently — MEDIUM.** Per-minute
+counters shipped under one key per minute, as absolute values, from every data plane, so
+two hosts overwrote each other and the control plane recorded whichever finished last —
+a two-host deployment under-reported its traffic by roughly half, and the graph simply
+looked like a smaller site. (The field-wise `GREATEST` upsert is otherwise sound: it
+preserves the per-ship subset invariants — `blocked ≤ total`, `blocked_4xx ≤
+errors_4xx ≤ total` — so it can never manufacture an impossible rate.) **Fixed (PR #24):**
+each host writes its own key (`moswaf:stat:<minute>:<host>`, with `env HOSTNAME` declared
+in `nginx.conf` so workers actually see it) and the control plane sums across hosts after
+the whole scan finishes; old host-less keys are still read for two hours so an upgrade
+does not punch a hole in the graph. Verified live by the fixer: a real proxy (30 req) and
+a simulated second host (500) recorded 530, not 500. *(Static note, informational: during
+that two-hour compatibility window, an in-place `nginx -s reload` — as opposed to the
+container restart MosWAF's own update path performs — would double-count the single minute
+spanning the reload, since the lingering host-less key and the new per-host key reflect the
+same preserved shared-dict counter. Container restart clears the dict and is unaffected.)*
 
 ---
 
