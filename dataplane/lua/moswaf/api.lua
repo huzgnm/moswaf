@@ -143,21 +143,55 @@ end
 -- The IPs currently under a temporary ban. These are created by the engine when it
 -- detects a flood, so they only live in data plane memory and the database knows
 -- nothing about them - they have to be read here.
+-- How many bans one request will return.
+--
+-- Named rather than written inline because the dashboard has to be told when the
+-- list was cut, and it must not learn the number by hard-coding it - then raising
+-- it here would make the dashboard quietly wrong instead of quietly incomplete.
+local BAN_PAGE = 1000
+
 function _M.bans()
     if not authorised() then return end
     local ban = ngx.shared.moswaf_ban
+
+    -- One more than a page, on purpose.
+    --
+    -- It answers "is there more?" without answering "how many more?", and the
+    -- difference in cost is the whole point: get_keys(0) walks every key and holds
+    -- the dictionary's lock while it does, and the moment that hurts is a flood -
+    -- which is also the only moment there are enough bans for it to matter. The
+    -- lock it takes is the same one every request needs to ask whether it is
+    -- banned, so answering this page precisely would slow down the thing the page
+    -- exists to show.
+    local keys = ban:get_keys(BAN_PAGE + 1)
+    local truncated = #keys > BAN_PAGE
+
     local items = {}
-    for _, key in ipairs(ban:get_keys(1000)) do
+    for i = 1, #keys do
+        if #items >= BAN_PAGE then break end
+        local key = keys[i]
         local ip = key:match("^b:(.+)$")
         if ip then
-            items[#items + 1] = {
-                ip     = ip,
-                reason = ban:get(key) or "auto",
-                ttl    = ban:ttl(key) or 0,
-            }
+            -- A ban can expire between listing the keys and reading one, so a
+            -- missing value means "gone", not "unknown reason".
+            local reason = ban:get(key)
+            if reason ~= nil then
+                items[#items + 1] = {
+                    ip     = ip,
+                    reason = reason,
+                    ttl    = ban:ttl(key) or 0,
+                }
+            end
         end
     end
-    return json(200, { items = items, total = #items })
+
+    -- total is the real number only when it is known for free. Under truncation it
+    -- is absent rather than guessed: a figure that says 1000 when there are 1843
+    -- is worse than one that admits it does not know, because the first is read as
+    -- the answer.
+    local out = { items = items, shown = #items, truncated = truncated }
+    if not truncated then out.total = #items end
+    return json(200, out)
 end
 
 -- Lift the ban for one IP, or for all of them when ip=*
