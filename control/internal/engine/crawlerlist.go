@@ -33,13 +33,24 @@ const (
 	// per-prefix limit that permits what the total forbids is a rule that
 	// contradicts itself, and the looser half is the one an attacker reads.
 	minIPv4Bits = 12
-	minIPv6Bits = 32
 
-	// And a ceiling on the whole list, because the guard above is per prefix:
-	// separate entries can each be narrow enough and together cover the internet.
-	// Four million addresses is far above everything every crawler operator
-	// publishes put together, and far below a number worth having.
-	maxIPv4Addresses = 1 << 22
+	// Every IPv6 range the four operators actually publish is a /64 - all 283 of
+	// them in the bundled snapshot. A /48 is sixteen bits of headroom on that and
+	// still narrow enough to mean something; the /32 this started at was sixty
+	// five thousand times wider than any real one, which made the IPv6 half of
+	// this validator decorative.
+	minIPv6Bits = 48
+
+	// And ceilings on the whole list, because the guards above are per prefix:
+	// separate entries can each be narrow enough and together cover everything.
+	//
+	// Two ceilings, because one number cannot hold both families. Counting IPv6 in
+	// addresses would drown IPv4 entirely - a single /64 is four billion times an
+	// entire IPv4 internet - so IPv6 is counted in /64s, the unit it is actually
+	// handed out in. Leaving IPv6 out of the total, which is what the first
+	// version did, meant there was no aggregate limit on it at all.
+	maxIPv4Addresses = 1 << 22 // four million addresses
+	maxIPv6Subnets   = 1 << 20 // a million /64s, against 283 in the real lists
 
 	// A list is a few hundred entries. This is not a tuning parameter; it is the
 	// point past which the document is not a crawler list any more.
@@ -58,14 +69,27 @@ type CrawlerRanges struct {
 // "::ffff:0:0/96" reads as a /96 - narrow, by any rule that counts bits - and
 // covers every IPv4 address there is. A guard that looked at the text would wave
 // it through and hand a verified-crawler exemption to the entire internet.
-func normalisePrefix(p netip.Prefix) netip.Prefix {
-	if p.Addr().Is4In6() && p.Bits() >= 96 {
-		return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96)
+// mapped says whether the prefix was written in IPv4-mapped form, and it has to
+// be asked BEFORE the prefix is masked. Masking ::ffff:0:0/95 clears the last bit
+// of the ffff marker, giving ::fffe:0:0/95 - which is no longer recognisable as
+// mapped at all, so a check made after masking sees an ordinary IPv6 range and
+// waves it through. The same happens to every mapped prefix shorter than /96.
+func normalisePrefix(p netip.Prefix, mapped bool) (netip.Prefix, error) {
+	if !mapped {
+		return p, nil
 	}
-	// A mapped address with fewer than 96 bits does not describe an IPv4 range at
-	// all - it spans the boundary of the mapped block - so it is left as IPv6 and
-	// the IPv6 width guard will refuse it.
-	return p
+	if p.Bits() >= 96 {
+		return netip.PrefixFrom(p.Addr().Unmap(), p.Bits()-96), nil
+	}
+	// A mapped address with fewer than 96 bits does not describe an IPv4 range:
+	// it reaches outside the mapped block into space that is not IPv4 at all.
+	// ::ffff:0:0/95 masks to ::fffe:0:0/95, ::ffff:0:0/40 masks to ::/40 - both
+	// wide, neither meaningful, and the earlier comment here claimed the IPv6
+	// width guard would refuse them, which it did not: they sat above the floor.
+	// There is no reading of such an entry that a crawler operator meant, so it
+	// is refused rather than interpreted.
+	return netip.Prefix{}, fmt.Errorf(
+		"%s is an IPv4-mapped prefix shorter than /96, which describes no IPv4 range", p)
 }
 
 // ValidatePrefix accepts one entry, or explains why it cannot be trusted.
@@ -82,7 +106,11 @@ func ValidatePrefix(raw string) (netip.Prefix, error) {
 
 	// Masked: 1.2.3.4/24 names the range 1.2.3.0/24, and keeping the host bits
 	// would make two spellings of one range look like two ranges.
-	p = normalisePrefix(p.Masked())
+	mapped := p.Addr().Is4In6()
+	p, err = normalisePrefix(p.Masked(), mapped)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("%q: %w", s, err)
+	}
 
 	if p.Addr().Is4() {
 		if p.Bits() < minIPv4Bits {
@@ -98,12 +126,24 @@ func ValidatePrefix(raw string) (netip.Prefix, error) {
 	return p, nil
 }
 
-// ipv4Size is how many addresses a prefix covers, for the total ceiling.
+// ipv4Size is how many addresses a prefix covers, for the IPv4 ceiling.
 func ipv4Size(p netip.Prefix) float64 {
 	if !p.Addr().Is4() {
 		return 0
 	}
 	return math.Pow(2, float64(32-p.Bits()))
+}
+
+// ipv6Subnets is how many /64s a prefix covers, for the IPv6 ceiling.
+//
+// /64 is the unit IPv6 is handed out in, and it keeps the number in a range that
+// means something: counting addresses instead would put a single /64 at
+// eighteen quintillion and make every comparison meaningless.
+func ipv6Subnets(p netip.Prefix) float64 {
+	if p.Addr().Is4() || p.Bits() > 64 {
+		return 0
+	}
+	return math.Pow(2, float64(64-p.Bits()))
 }
 
 // ValidateRanges filters a published list down to what may be trusted.
@@ -124,6 +164,7 @@ func ValidateRanges(name string, raw []string) ([]string, []string, error) {
 		out      []string
 		rejected []string
 		total    float64
+		totalV6  float64
 		seen     = map[string]bool{}
 	)
 
@@ -139,6 +180,7 @@ func ValidateRanges(name string, raw []string) ([]string, []string, error) {
 		}
 		seen[s] = true
 		total += ipv4Size(p)
+		totalV6 += ipv6Subnets(p)
 		out = append(out, s)
 	}
 
@@ -146,6 +188,11 @@ func ValidateRanges(name string, raw []string) ([]string, []string, error) {
 		return nil, rejected, fmt.Errorf(
 			"%s published ranges covering %.0f IPv4 addresses, past the %d limit; "+
 				"keeping the previous list", name, total, maxIPv4Addresses)
+	}
+	if totalV6 > maxIPv6Subnets {
+		return nil, rejected, fmt.Errorf(
+			"%s published ranges covering %.0f IPv6 /64 subnets, past the %d limit; "+
+				"keeping the previous list", name, totalV6, maxIPv6Subnets)
 	}
 	if len(out) == 0 {
 		// An empty list is not a safe default in either direction: it would exempt
