@@ -135,14 +135,56 @@ end
 dict:reset()
 do
     local site = "slow"
-    -- Few requests, but the origin is falling over: a slow endpoint can be taken
-    -- down with a request rate no threshold would flag.
-    answers(site, flood.WINDOW, 40, 80)
+    -- Well below the 1000 r/s volumetric threshold, but the origin is falling
+    -- over: a slow endpoint can be taken down with a request rate no volumetric
+    -- threshold would flag. 60 r/s clears the error signal's own floor.
+    answers(site, flood.WINDOW, 60, 80)
     local engaged, reason = evaluate(site, CFG)
-    check("the origin failing engages the defence on its own",
+    check("the origin failing engages the defence well below the volumetric threshold",
         engaged and reason == "origin_errors",
-        "40 r/s with 80% of answers failing, engaged=" .. tostring(engaged) ..
-        " reason=" .. tostring(reason))
+        "60 r/s with 80% of answers failing against a 1000 r/s threshold, engaged=" ..
+        tostring(engaged) .. " reason=" .. tostring(reason))
+end
+
+-- The error signal has to cost the attacker real traffic.
+--
+-- Twenty answers over a five second window is four requests a second. Anyone who
+-- knows one URL on the site that returns 5xx - a broken endpoint, a route behind
+-- a dead dependency - could otherwise hold every visitor in the challenge for
+-- the price of four requests a second, indefinitely, by trickling just enough to
+-- refresh the hold. The defence itself becomes the denial of service.
+dict:reset()
+do
+    local site = "slow"
+    answers(site, flood.WINDOW, 4, 100)      -- 4 r/s, every single answer a 5xx
+    local engaged, reason = evaluate(site, CFG)
+    check("a trickle of errors cannot hold the site in the challenge",
+        not engaged,
+        "4 r/s of pure 5xx engaged the defence (reason " .. tostring(reason) ..
+        "); one broken URL would keep every visitor solving challenges for free")
+end
+
+-- The floor scales with the site: a small site configured with a low volumetric
+-- threshold must not need the same absolute rate as a large one.
+dict:reset()
+do
+    local site = "small"
+    answers(site, flood.WINDOW, 25, 100)     -- 25 r/s, above the absolute floor of 20
+    local engaged, reason = evaluate(site, { rps = 200, error_rate = 50, hold = 60 })
+    check("a small site's error signal fires at its own scale",
+        engaged and reason == "origin_errors",
+        "25 r/s of 5xx on a site with a 200 r/s threshold, engaged=" .. tostring(engaged))
+end
+
+-- ...and on a large one the floor rises with it, so the same trickle is not enough.
+dict:reset()
+do
+    local site = "large"
+    answers(site, flood.WINDOW, 25, 100)
+    local engaged = evaluate(site, { rps = 10000, error_rate = 50, hold = 60 })
+    check("a large site's error signal needs a rate to match",
+        not engaged,
+        "25 r/s of 5xx engaged a site whose volumetric threshold is 10,000 r/s")
 end
 
 -- Two failures out of three is 66% and means nothing; the sample floor has to hold.
@@ -218,6 +260,30 @@ do
             tostring(st.engaged), tostring(st.reason), tostring(st.rps), tostring(st.peak_rps)))
 end
 
+-- ------------------------------------------------- one site does not report another
+--
+-- The measurement is cached for a second per worker. With a single shared slot
+-- the decision stayed correct - it is read from the per-site flag - but the rate
+-- and reason handed back belonged to whichever site was measured last, so a
+-- quiet site could show a flooded site's numbers.
+dict:reset()
+do
+    traffic("busy", flood.WINDOW, 20000)
+    local engaged_busy, reason_busy, rps_busy = evaluate("busy", CFG)
+    check("the flooded site reports its own flood", engaged_busy and rps_busy > 1000,
+        "setup: engaged=" .. tostring(engaged_busy) .. " rps=" .. tostring(rps_busy))
+
+    -- Immediately after, within the same second, ask about a site with no traffic.
+    local engaged_quiet, reason_quiet, rps_quiet = evaluate("quiet", CFG)
+    check("a quiet site is not reported as flooded",
+        not engaged_quiet,
+        "the quiet site came back engaged")
+    check("a quiet site does not report the flooded site's rate",
+        (rps_quiet or 0) == 0 and reason_quiet == nil,
+        "quiet site reported rps=" .. tostring(rps_quiet) ..
+        " reason=" .. tostring(reason_quiet) .. " - those belong to 'busy'")
+end
+
 -- ------------------------------------------------- resolving the thresholds
 --
 -- This is the check that was missing. The unit tests above hand evaluate() a cfg
@@ -275,6 +341,7 @@ if #failures == 0 then
     print("  an origin that starts failing engages the defence on its own")
     print("  ordinary traffic, a single burst second, and a quiet site are left alone")
     print("  the defence releases itself once the flood stops")
+    print("  a trickle of 5xx cannot hold the site in the challenge for free")
     os.exit(0)
 end
 print(string.format("%d of %d checks FAILED:\n", #failures, total))

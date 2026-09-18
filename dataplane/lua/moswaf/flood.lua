@@ -34,10 +34,40 @@ local WINDOW = 5
 -- A bucket has to outlive the window it is read in, with room for the clock.
 local BUCKET_TTL = WINDOW + 5
 
+-- Floors for the origin-error signal.
+--
+-- The count alone is not enough. Twenty answers over a five second window is four
+-- requests a second, so anyone who knows one URL on the site that returns 5xx -
+-- a broken endpoint, a route behind a dead dependency - could hold every visitor
+-- in the challenge for the price of four requests a second, indefinitely, by
+-- refreshing the hold from traffic that is not a flood by any measure. The
+-- defence itself becomes the denial of service.
+--
+-- So the site also has to be busy enough that load is a plausible cause of the
+-- failures. Not as busy as the volumetric threshold - the whole point of this
+-- signal is that a slow endpoint falls over well below that - but busy enough
+-- that holding the site hostage costs real traffic.
+-- The floor is a rate of *answers*, not of requests. The error rate is computed
+-- over the requests the origin actually answered, so the floor has to be counted
+-- over the same population: requests the WAF blocked or challenged never reached
+-- the origin and say nothing about its health.
+local MIN_ANSWER_RPS  = 20    -- absolute floor, for a site with a low threshold
+local ERROR_RPS_SHARE = 0.05  -- or a twentieth of the volumetric threshold, whichever is higher
+
+local function error_signal_floor(cfg)
+    local share = (cfg.rps or 0) * ERROR_RPS_SHARE
+    return share > MIN_ANSWER_RPS and share or MIN_ANSWER_RPS
+end
+
 -- Evaluating means reading WINDOW buckets. Doing that per request would add work
 -- to exactly the moment the site is drowning, so each worker evaluates at most
 -- once a second and every other request reads a single flag.
-local last_eval, last_result = 0, nil
+--
+-- Keyed by site. A single shared slot made the decision correct - that is read
+-- from the per-site flag - but reported whichever site was measured last, so a
+-- quiet site could show another site's rate and reason on the dashboard. The
+-- table is bounded by the number of configured sites.
+local last_eval, last_result = {}, {}
 
 local function rkey(site, sec) return "r:" .. site .. ":" .. sec end
 local function ekey(site, sec) return "e:" .. site .. ":" .. sec end
@@ -107,25 +137,26 @@ function _M.evaluate(site, cfg)
     end
 
     local now = ngx.now()
-    if now - last_eval < 1 and last_result ~= nil then
+    local cached = last_result[site]
+    if cached and now - (last_eval[site] or 0) < 1 then
         -- Between evaluations, trust the shared flag rather than this worker's own
         -- last answer: another worker may have engaged the defence a moment ago.
-        return _M.engaged(site), last_result.reason, last_result.rps
+        return _M.engaged(site), cached.reason, cached.rps
     end
-    last_eval = now
+    last_eval[site] = now
 
     local rps, error_rate, answers = measure(site)
     local reason
 
     if (cfg.rps or 0) > 0 and rps >= cfg.rps then
         reason = "site_rps"
-    elseif (cfg.error_rate or 0) > 0 and answers >= 20 and error_rate >= cfg.error_rate then
-        -- The sample floor matters: three requests of which two failed is 66% and
-        -- means nothing. Twenty answers in five seconds is a real signal.
+    elseif (cfg.error_rate or 0) > 0
+       and (answers / WINDOW) >= error_signal_floor(cfg)
+       and error_rate >= cfg.error_rate then
         reason = "origin_errors"
     end
 
-    last_result = { reason = reason, rps = rps }
+    last_result[site] = { reason = reason, rps = rps }
 
     if reason then
         -- set() and not incr(): every refresh restarts the hold, so the defence
