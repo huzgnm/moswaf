@@ -229,7 +229,12 @@ function _M.rule_test()
         method  = tostring(body.method or "GET"):upper(),
     }
 
-    local site = tostring(body.site or "")
+    -- "site_id" is what every other endpoint calls this, so it is what this one
+    -- answers to. "site" is still accepted because it is what the first version
+    -- asked for: two names for one thing is a trap the system laid, not a mistake
+    -- by whoever fell into it, and the cost of keeping the old one working is a
+    -- single `or`.
+    local site = tostring(body.site_id or body.site or "")
     local hit = rulesets.match(conf.access_rules, site, subject, conf.geo_sets)
     if not hit then
         return json(200, { matched = false })
