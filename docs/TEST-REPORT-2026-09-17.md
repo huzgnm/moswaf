@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `23dda80` (42 findings across 17 rounds — round 17 raised none above cosmetic; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–17 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `23dda80`, plus the auth-gateway feature (PR #40, `f61e288`) reviewed and attacked live in round 18. 42 findings across 18 rounds — the last two rounds, on the two largest features, raised none. Rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–18 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38/#40.
 
 ---
 
@@ -20,9 +20,10 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across seventeen rounds, **42 findings were raised and all 42 fixed and re-verified**;
-round 17 is the exception that proves the pattern — a whole feature reviewed and attacked
-that yielded nothing above cosmetic. Rounds
+Across eighteen rounds, **42 findings were raised and all 42 fixed and re-verified**;
+the last two rounds are the exception that proves the pattern — the two largest features
+of the project, geolocation and a login gateway, each reviewed and attacked and each
+yielding nothing above cosmetic. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -79,7 +80,17 @@ this is the round that found nothing above cosmetic: the parse skips bad rows an
 memory, the database write is parameterised, the dashboard escapes and tolerates a junk
 label, and the "reversed range" that looked like a bug turned out to be inert. It is written
 up because a clean surface is a result, and a report that lists only the breakages cannot
-tell a reader whether the quiet parts were examined or merely skipped.
+tell a reader whether the quiet parts were examined or merely skipped. Round 18 attacked the
+**login gateway** — the largest feature of the project and an entirely new trust boundary:
+it puts a password in front of a site, verifies a signed session cookie on every request,
+and tells the upstream who the visitor is. It was reviewed before a line was written (which
+closed four design holes, including a cross-site one the author believed was already
+handled) and then attacked live against a running gate with a real account. Every attack
+bounced: a forged identity header never reaches the upstream, a session minted for one site
+is refused at another, a changed password kills the old session on the next request, and the
+password that looks like an SQL injection signs a visitor in rather than being blocked. It,
+too, found nothing — the second clean round in a row, on the two features that carried the
+most risk.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -1084,6 +1095,89 @@ One thing was left unfixed by agreement: an event recorded in the first minute a
 during a spell with no dataset, keeps an empty country and is not back-filled when the data
 later loads. The window is small, the mode is degraded rather than wrong, and back-filling
 would mean a job re-scanning the events table — more machinery than a reporting column earns.
+
+### Round 18 — the login gateway, a new trust boundary attacked live
+
+The largest feature of the project, and the one with the most new surface: a gate that puts
+a password in front of a site written without one, verifies a signed session cookie on every
+request with no database call, and passes the authenticated identity to the upstream in a
+header. Three things make it dangerous — a cookie that grants access, a header the upstream
+trusts, and a login form on the open internet — so it was reviewed before it was written and
+then attacked live, on a running gate with a real account, rather than read.
+
+**The design review, before any code.** Four holes were closed on paper, and one of them the
+author had believed was already handled: a session cookie is signed with a secret shared
+across every site, so the signature alone proves only that *we* issued it, not that we issued
+it for *here* — a cookie minted for site A carries a valid signature at site B. The fix is to
+bind the site into the signed string and, at verification, take the site id from the
+configuration of the site being served rather than from anything the cookie says. Also closed
+before implementation: the credential store had to be bcrypt and the data plane had to never
+see a password (login is proxied to the control plane, which alone holds the hashes); the
+internal endpoint the data plane calls had to require a token *and* have that token stripped
+from any inbound request, or the mechanism added to stop header spoofing would itself be the
+spoofable header; and the login page had to be matched exactly while the ACME path — whose
+token lives in the path, so it cannot be an exact match — had to be a prefix that ends in a
+slash, since either one matching more than it names is a way around the gate (a prefix
+without the trailing slash would exempt `/.well-known/acme-challenge-anything/…` too).
+
+**The attacks, live against a running gate.** A site was stood up with TLS and a real account,
+its upstream pointed at a server that echoes the headers it receives, and every property was
+checked against the running system:
+
+  - **the identity header cannot be forged.** A request carrying `X-MosWAF-User: admin`,
+    `X-MosWAF-Token: …` and an invented `X-MosWAF-Role: root` reached the upstream as
+    `X-MosWAF-User: <the real authenticated id>` with the other two absent — the whole
+    `X-MosWAF-*` namespace is stripped on every request, on gated and ungated sites alike, and
+    the identity is set only after the session verifies. The invented header confirmed the
+    strip is by prefix, not by a list something can fall off of.
+  - **a session does not cross sites.** A cookie issued at one site, presented at another,
+    was refused — the site id is in the signature and the verifier takes it from the site it
+    is serving, so the signature simply does not match anywhere else.
+  - **a forged or edited cookie is refused** — changing the user id or a single character of
+    the signature turns it into a redirect back to the login page.
+  - **revocation is immediate.** Changing a password refused the old cookie on the very next
+    request; deleting a user refused theirs at once (the account vanishes from the published
+    map, and a session for an id not in the map is refused) — with a second account keeping
+    the gate live so the effect was the revocation and not the gate switching off.
+  - **the last account leaving turns the gate off, not into a wall.** A site whose only
+    account is deleted serves openly rather than locking everyone out of a site with no way in.
+  - **the password that looks like an attack still works.** Signing in with
+    `p'a--ss<script>` succeeded: the login endpoint keeps the header strip, the blocklist and
+    the rate limit but is exempt from the signature rules, because a rule that blocks an
+    apostrophe blocks the person it is meant to protect.
+  - **the pieces around it hold too:** a cross-origin POST to the login form is refused
+    (a login is the one place a cross-site POST has a use); the internal login listener is not
+    published outside the container network and answers `403` to a call without the token;
+    enabling the gate on a plaintext site is refused outright, since a login over HTTP hands
+    the password and the cookie to anyone on the path; and the cookie is `HttpOnly`,
+    `SameSite=Lax`, `Secure` and host-only.
+
+The one part that could not be exercised from outside was reasoned from a result instead of
+forced: the login working *and* the cookie being refused cross-site together prove that the
+site id reached the control plane correctly through the subrequest that carries it — had it
+arrived empty, the cookie would have been signed for no site and would have failed at its own
+site too. Read the other way, a passing login is a proof that the plumbing underneath it is
+connected.
+
+Three limits are the gate's by design, documented rather than found, and each was reviewed
+and left as the better trade:
+
+  - **the session is not bound to an address.** A cookie copied to another machine works until
+    it expires or is revoked. Binding to the address would log a mobile user out on every
+    change of network, and a protection everyone turns off protects nobody; the short lifetime
+    (twelve hours), the immediate revocation, and the `HttpOnly`/`Secure`/`SameSite` flags are
+    what stand in for it.
+  - **signing out clears the cookie but does not end the session everywhere.** A copy taken
+    beforehand stays valid until it expires; "sign out everywhere" — a generation bump, which
+    only the control plane can write — is the button that closes that, and the difference is
+    stated on it.
+  - **the internal login listener speaks plain HTTP on the container network.** TLS there
+    would mean the data plane trusting a certificate it has no way to verify, which is the
+    appearance of a stronger claim and not the substance; the caller is authenticated by the
+    token, and the same network already carries the Redis password and the whole
+    configuration in the clear. The assumption underneath is a trusted single-host network —
+    the same one Redis already relies on; a multi-host deployment would need to encrypt this
+    and Redis together, as one decision rather than one path.
 
 ---
 
