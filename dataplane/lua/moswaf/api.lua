@@ -33,12 +33,27 @@ end
 local function authorised()
     local token = expected_token()
     if not token then
-        -- No token from either source yet: the data plane has not completed its
-        -- first config sync. Keep working on the allow list alone rather than
-        -- breaking unban, and say so.
-        ngx.log(ngx.WARN, "moswaf: no internal API token known yet - protected by ",
-                "the IP allow list only until the first configuration sync")
-        return true
+        -- No token from either source: neither the environment nor a published
+        -- configuration has one, which on a normal install never happens because
+        -- install.sh always generates one. It can happen on a bare
+        -- `docker compose up`, or on an upgrade whose .env was never given the
+        -- variable, and only until the first configuration sync arrives.
+        --
+        -- That window used to be answered by letting the call through on the
+        -- strength of the IP allow list alone. The allow list is a network
+        -- boundary, not an identity: anything sharing the Docker network sits
+        -- inside it. Refusing is the safer half of the trade - the endpoints
+        -- behind this are lifting bans and forcing config reloads, and a few
+        -- seconds of "not ready" costs an operator nothing, where a few seconds
+        -- of "anyone on this network may lift bans" is the thing being guarded
+        -- against.
+        ngx.log(ngx.WARN, "moswaf: refusing an internal API call - no token from ",
+                "the environment and no configuration synced yet")
+        ngx.status = 503
+        ngx.header["Content-Type"] = "application/json; charset=utf-8"
+        ngx.print('{"error":"the data plane has not received its configuration yet"}')
+        ngx.exit(503)
+        return false
     end
 
     local got = ngx.req.get_headers()["X-MosWAF-Token"]

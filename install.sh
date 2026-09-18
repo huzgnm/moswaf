@@ -363,6 +363,14 @@ do_update() {
     MOSWAF_UPDATED_SELF=1 exec bash "$fresh" "${args[@]}"
   fi
 
+  # An installation made before a secret existed does not have it. Fill those in
+  # here rather than leaving the feature that needs it quietly switched off until
+  # somebody runs a repair.
+  add_missing_secrets
+  if [[ "$SECRETS_ADDED" -gt 0 ]]; then
+    ok "Added $SECRETS_ADDED secret(s) this installation did not have yet"
+  fi
+
   info "Rebuilding images..."
   compose build --pull
   info "Recreating containers..."
@@ -415,6 +423,36 @@ repair_db_password() {
   echo "POSTGRES_PASSWORD=$pw" >> "$INSTALL_DIR/.env"
 }
 
+# Write any stateless secret that .env is missing, and report how many.
+#
+# Called on UPDATE as well as REPAIR. A secret introduced after an installation
+# was made does not exist in its .env, and an update that only replaces code
+# leaves it missing - so the feature that needs it silently does not work until
+# somebody happens to run a repair. MOSWAF_INTERNAL_TOKEN is exactly that case:
+# without it the data plane now refuses internal API calls, which would turn a
+# hardening change into a permanent error on every save.
+#
+# Every secret here is read fresh on each boot, so writing a new value is enough.
+# POSTGRES_PASSWORD is not in this list, deliberately: it is baked into the
+# database at initialisation and needs the separate handling below.
+# Sets SECRETS_ADDED rather than returning the count: an exit status is a single
+# byte and is read by `set -e` as success or failure, so a function that returned
+# "3 secrets written" would be a function that failed.
+SECRETS_ADDED=0
+
+add_missing_secrets() {
+  local key
+  SECRETS_ADDED=0
+  for key in REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET \
+             MOSWAF_INTERNAL_TOKEN; do
+    if [[ -z "$(env_get "$key")" ]]; then
+      warn "$key is missing from .env, generating a new value"
+      echo "$key=$(rand 48)" >> "$INSTALL_DIR/.env"
+      SECRETS_ADDED=$((SECRETS_ADDED + 1))
+    fi
+  done
+}
+
 do_repair() {
   need_root
   installed || die "MosWAF is not installed in $INSTALL_DIR. Run INSTALL first."
@@ -430,17 +468,8 @@ do_repair() {
     ok "Docker is available"
   fi
 
-  # Any secret missing from .env leaves a service unable to start. Every one of
-  # these is read fresh on each boot, so writing a new value is enough.
-  local key missing=0
-  for key in REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET \
-             MOSWAF_INTERNAL_TOKEN; do
-    if [[ -z "$(env_get "$key")" ]]; then
-      warn "$key is missing from .env, generating a new value"
-      echo "$key=$(rand 32)" >> "$INSTALL_DIR/.env"
-      missing=$((missing+1))
-    fi
-  done
+  add_missing_secrets
+  local missing=$SECRETS_ADDED
 
   # POSTGRES_PASSWORD is the exception: postgres reads it only while it
   # initialises its data directory and ignores it on every boot after that.
