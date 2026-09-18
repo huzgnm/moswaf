@@ -66,6 +66,10 @@ jobs:
         run: |
           luajit dataplane/test/run.lua
           luajit dataplane/test/ratelimit.lua
+      - name: Check shell syntax
+        run: bash -n dataplane/entrypoint.sh && bash -n install.sh
+      - name: Run entrypoint tests
+        run: bash dataplane/test/entrypoint.sh
       - name: Validate docker-compose
         run: docker compose config --quiet
         env:
