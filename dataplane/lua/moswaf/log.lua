@@ -22,6 +22,17 @@ local STATS_EVERY = 10           -- seconds
 local buf, buf_n = {}, 0
 local dropped = 0
 
+-- Which machine this data plane is. The per-minute counters are shipped as
+-- absolute values with HSET, so two data planes writing the same key would
+-- overwrite each other and the control plane would record whichever host was
+-- busiest rather than the sum of them - a two-host deployment would under-report
+-- its traffic by roughly half, silently. One key per host, summed on the way
+-- into the database.
+--
+-- Resolved once: ngx.var is not available in every phase, and this never changes
+-- while the process lives.
+local HOST = (os.getenv("HOSTNAME") or "node"):gsub("[^%w%-%._]", "_")
+
 local function minute_key(t)
     return math.floor((t or ngx.time()) / 60) * 60
 end
@@ -30,13 +41,18 @@ local function hour_key(t)
     return math.floor((t or ngx.time()) / 3600) * 3600
 end
 
--- Addresses and visitors seen this hour, held per worker until the next flush.
+-- Addresses and visitors seen since the last flush, held per worker.
 --
 -- Bounded on purpose. Under a flood from a hundred thousand addresses this table
--- is the one structure that would grow with the attack, so it stops growing and
--- the hour's figure becomes a floor rather than a number - which is the right
--- way round: a count that is too low is a bad statistic, a worker that runs out
--- of memory is an outage.
+-- is the one structure that would grow with the attack, so it stops growing: a
+-- count that is too low is a bad statistic, a worker that runs out of memory is
+-- an outage.
+--
+-- The cap applies between flushes, not across the hour - the table is emptied
+-- every ten seconds once its contents are safely in the sketch, so the ceiling
+-- is twenty thousand new addresses per ten seconds per worker rather than per
+-- hour. Reaching it takes a flood large enough that an undercounted visitor
+-- figure is the least of the problems.
 local UNIQUE_MAX = 20000
 local uniq_ip, uniq_ip_n = {}, 0
 local uniq_visitor, uniq_visitor_n = {}, 0
@@ -288,7 +304,8 @@ local function flush_stats()
         local m = minute_key(now - back * 60)
         local total = stats:get("t:" .. m) or 0
         if total > 0 then
-            red:hset("moswaf:stat:" .. m,
+            local key = "moswaf:stat:" .. m .. ":" .. HOST
+            red:hset(key,
                      "total",      total,
                      "blocked",    stats:get("b:" .. m) or 0,
                      "challenged", stats:get("c:" .. m) or 0,
@@ -297,7 +314,7 @@ local function flush_stats()
                      "blocked_4xx", stats:get("b4:" .. m) or 0,
                      "errors_5xx", stats:get("e5:" .. m) or 0,
                      "page_views", stats:get("pv:" .. m) or 0)
-            red:expire("moswaf:stat:" .. m, 7200)
+            red:expire(key, 7200)
         end
     end
     local _, perr = red:commit_pipeline()

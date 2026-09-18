@@ -446,9 +446,48 @@ func rate(part, whole int64) float64 {
 	return math.Round(float64(part)/float64(whole)*1000) / 10
 }
 
+// perSecond is rate's sibling, and it exists because writing the division inline
+// is how the guard came to be left off.
+//
+// The first version computed qps inline, one line below a carefully guarded
+// rate(), dividing by hours*3600 - so ?hours=0 produced +Inf on a busy site and
+// NaN on a quiet one. Neither is representable in JSON: the encoder fails the
+// whole document rather than that one field, and the 200 and the headers are
+// already written by then, so the client gets a successful response with an
+// empty body. One query parameter blanked the entire overview.
+func perSecond(count int64, seconds int) float64 {
+	if seconds <= 0 || count <= 0 {
+		return 0
+	}
+	return math.Round(float64(count)/float64(seconds)*100) / 100
+}
+
+// Hours a statistics window may cover.
+//
+// Left unbounded this parameter reaches further than a division by zero.
+// uniqueCounts builds one Redis key per hour and asks for their union, so a
+// large value allocates a slice of millions and hands Redis a command to match;
+// and time.Duration(hours)*time.Hour overflows int64 past about 2.5 million
+// hours, after which the window start is garbage and the totals are quietly
+// wrong rather than merely large.
+const (
+	minHours = 1
+	maxHours = 168 // seven days, the longest range the dashboard offers
+)
+
+func clampHours(h int) int {
+	if h < minHours {
+		return minHours
+	}
+	if h > maxHours {
+		return maxHours
+	}
+	return h
+}
+
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	hours := queryInt(r, "hours", 24)
+	hours := clampHours(queryInt(r, "hours", 24))
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
 	totals, err := s.db.StatTotals(ctx, since)
@@ -506,7 +545,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"blocked_rate":   rate(totals.Blocked, totals.Total),
 		"rate_4xx":       rate(totals.Errors4xx, totals.Total),
 		"rate_5xx":       rate(totals.Errors5xx, totals.Total),
-		"qps":            math.Round(float64(totals.Total)/float64(hours*3600)*100) / 100,
+		"qps":            perSecond(totals.Total, hours*3600),
 		"events":         byAction,
 		"top_attackers":  attackers,
 		"top_rules":      topRules,
@@ -518,10 +557,9 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTimeseries(w http.ResponseWriter, r *http.Request) {
-	hours := queryInt(r, "hours", 6)
-	if hours <= 0 || hours > 168 {
-		hours = 6
-	}
+	// Clamped rather than reset to a default: answering a different question than
+	// the one asked is its own kind of wrong.
+	hours := clampHours(queryInt(r, "hours", 6))
 	points, err := s.db.Timeseries(r.Context(), time.Now().Add(-time.Duration(hours)*time.Hour))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())

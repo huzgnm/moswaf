@@ -128,6 +128,13 @@ func (c *Consumer) collectStats(ctx context.Context) {
 		case <-ticker.C:
 		}
 
+		// Sum across hosts before writing, rather than writing each key as it is
+		// found. Each data plane ships its own absolute counters under its own
+		// key, so a minute's real total is the sum of the hosts that served it -
+		// and since the keys for one minute can land in different scan batches,
+		// the whole scan has to finish before any of it is a total.
+		perMinute := map[int64]*store.StatPoint{}
+
 		var cursor uint64
 		for {
 			keys, next, err := c.rdb.Scan(ctx, cursor, statPrefix+"*", 200).Result()
@@ -136,19 +143,45 @@ func (c *Consumer) collectStats(ctx context.Context) {
 				break
 			}
 			for _, k := range keys {
-				c.absorbStat(ctx, k)
+				c.absorbStat(ctx, k, perMinute)
 			}
 			cursor = next
 			if cursor == 0 {
 				break
 			}
 		}
+
+		for _, p := range perMinute {
+			if err := c.db.UpsertStat(ctx, *p); err != nil {
+				log.Printf("moswaf: failed to write statistics: %v", err)
+			}
+		}
 	}
 }
 
-func (c *Consumer) absorbStat(ctx context.Context, key string) {
-	secs, err := strconv.ParseInt(strings.TrimPrefix(key, statPrefix), 10, 64)
+// statMinute pulls the minute out of a statistics key.
+//
+// Two shapes are accepted. "moswaf:stat:<minute>:<host>" is what a current data
+// plane writes; "moswaf:stat:<minute>" is what one written before hosts were
+// separated wrote, and those keys live for two hours after an upgrade. Dropping
+// them would put a two hour hole in the graph of every installation that
+// updates.
+func statMinute(key string) (int64, bool) {
+	rest := strings.TrimPrefix(key, statPrefix)
+	if i := strings.IndexByte(rest, ':'); i >= 0 {
+		rest = rest[:i]
+	}
+	secs, err := strconv.ParseInt(rest, 10, 64)
 	if err != nil {
+		return 0, false
+	}
+	return secs, true
+}
+
+// absorbStat adds one host's counters for one minute into the running total.
+func (c *Consumer) absorbStat(ctx context.Context, key string, into map[int64]*store.StatPoint) {
+	secs, ok := statMinute(key)
+	if !ok {
 		return
 	}
 	vals, err := c.rdb.HGetAll(ctx, key).Result()
@@ -159,20 +192,20 @@ func (c *Consumer) absorbStat(ctx context.Context, key string) {
 		n, _ := strconv.ParseInt(vals[k], 10, 64)
 		return n
 	}
-	p := store.StatPoint{
-		Minute:     time.Unix(secs, 0).UTC(),
-		Total:      num("total"),
-		Blocked:    num("blocked"),
-		Challenged: num("challenged"),
-		Monitored:  num("monitored"),
-		Errors4xx:  num("errors_4xx"),
-		Blocked4xx: num("blocked_4xx"),
-		Errors5xx:  num("errors_5xx"),
-		PageViews:  num("page_views"),
+
+	p := into[secs]
+	if p == nil {
+		p = &store.StatPoint{Minute: time.Unix(secs, 0).UTC()}
+		into[secs] = p
 	}
-	if err := c.db.UpsertStat(ctx, p); err != nil {
-		log.Printf("moswaf: failed to write statistics: %v", err)
-	}
+	p.Total += num("total")
+	p.Blocked += num("blocked")
+	p.Challenged += num("challenged")
+	p.Monitored += num("monitored")
+	p.Errors4xx += num("errors_4xx")
+	p.Blocked4xx += num("blocked_4xx")
+	p.Errors5xx += num("errors_5xx")
+	p.PageViews += num("page_views")
 }
 
 // janitor prunes old events, old statistics and expired IP rows.
