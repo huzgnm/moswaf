@@ -21,6 +21,7 @@ local rules     = require "moswaf.rules"
 local flood     = require "moswaf.flood"
 local crawler   = require "moswaf.crawler"
 local challenge = require "moswaf.challenge"
+local auth      = require "moswaf.auth"
 
 local _M = {}
 
@@ -94,9 +95,72 @@ local function do_challenge(ctx, mode, reason)
     return challenge.serve(ctx.ip, ctx.ua, reason)
 end
 
+-- ------------------------------------------------------- the login endpoint
+--
+-- The gate's own pages get a reduced access phase rather than none.
+--
+-- What they keep: the header strip, the blocklist and the temporary bans, and the
+-- rate limit declared on the location itself. What they lose: the signature rules.
+-- A password is allowed to contain the characters a SQL injection rule looks for -
+-- "p'a--ss<script>" is a good password - and a rule that stopped somebody signing
+-- in because of one would be the firewall blocking the person it protects, in a
+-- way nobody would think to look for.
+--
+-- Losing the rules is safe here because this location does not reach the upstream.
+-- It reads two form fields and hands them to one endpoint that expects exactly
+-- those two, so there is no interpreter downstream for a payload to arrive at.
+function _M.login()
+    auth.strip_trusted_headers()
+
+    local conf = config.get()
+    local st   = conf.settings
+    local ip   = util.client_ip(st)
+
+    local ctx = {
+        start  = ngx.now(),
+        ray    = (ngx.var.request_id or ""):sub(1, 16),
+        ip     = ip,
+        ua     = ngx.var.http_user_agent or "",
+        site   = ngx.var.moswaf_site or "",
+        action = "login",
+    }
+    ngx.ctx.moswaf = ctx
+
+    -- Counted like any other request, so that a flood aimed at the login page
+    -- shows up in the same figures as a flood aimed anywhere else.
+    flood.observe(ctx.site)
+
+    if ipset.is_whitelisted(ip) then return end
+
+    local banned, breason = ipset.is_banned(ip)
+    if banned then
+        ctx.reason = "banned:" .. tostring(breason)
+        ctx.action = "deny"
+        ctx.status = 403
+        return render_block(ctx, 403)
+    end
+    if ipset.is_blacklisted(ip) then
+        ctx.reason = "blacklist"
+        ctx.action = "deny"
+        ctx.status = 403
+        return render_block(ctx, 403)
+    end
+end
+
 -- --------------------------------------------------------------- main
 
 function _M.run()
+    -- Before anything else, and before any path out of this function.
+    --
+    -- Every X-MosWAF-* header means "the WAF established this", so one arriving
+    -- from outside is somebody establishing it for themselves: X-MosWAF-User is an
+    -- identity the upstream trusts, X-MosWAF-Token is the control plane's internal
+    -- credential. They are removed on every request to every site, including sites
+    -- with the gate switched off and sites in "off" mode - both of those return
+    -- early below, and a request that returns early is exactly the one an attacker
+    -- would pick to carry a forged header through.
+    auth.strip_trusted_headers()
+
     local conf = config.get()
     local st   = conf.settings
 
@@ -116,6 +180,36 @@ function _M.run()
         action  = "allow",
     }
     ngx.ctx.moswaf = ctx
+
+    -- 0. the login gate
+    --
+    -- Ahead of the protection mode and ahead of the allowlist, and neither is an
+    -- oversight.
+    --
+    -- "Off" turns off the firewall - the rules, the rate limit, the challenge. It
+    -- is what an operator reaches for at 3am to prove a false positive is theirs.
+    -- If it also removed the password from the admin panel they put behind one,
+    -- the tool for diagnosing a blocked customer would be the tool that exposes
+    -- the site, and nothing in the name says so.
+    --
+    -- The allowlist is the same argument in the other direction: it means "this
+    -- address is not an attacker", which is not the same as "this address is the
+    -- person who knows the password". An office IP exempt from rate limiting must
+    -- not be an office IP that skips signing in.
+    --
+    -- Costs nothing on the common path: a request with no cookie is refused before
+    -- any signature is computed.
+    if site.auth_enabled and auth.gated(uri, site) then
+        local user_id, why = auth.verify(site_id, auth.cookie_value(),
+                                         site.auth_users, ngx.time())
+        if not user_id then
+            ctx.action = "auth"
+            ctx.reason = "auth:" .. (why or "denied")
+            return auth.refuse(why)
+        end
+        ctx.auth_user = user_id
+        auth.announce(user_id)
+    end
 
     -- 1. protection mode
     local mode = site.mode or st.default_mode or "protect"

@@ -151,6 +151,13 @@ textarea.input { min-height: 90px; resize: vertical; font-family: ui-monospace, 
 .switch input:checked + .track::after { transform: translateX(17px); }
 .switch.danger input:checked + .track { background: var(--critical); }
 
+/* A switch that cannot be used yet. Dimmed rather than hidden, because the
+   explanation underneath it is the point - hiding the control would leave an
+   operator looking for a feature they were told exists. */
+.switch.is-disabled { cursor: not-allowed; opacity: 0.5; }
+
+.divider { height: 1px; background: var(--line); margin: 18px 0; }
+
 /* ---------------------------------------------------------- tables */
 
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }

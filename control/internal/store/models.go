@@ -15,6 +15,11 @@ type Site struct {
 	RateRPS        int       `json:"rate_rps"`  // 0 means use the global value
 	RateBurst      int       `json:"rate_burst"`
 	FloodRPS       int       `json:"flood_rps"` // site-wide flood threshold, 0 means use the global value
+
+	// A login gate in front of the site. Nobody reaches the upstream without a
+	// session; AuthPaths limits which prefixes are behind it.
+	AuthEnabled bool     `json:"auth_enabled"`
+	AuthPaths   []string `json:"auth_paths"`
 	TLSCert        string    `json:"tls_cert,omitempty"`
 	TLSKey         string    `json:"tls_key,omitempty"`
 	HasTLS         bool      `json:"has_tls"`
@@ -152,6 +157,16 @@ type StatPoint struct {
 	Blocked4xx int64 `json:"blocked_4xx"`
 	Errors5xx  int64 `json:"errors_5xx"`
 	PageViews  int64 `json:"page_views"`
+}
+
+// SiteUser may pass the login gate on one site. Not an administrator: these
+// accounts reach a protected site, never MosWAF itself.
+type SiteUser struct {
+	ID         int64     `json:"id"`
+	SiteID     string    `json:"site_id"`
+	Username   string    `json:"username"`
+	Generation int64     `json:"generation"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // User is an administrator account.

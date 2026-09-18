@@ -151,6 +151,31 @@ ALTER TABLE stats_minute ADD COLUMN IF NOT EXISTS page_views  BIGINT NOT NULL DE
 -- no country, the dataset does not cover every address, and an installation with
 -- no route to the internet has no dataset at all.
 ALTER TABLE events ADD COLUMN IF NOT EXISTS country CHAR(2) NOT NULL DEFAULT '';
+
+-- Accounts for the login gate that can be put in front of a site.
+--
+-- Separate from the dashboard's own users: these people are allowed through to
+-- one site, not into MosWAF. Mixing them would mean an account created to read a
+-- staging server could administer the firewall.
+--
+-- generation is what makes a session revocable. The cookie carries the value it
+-- was signed with; raising this makes every cookie already issued for that
+-- account stop verifying at the next request. Deleting the row does the same
+-- thing more bluntly - a cookie naming an id that no longer exists is refused
+-- without needing a counter at all.
+CREATE TABLE IF NOT EXISTS site_users (
+    id            BIGSERIAL PRIMARY KEY,
+    site_id       TEXT NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    username      TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    generation    BIGINT NOT NULL DEFAULT 1,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (site_id, username)
+);
+CREATE INDEX IF NOT EXISTS site_users_site_idx ON site_users (site_id);
+
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS auth_enabled BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS auth_paths   JSONB   NOT NULL DEFAULT '["/"]';
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

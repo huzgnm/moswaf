@@ -77,6 +77,12 @@ services:
     ports:
       # The admin dashboard sits on its own port, fully separate from 80/443
       - "${MOSWAF_ADMIN_BIND:-0.0.0.0}:${MOSWAF_ADMIN_PORT:-9443}:9443"
+    expose:
+      # The site login endpoint, for the data plane only. Listed here rather than
+      # under ports on purpose: containers on this network can reach it, and
+      # nothing outside can. Publishing it would put an endpoint that mints site
+      # sessions on the public interface.
+      - "9444"
     networks: [moswaf]
 
   # ------------------------------------------------------------------

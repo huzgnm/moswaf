@@ -20,12 +20,26 @@ var commentBreakers = strings.NewReplacer("\n", " ", "\r", " ", "\x00", "")
 
 func sanitizeComment(v string) string { return commentBreakers.Replace(v) }
 
+// The gate's endpoints. Under a reserved prefix so that they cannot collide with
+// a path the site itself serves, and written once here so the Lua side and the
+// generated config cannot drift apart - a login page nginx routes to a different
+// place than the gate exempts is a gate with a hole in it.
+const (
+	loginPath       = "/__moswaf/login"
+	logoutPath      = "/__moswaf/logout"
+	authBackendPath = "/__moswaf_auth_backend"
+)
+
 // SiteRender carries what is needed to render a site config file.
 // Always 80/443 in the container; the ports are configurable for local development.
 type SiteRender struct {
 	CertsDir  string
 	HTTPPort  int
 	HTTPSPort int
+
+	// host:port of the control plane's internal listener, which the login form
+	// posts to. Never reachable from outside the container network.
+	ControlInternal string
 }
 
 func (o SiteRender) normalized() SiteRender {
@@ -35,8 +49,17 @@ func (o SiteRender) normalized() SiteRender {
 	if o.HTTPSPort == 0 {
 		o.HTTPSPort = 443
 	}
+	// Written straight into a generated nginx directive, so anything that could end
+	// that directive early is refused and the default used instead. It comes from
+	// an environment variable rather than from a request, but a config file that
+	// can be extended by setting one is worth a line to prevent.
+	if o.ControlInternal == "" || !controlInternalRe.MatchString(o.ControlInternal) {
+		o.ControlInternal = "mgmt:9444"
+	}
 	return o
 }
+
+var controlInternalRe = regexp.MustCompile(`^[A-Za-z0-9._-]+:[0-9]{1,5}$`)
 
 // renderSite produces the .conf contents for one site.
 //
@@ -83,6 +106,65 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		w("%saccess_by_lua_block { require(\"moswaf.access\").run() }", indent)
 		w("%slog_by_lua_block    { require(\"moswaf.log\").run() }", indent)
 		w("")
+		// The login gate's own endpoints.
+		//
+		// Exact-match locations ("location = /path"), not prefixes. A prefix would
+		// make "/__moswaf/loginbypass" reach the login handler too, and the handler
+		// is the one place on a gated site that answers without a session.
+		//
+		// The engine still runs here - the headers are still stripped, the address is
+		// still checked against the blocklist, the rate limit still applies - but the
+		// signature rules do not. A password is allowed to contain the characters a
+		// SQL injection rule looks for, and refusing to let somebody sign in because
+		// their password contains an apostrophe would be a rule blocking the person
+		// it is protecting.
+		w("%slocation = %s {", indent, loginPath)
+		w("%s    access_by_lua_block { require(\"moswaf.access\").login() }", indent)
+		w("%s    limit_req zone=moswaf_hard burst=10 nodelay;", indent)
+		w("%s    limit_conn moswaf_conn 10;", indent)
+		// Declared here, in the location that makes the subrequest, because this is
+		// where ngx.location.capture fills them in. Declaring them in the target
+		// location instead would reset them to empty in its rewrite phase, after the
+		// values had been passed - the request would arrive at the control plane
+		// naming no site and carrying no token.
+		w("%s    set $moswaf_auth_site  \"\";", indent)
+		w("%s    set $moswaf_auth_ip    \"\";", indent)
+		w("%s    set $moswaf_auth_token \"\";", indent)
+		w("%s    content_by_lua_block { require(\"moswaf.login\").serve() }", indent)
+		w("%s}", indent)
+		w("")
+		w("%slocation = %s {", indent, logoutPath)
+		w("%s    access_by_lua_block { require(\"moswaf.access\").login() }", indent)
+		w("%s    content_by_lua_block { require(\"moswaf.login\").logout() }", indent)
+		w("%s}", indent)
+		w("")
+		// Where the one request per session that carries a password goes.
+		//
+		// `internal` means nginx refuses it from outside entirely: it is reachable
+		// from ngx.location.capture and from nowhere else. Without it, this would be
+		// a public path that forwards an arbitrary body to the control plane's
+		// internal listener with the internal token attached.
+		w("%slocation = %s {", indent, authBackendPath)
+		w("%s    internal;", indent)
+		w("%s    access_by_lua_block { return }", indent)
+		// Static values, every one of them from a variable this server filled in.
+		// None is derived from a request header: "$http_x_moswaf_token" here would
+		// be a client-supplied value being handed back as proof of who we are.
+		w("%s    proxy_set_header X-MosWAF-Site  $moswaf_auth_site;", indent)
+		w("%s    proxy_set_header X-MosWAF-IP    $moswaf_auth_ip;", indent)
+		w("%s    proxy_set_header X-MosWAF-Token $moswaf_auth_token;", indent)
+		w("%s    proxy_set_header Content-Type   \"application/json\";", indent)
+		w("%s    proxy_set_header Cookie         \"\";", indent)
+		w("%s    proxy_set_header Authorization  \"\";", indent)
+		// Through a variable so the name is resolved per request rather than once at
+		// startup. Named directly, nginx refuses to start whenever the control plane
+		// is not up yet - which is every cold boot, and would take the whole data
+		// plane down with it.
+		w("%s    set $moswaf_mgmt \"%s\";", indent, opt.ControlInternal)
+		w("%s    proxy_pass http://$moswaf_mgmt/internal/site-login;", indent)
+		w("%s}", indent)
+		w("")
+
 		w("%slocation / {", indent)
 		w("%s    proxy_pass %s;", indent, proxyTarget)
 		if s.UpstreamScheme == "https" {
