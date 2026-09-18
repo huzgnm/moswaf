@@ -94,6 +94,17 @@ func (p *Publisher) SetCrawlers(c *Crawlers) {
 	p.crawlers = c
 }
 
+// CrawlerStatus reports where each crawler list came from, for the dashboard.
+func (p *Publisher) CrawlerStatus() []SourceStatus {
+	p.crawlersMu.RLock()
+	c := p.crawlers
+	p.crawlersMu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	return c.Status()
+}
+
 // crawlerConfig turns the current ranges into what the data plane reads.
 func (p *Publisher) crawlerConfig() map[string]luaCrawler {
 	p.crawlersMu.RLock()
