@@ -36,7 +36,7 @@ func (s *Server) handleListAccessRules(w http.ResponseWriter, r *http.Request) {
 	// which rule is actually deciding. A rule near the top matching everything
 	// looks exactly like a rule near the top matching nothing until you can see
 	// the count.
-	hits := s.ruleHits(r.Context(), rules)
+	hits, since := s.ruleHits(r.Context(), rules)
 
 	out := make([]map[string]any, 0, len(rules))
 	for _, rule := range rules {
@@ -45,6 +45,16 @@ func (s *Server) handleListAccessRules(w http.ResponseWriter, r *http.Request) {
 			"priority": rule.Priority, "enabled": rule.Enabled, "site_id": rule.SiteID,
 			"conditions": rule.Conditions, "created_at": rule.CreatedAt,
 			"updated_at": rule.UpdatedAt, "hits_today": hits[rule.ID],
+			// When the count started, so the dashboard can say so exactly.
+			//
+			// The counters roll at midnight UTC, because the two halves of this count
+			// in different processes on possibly different hosts, and a shared
+			// boundary is the only one they cannot disagree about. But the attack log
+			// beside it is shown in the reader's own time, so in Vietnam this figure
+			// appears to reset at seven in the morning with nothing on the page
+			// admitting it. Sending the boundary lets the column be labelled with the
+			// hour it really means rather than with the word "today".
+			"hits_since": since,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -53,10 +63,13 @@ func (s *Server) handleListAccessRules(w http.ResponseWriter, r *http.Request) {
 // ruleHits reads today's counters. A missing counter is zero, not an error: the
 // figure is reporting, and reporting must never be able to stop the page that
 // carries it from loading.
-func (s *Server) ruleHits(ctx context.Context, rules []*store.AccessRule) map[string]int64 {
+func (s *Server) ruleHits(ctx context.Context, rules []*store.AccessRule) (map[string]int64, time.Time) {
+	now := time.Now().UTC()
+	since := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
 	out := map[string]int64{}
 	if len(rules) == 0 {
-		return out
+		return out, since
 	}
 	// One key per host, summed here. Two proxies behind a load balancer each count
 	// what they saw; a single key would have them overwriting each other, and the
@@ -65,12 +78,12 @@ func (s *Server) ruleHits(ctx context.Context, rules []*store.AccessRule) map[st
 	// per day - but KEYS walks the whole keyspace to find them, and the rest of
 	// that keyspace is one statistics key per minute per host. On a busy install
 	// that is a single-threaded server stopping to answer a dashboard panel.
-	day := time.Now().UTC().Format("2006-01-02")
+	day := since.Format("2006-01-02")
 	var cursor uint64
 	for i := 0; i < 64; i++ { // bounded: a cursor that never returns to 0 must not hang the page
 		keys, next, err := s.rdb.Scan(ctx, cursor, "moswaf:rulehits:"+day+":*", 64).Result()
 		if err != nil {
-			return out
+			return out, since
 		}
 		for _, key := range keys {
 			vals, err := s.rdb.HGetAll(ctx, key).Result()
@@ -90,7 +103,7 @@ func (s *Server) ruleHits(ctx context.Context, rules []*store.AccessRule) map[st
 		}
 		cursor = next
 	}
-	return out
+	return out, since
 }
 
 // ruleBody is the decoded request, with Enabled as a pointer so that "the caller
