@@ -1195,8 +1195,8 @@ function every list decision in the data plane runs an address through — the b
 temporary bans, the trusted-proxy list, and now the country sets — split each half of an
 address on `:` with a pattern that silently dropped empty pieces. So a second `::` inside a
 half, a leading colon, a trailing one, simply vanished: `::ffff:` came back as `::ffff`,
-`1::2::3` as `1:2:3`, `:::` as `::` — none of them addresses, each returned as a perfectly
-ordinary set of eight groups. A parser that invents an address out of a string that is not
+`1::2::3` as `1::2:3` (that is, `1:0:0:0:0:0:2:3`), `:::` as `::` — none of them addresses,
+each returned as a perfectly ordinary set of eight groups. A parser that invents an address out of a string that is not
 one is the dangerous kind of lenient, because every decision downstream is then made about
 an address nobody sent — a ban keyed on a host that does not exist, a country rule placing
 a garbage string somewhere on the map. The reach is real: `client_ip` builds the address
