@@ -223,3 +223,40 @@ func TestTheGateRefusesToBeEnabledWithoutHTTPS(t *testing.T) {
 		t.Errorf("the gate was refused on a site with automatic certificates: %v", err)
 	}
 }
+
+// What the upstream is told about the visitor.
+//
+// Behind a CDN the socket's address is the CDN's. If that is what the origin is
+// told, the firewall bans, counts and geolocates the visitor while the origin
+// logs, rate-limits and geolocates the CDN - the same system disagreeing with
+// itself about who is being served, with nothing on either side saying so.
+func TestTheUpstreamIsToldTheResolvedAddress(t *testing.T) {
+	conf := render(t, gatedSite())
+
+	for _, want := range []string{
+		"set $moswaf_client_ip $remote_addr;",
+		"proxy_set_header X-Real-IP        $moswaf_client_ip;",
+		"proxy_set_header X-Forwarded-For  $moswaf_client_ip;",
+	} {
+		if !strings.Contains(conf, want) {
+			t.Errorf("the generated config has no %q", want)
+		}
+	}
+
+	// $proxy_add_x_forwarded_for appends the peer to whatever the client sent, so
+	// a visitor who invents "X-Forwarded-For: 1.2.3.4" has that value forwarded -
+	// and an origin reading the leftmost entry, which is the common mistake, reads
+	// exactly what the attacker chose.
+	if strings.Contains(conf, "$proxy_add_x_forwarded_for") {
+		t.Error("the site config still appends to the client's own X-Forwarded-For, " +
+			"so an invented entry reaches the origin ahead of the real address")
+	}
+
+	// Seeded before the access phase can overwrite it, so it is never empty even
+	// if the Lua never runs.
+	set := strings.Index(conf, "set $moswaf_client_ip")
+	use := strings.Index(conf, "X-Real-IP        $moswaf_client_ip")
+	if set < 0 || use < 0 || set > use {
+		t.Error("the variable is used before it is declared")
+	}
+}

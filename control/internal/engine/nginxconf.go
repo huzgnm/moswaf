@@ -100,6 +100,18 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 	// Shared body: WAF plus proxying
 	body := func(indent string) {
 		w("%sset $moswaf_site \"%s\";", indent, s.ID)
+		// The address the upstream will be told about.
+		//
+		// Seeded with the peer so that it is never empty, then overwritten in the
+		// access phase with the address MosWAF actually decided on - the one that
+		// came out of the trusted-proxy chain. The `set` runs in the rewrite phase,
+		// which is before the access phase, so the order works out.
+		//
+		// Without this the upstream is told $remote_addr, which behind a CDN is the
+		// CDN. The firewall would then be banning, counting and geolocating one
+		// address while the origin logs, rate-limits and geolocates another - two
+		// halves of the same system disagreeing about who the visitor is.
+		w("%sset $moswaf_client_ip $remote_addr;", indent)
 		w("%slimit_conn moswaf_conn 200;", indent)
 		w("%slimit_req  zone=moswaf_hard burst=200 nodelay;", indent)
 		w("")
@@ -166,6 +178,22 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		w("")
 
 		w("%slocation / {", indent)
+		// What the upstream is told about the visitor.
+		//
+		// Both headers carry the address MosWAF resolved, not the peer, so the
+		// origin and the firewall agree about who the visitor is.
+		//
+		// X-Forwarded-For is replaced rather than appended to. nginx's
+		// $proxy_add_x_forwarded_for appends the peer to whatever the client sent,
+		// so a visitor who invents "X-Forwarded-For: 1.2.3.4" has that value
+		// forwarded to the origin - and an origin reading the leftmost entry, which
+		// is the common mistake, reads exactly what the attacker chose. MosWAF has
+		// already worked out who the client is; passing its guess along as well only
+		// gives the origin a chance to believe the wrong one.
+		w("%s    proxy_set_header X-Real-IP        $moswaf_client_ip;", indent)
+		w("%s    proxy_set_header X-Forwarded-For  $moswaf_client_ip;", indent)
+		w("%s    proxy_set_header X-Forwarded-Host $host;", indent)
+		w("%s    proxy_set_header X-Forwarded-Port $server_port;", indent)
 		w("%s    proxy_pass %s;", indent, proxyTarget)
 		if s.UpstreamScheme == "https" {
 			w("%s    proxy_ssl_server_name on;", indent)
