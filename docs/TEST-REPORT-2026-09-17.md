@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across six rounds, **25 findings were raised and all 25 fixed and re-verified**. Rounds
+Across nine rounds, **29 findings were raised and all 29 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -29,6 +29,14 @@ and broke renewal. Round 6 stood up a **real Linux VM and ran `install.sh` end t
 confirming the Docker Compose deployment works and turning up 2 installer findings that
 only a live run exposes (a leftover `.env` copied into production, and a `REPAIR` that
 broke the database while reporting success); the Vue dashboard review found no XSS.
+Rounds 7–9 followed the project onto a **real VPS with a real domain**: the live ACME
+order finally ran end to end (a valid Let's Encrypt certificate — the last unexercised
+path), attack-sim passed 24/24 and rate-limiting/auto-ban worked in production, and the
+run surfaced the chain of operational bugs that broke exactly this first-time flow — a
+data-plane watcher that died at boot so a fresh site's certificate never loaded (the
+user's actual symptom), an `UPDATE` that fetched nothing, and a one-command installer
+that did nothing under `curl | bash`. The multi-language dashboard (added in this
+window) was checked for XSS, layout overflow and its keyboard-accessible picker.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -58,6 +66,10 @@ broke the database while reporting success); the Vue dashboard review found no X
 | 23 | Low | Manual `POST /api/sites/{id}/certificate` has no rate-limit / ignores backoff → can burn CA limits | black-box (429 cooldown) | **Fixed ✓ (PR #4)** |
 | 24 | Medium | `install.sh` copies a leftover source `.env` into production → dev secrets/ports instead of fresh | live VM install | **Fixed ✓ (PR #10)** |
 | 25 | Medium | `REPAIR` regenerates `POSTGRES_PASSWORD`, breaking the DB, and reports success anyway | live VM `--repair` | **Fixed ✓ (PR #10)** |
+| 26 | **High** | Data-plane site watcher dies at boot when no sites exist → new sites/certs never load until a manual reload | live VM + VPS | **Fixed ✓ (PR #12)** |
+| 27 | Medium | `UPDATE` run from the install dir fetches nothing, silently rebuilds old code, reports success | live VM `--update` | **Fixed ✓ (PR #13)** |
+| 28 | Medium | Wide tables clip their rightmost columns (row actions) with no horizontal scroll; worst in Russian | browser layout measure | **Fixed ✓ (PR #16)** |
+| 29 | Medium | `curl \| bash` one-command prints the menu and does nothing (unreliable `/dev/tty` test) | live VM piped install | **Fixed ✓ (PR #15)** |
 
 ---
 
@@ -508,6 +520,90 @@ validated enums, so there is no CSS or class injection either. The token is held
 surface. Live, the built dashboard serves and login works. (The in-app browser would
 not load the self-signed admin TLS certificate, so the visual render was not captured —
 a tooling limit, not a finding.)
+
+---
+
+## Rounds 7–9 — a real VPS, and the operational chain that only production exposes
+
+The project owner deployed MosWAF to a public VPS with a real domain
+(`tfw.mosvpn.com`) and reported a broken TLS certificate. Chasing that one symptom
+closed the last coverage gap **and** uncovered a chain of installer/operational bugs —
+none of which a code read or a container test would surface, because each needs a real
+first-time deployment to trigger.
+
+### The symptom, and what it actually was — finding 26 (HIGH)
+
+The browser showed a certificate error and "this domain is not configured", yet the
+control plane held a **valid Let's Encrypt certificate** for the domain
+(`cert_expires_at` ~90 days, no ACME error). So ACME had *succeeded* — the live order
+ran end to end against production Let's Encrypt, which is the one path never exercised
+before (it needs a real domain). But the data plane still served the default
+self-signed certificate and the site's server block was not loaded at all.
+
+Reproduced on the lima VM: creating a TLS site left its `.conf` and certificate written
+to the shared volume, `openresty -t` passing, but **no reload** — the site never
+appeared until a manual `openresty -s reload`. Root cause in `dataplane/entrypoint.sh`:
+the watcher runs under `set -euo pipefail`, and on a fresh boot with no sites,
+`sites_hash()`'s `cat "$SITES_DIR"/*.conf` fails on the non-matching glob, which
+propagates through `pipefail` to the watcher's first line and kills it. So on **every
+fresh install** the watcher dies at birth, and the first site (and its ACME cert) never
+loads until the proxy is restarted. Confirmed by the mirror case: boot the proxy with a
+site already present and the watcher survives and reloads later sites correctly.
+
+**Fix (PR #12), re-verified:** boot with zero sites now logs `watching ... for changes`
+and a site added afterwards auto-reloads within seconds with its own certificate. On
+the VPS, restarting the proxy loaded the real certificate immediately (the browser then
+saw a valid Let's Encrypt cert), and **`attack-sim` passed 24/24 in production** — SQLi
+(incl. multi-layer encoding), XSS, traversal, RCE, SSRF, scanner UAs and payloads in
+multipart / WebSocket-upgrade / PATCH all blocked, clean traffic passed — and a 200-way
+burst tripped the rate limiter and auto-banned the source, exactly as designed.
+
+### The installer chain — findings 27 and 29
+
+Getting the fix onto that VPS exposed why the *normal* update path would not carry it:
+
+- **29 (MEDIUM):** the documented one-command, `curl -fsSL … | bash`, did nothing. With
+  no controlling terminal, `[[ -r /dev/tty ]]` tests true but *opening* the device
+  fails, so the installer printed its menu, failed to read a choice, and ended with
+  "Nothing to do" — the user pasted the command, watched it scroll, and nothing was
+  installed or updated. Reproduced under a pipe on the VM. Fixed (PR #15) so no-tty +
+  already-installed routes to UPDATE, and the installer now updates itself safely
+  (re-executing from a private copy before `git reset --hard` overwrites the running
+  script).
+- **27 (MEDIUM):** even reaching UPDATE, running it from inside the install directory
+  fetched nothing — `fetch_source`'s "am I in a source checkout?" branch matched when
+  `$here == $INSTALL_DIR` and did nothing, never reaching the git branch, so UPDATE
+  silently rebuilt the old code while reporting success. Fixed (PR #13); re-verified on
+  the VM that UPDATE now fetches and moves the checkout to the latest commit and prints
+  the commit it landed on.
+
+### The multi-language dashboard — finding 28, and a clean review
+
+A four-language dashboard (English, Vietnamese, Russian, Chinese) was added in this
+window. Rendered in the browser across all four:
+
+- **28 (MEDIUM):** a `<table class="table">` sat directly in `.card` with no
+  horizontal-scroll wrapper, so when the table was wider than its container the
+  rightmost columns — including the per-row **actions** — were clipped and unreachable.
+  Measured at a 1024-px viewport (754-px content): the Sites table is 1225 px in Russian
+  vs 1021 px in English, so the widest language clips the actions column on common
+  laptop widths (1280–1366). Pre-existing, but the new languages make it bite far more
+  often. Fixed (PR #16) by wrapping every table in `overflow-x: auto`; re-measured, the
+  Edit button is reachable after scrolling in all four languages.
+- **Verified safe:** the hand-rolled `t()` interpolation replaces placeholders once over
+  the template and does not re-scan the inserted value, so a site name of `{name}` or
+  `${x}` is inserted literally — no self-reference, no `eval`; results reach the DOM only
+  through Vue's escaping `{{ }}` or a plain-text `confirm()`. The locale guards were
+  bypassable by inherited `Object.prototype` keys (`constructor`, `__proto__`), but the
+  effect was benign (English fallback, default `Intl`) and only reachable via
+  `localStorage` tampering; hardened anyway (PR #17). The custom language dropdown is a
+  proper ARIA listbox (Escape closes and returns focus, one `aria-selected` option) and
+  its menu does **not** overflow the viewport down to 320 px.
+- **A near-miss avoided:** an early pass saw `{hours}` and `undefined/undefined` on the
+  Overview tiles and almost logged them as bugs; checking the real backend response
+  showed it returns `hours`, `sites_active` and `sites_total`, so those were artifacts
+  of the test's mock data, not the product. Recorded as a reminder to verify against the
+  real response before reporting a rendering "bug".
 
 ---
 
