@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** the auth-gateway (PR #40) and country-firewall (PR #42) features, both reviewed and attacked live. 43 findings across 19 rounds. Rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–19 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38/#40/#42.
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `257d73c`. The three biggest features — the auth gateway (PR #40), the country firewall (PR #42) and the operator's own allow/deny rules (PR #49) — were each reviewed before implementation and attacked live. 44 findings across 20 rounds. Rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–20 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38/#40/#42/#49.
 
 ---
 
@@ -20,11 +20,13 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across nineteen rounds, **43 findings were raised and all 43 fixed and re-verified**. The
+Across twenty rounds, **44 findings were raised and all 44 fixed and re-verified**. The
 late rounds mostly reviewed new features that held — the login gateway and the two
-geolocation features each attacked and each clean — with one exception in round 19: building
+geolocation features each attacked and each clean — with exceptions in round 19 (building
 the country firewall turned up a long-standing bug in the IPv6 parser that every list
-decision, the blocklist included, had been quietly relying on. Rounds
+decision, the blocklist included, had been quietly relying on) and round 20 (the operator's
+own allow/deny rules were a new way to switch the firewall off, and a rule created through
+the API defaulted to *disabled* — a deny rule that silently did nothing). Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -139,6 +141,7 @@ most risk.
 | 41 | Medium | Manual **issue-certificate** button could burn a domain's Let's Encrypt allowance — 5-min cooldown (12/hr > CA's 5-failed/hr) and it re-issued healthy certs (→ the 5-duplicate/week limit), silent until a cert is genuinely needed | `go test` (cooldown/decision) | **Fixed ✓ (PR #36)** |
 | 42 | Medium | `NeedsCertificate` never checked cert **coverage** → a domain added to a site with a valid cert was served the wrong cert for up to ~2 months (surfaced while fixing #41) | `go test` (real cert SANs) | **Fixed ✓ (PR #36)** |
 | 43 | Medium | `ipv6_groups` silently dropped empty segments → malformed IPv6 (`::ffff:`, `1::2::3`, leading/trailing `:`) parsed into a valid 8-group address, so the blocklist/ban/geo decided about an address nobody sent (surfaced building the country firewall) | differential vs Go `net/netip` (30 strings) | **Fixed ✓ (PR #42)** |
+| 44 | Medium | An access rule created through the API without an `enabled` field defaulted to **disabled** → a `deny` rule the operator wrote and saw listed silently did nothing (protection that was never on — no symptom, and nobody looks for it) | live (create/update `enabled` paths) | **Fixed ✓ (PR #49)** |
 
 ---
 
@@ -1244,6 +1247,74 @@ emptied rule, but the test host already had the dataset from round 17), and that
 with only IPv4 ranges lets an IPv6 visitor through (no country in the live dataset had an
 empty v6 set to drive it). Both would take a crafted dataset to force; the honest label is
 that the code says so and the live run did not reach them.
+
+### Round 20 — the operator's own allow and deny rules
+
+The largest feature yet: an ordered table of rules the operator writes, each a set of
+conditions that must all hold, each with an action — `allow`, `deny`, `challenge` or `log`
+— evaluated on every request, first match wins. It is the most dangerous shape a WAF feature
+can take, because one of those actions is `allow`, and `allow` means *stop checking*. A
+single rule can switch the firewall off for a site. So it was reviewed before it was written,
+and the review changed the design in one way that matters more than the rest.
+
+**The design review: who controls the switch.** The obvious guard against an `allow` rule
+turning off the WAF is to forbid one that is *too broad* — a rule matching everything. That
+is the operator's-mistake framing, and it is not enough. The sharper question is not whether
+a rule is broad but **who controls the condition that fires it**. `allow if the User-Agent
+contains "Mozilla"` is not a broad rule; it is a back door that any attacker opens by sending
+a header. A path, a host, a method, a user agent — these are parts of the request, which
+means the attacker writes them. So an `allow` rule may only be matched on the two things the
+request cannot claim about itself: the **address** (resolved through the trusted-proxy chain)
+and a **verified crawler** (checked against published ranges, not the user agent). The
+control plane refuses `allow` on any other field. `deny`, `challenge` and `log` may match on
+anything, because matching an attacker's request in order to *stop* it is safe; it is
+matching in order to *let it through* that is the hole. This is the same distinction that
+runs through the whole engine — what the client controls is *data*, never the credential for
+a decision — applied to a new surface.
+
+Everything else fell out of that: an `allow` rule may not be matched on an address covering
+everything (`0.0.0.0/0` is refused, and so is `1.2.3.4/00`, which an older parser would have
+read as `/0`); it may not say "allow anyone who is *not* a verified crawler", which is nearly
+everyone; and `allow` means exactly what the existing IP allowlist means — it skips the
+country rule, the rate limit, the challenge and the signature engine, but not the manual ban
+or blocklist — so the two do not drift into meaning different things.
+
+**44. A rule created without `enabled` defaulted to off — MEDIUM.** Found while testing,
+and worth the words for how it was found. A rule created through the API without an `enabled`
+field came back disabled, because that is the zero value. The API returned `201`, the rule
+appeared in the list, and — for a `deny` rule — nothing it named was ever blocked. It is a
+protection that was never switched on, which is worse than a missing one: a missing rule is
+noticed, a rule that is present and inert is trusted. The tell is who tripped over it: the
+person *reading the code and looking for bugs* lost time to it before realising the rule was
+disabled; an operator writing "block this method" at three in the morning would not trip, and
+would simply believe. A default that is safe for one of four actions (`allow`, where off is
+fail-safe) and a silent no-op for the other three is not a correct default. **Fixed (PR
+#49):** `enabled` is a pointer, so "not mentioned" and "set to false" are different answers —
+creating without mentioning it enables the rule (what the author just wrote), and *updating*
+without mentioning it leaves the state alone (renaming a rule cannot switch off a rule nobody
+asked to switch off). Verified live on all three paths.
+
+**Attacked live, on a running site with a real SQL-injection payload through an echo
+upstream** — because the property that had to be proved is not "does allow work" but "does
+allow open a door only for the identity it names, and stay shut for everyone else":
+
+  - a SQL-injection request from the address an `allow` rule names is let through; the same
+    request from any other address is still blocked by the signature engine — `allow` skips
+    the WAF, but only for the address it trusts;
+  - `allow verified crawlers` lets a real Googlebot's request through and refuses the same
+    request carrying a Googlebot user agent from an address Google does not own — the
+    condition reads the verified result, not the header, so the back door does not open to
+    anyone who types the name;
+  - a rule written for one site does not fire on another (the site is taken from the one
+    being served, the same isolation the session cookie needs);
+  - the control plane refuses `allow` on a user agent, a path, `0.0.0.0/0` and `1.2.3.4/00`,
+    and refuses a rule with no conditions at all;
+  - and the **dry-run** — which runs the request through the *same* matcher the live path
+    uses, in the data plane, rather than a second copy that could disagree — reports which
+    rule a sample request would hit, so a high `allow` rule quietly shadowing the `deny`
+    below it is something an operator can see rather than has to suspect. When the control
+    plane cannot reach the data plane to run it, it says so with a `503` rather than
+    answering "no rule matched", which would be a wrong answer dressed as a real one.
 
 ---
 
