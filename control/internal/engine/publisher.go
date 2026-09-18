@@ -41,17 +41,27 @@ type luaRule struct {
 }
 
 type luaConfig struct {
-	Version   int64              `json:"version"`
+	Version int64 `json:"version"`
 	// Shared with the data plane so its internal API can tell the control plane
 	// apart from anything else on the same Docker network. Publishing it here means
 	// an upgraded install is protected without anyone editing .env: whoever can read
 	// this value from Redis can already rewrite the whole configuration.
-	InternalToken string `json:"internal_token"`
-	Settings  store.Settings     `json:"settings"`
-	Sites     map[string]luaSite `json:"sites"`
-	Rules     []luaRule          `json:"rules"`
-	Blacklist []string           `json:"blacklist"`
-	Whitelist []string           `json:"whitelist"`
+	InternalToken string             `json:"internal_token"`
+	Settings      store.Settings     `json:"settings"`
+	Sites         map[string]luaSite `json:"sites"`
+	Rules         []luaRule          `json:"rules"`
+	Blacklist     []string           `json:"blacklist"`
+	Whitelist     []string           `json:"whitelist"`
+
+	// Published crawler address ranges, already validated. The data plane matches
+	// against these instead of resolving DNS per request, which keeps the answer
+	// out of the request path entirely.
+	Crawlers map[string]luaCrawler `json:"crawlers"`
+}
+
+type luaCrawler struct {
+	UA       string   `json:"ua"`
+	Prefixes []string `json:"prefixes"`
 }
 
 type Publisher struct {
@@ -59,12 +69,48 @@ type Publisher struct {
 	rdb *redis.Client
 	cfg *config.Config
 
+	// Published crawler ranges, refreshed on their own timer. Optional: a
+	// Publisher without one simply publishes no crawler ranges, which means
+	// nothing is exempt from the challenge - the safe direction.
+	//
+	// Guarded by its own mutex, not by mu. Publish holds mu for its whole body and
+	// reads the crawler ranges from inside it; sharing one mutex deadlocked the
+	// control plane on its first publish, before it ever served a request. A
+	// second lock is cheaper than a rule about which one may be taken when.
+	crawlersMu sync.RWMutex
+	crawlers   *Crawlers
+
 	mu      sync.Mutex
 	version int64
 }
 
 func NewPublisher(db *store.Store, rdb *redis.Client, cfg *config.Config) *Publisher {
 	return &Publisher{db: db, rdb: rdb, cfg: cfg}
+}
+
+func (p *Publisher) SetCrawlers(c *Crawlers) {
+	p.crawlersMu.Lock()
+	defer p.crawlersMu.Unlock()
+	p.crawlers = c
+}
+
+// crawlerConfig turns the current ranges into what the data plane reads.
+func (p *Publisher) crawlerConfig() map[string]luaCrawler {
+	p.crawlersMu.RLock()
+	c := p.crawlers
+	p.crawlersMu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	ua := c.UAFor()
+	out := map[string]luaCrawler{}
+	for name, prefixes := range c.Ranges() {
+		if len(prefixes) == 0 {
+			continue
+		}
+		out[name] = luaCrawler{UA: ua[name], Prefixes: prefixes}
+	}
+	return out
 }
 
 func (p *Publisher) Version() int64 {
@@ -104,11 +150,12 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	cfg := luaConfig{
 		Version:       time.Now().UnixMilli(),
 		InternalToken: p.cfg.InternalToken,
-		Settings:  settings,
-		Sites:     map[string]luaSite{},
-		Rules:     make([]luaRule, 0, len(rules)),
-		Blacklist: make([]string, 0, len(blacks)),
-		Whitelist: make([]string, 0, len(whites)),
+		Settings:      settings,
+		Sites:         map[string]luaSite{},
+		Rules:         make([]luaRule, 0, len(rules)),
+		Blacklist:     make([]string, 0, len(blacks)),
+		Whitelist:     make([]string, 0, len(whites)),
+		Crawlers:      p.crawlerConfig(),
 	}
 
 	for _, s := range sites {

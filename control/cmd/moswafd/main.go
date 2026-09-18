@@ -98,8 +98,22 @@ func run(cfg *config.Config) error {
 		return fmt.Errorf("cannot connect to redis: %w", err)
 	}
 
+	// --- published crawler address ranges ---
+	//
+	// Seeded from the snapshot compiled into the binary, so an installation with
+	// no route to the internet still recognises search engines, then refreshed on
+	// its own timer. Set before the first publish so the data plane has the ranges
+	// from its first configuration rather than a cycle later.
+	crawlers := engine.NewCrawlers()
+
 	// --- publish the configuration to the data plane ---
 	pub := engine.NewPublisher(db, rdb, cfg)
+	pub.SetCrawlers(crawlers)
+	crawlers.Start(ctx, func() {
+		if err := pub.Publish(ctx); err != nil {
+			log.Printf("warning: refreshed the crawler ranges but could not publish them: %v", err)
+		}
+	})
 	if err := pub.Publish(ctx); err != nil {
 		// Not fatal: the admin can still reach the dashboard and fix things
 		log.Printf("warning: could not publish the initial configuration: %v", err)
