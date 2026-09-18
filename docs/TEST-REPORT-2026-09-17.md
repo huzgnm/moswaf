@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `98530dd` (all 39 findings across 14 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–14 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `db5c216` (all 40 findings across 15 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–15 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across fourteen rounds, **39 findings were raised and all 39 fixed and re-verified**. Rounds
+Across fifteen rounds, **40 findings were raised and all 40 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -59,7 +59,13 @@ tight for IPv4 but let broad **IPv6** ranges through (fixed); the round also exe
 the live fetch-and-refresh path end to end (the one part the fixer's machine could not
 run), and, from a limitation in *that test*, surfaced a matching limitation in the
 *product* — an install with no route to the internet ran on the bundled snapshot forever
-with nothing to say so (fixed: the origin of every list is now reported).
+with nothing to say so (fixed: the origin of every list is now reported). Round 15 turned
+on the JS proof-of-work challenge — the mechanism that holds the line when a site is under
+attack — and found the heaviest bug of the engagement: a solved challenge could be handed
+to an **entire botnet**. The puzzle was bound to nobody and never marked as spent, so one
+machine solved it once and every other replayed the solution for its own cookie, doing no
+work — the defence collapsed to one solve every two minutes for a whole botnet, at exactly
+the moment it is the thing holding the line (fixed, and re-verified live).
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -103,6 +109,7 @@ with nothing to say so (fixed: the origin of every list is now reported).
 | 37 | Low | Internal API failed **open** before its first config sync when no token was set (allow list is a network boundary, not an identity) | source review (`api.lua` → 503) | **Fixed ✓ (PR #29)** |
 | 38 | Medium | Crawler-range over-broad guard was IPv4-only in aggregate: no whole-list IPv6 ceiling and a loose `/32` per entry, so a compromised source could get broad IPv6 space trusted; mapped `::ffff:0:0/33..95` also slipped past | `go test` (validator, mapped + `2000::/32`) | **Fixed ✓ (PR #31)** |
 | 39 | Low | No way to tell a **bundled** crawler list from a **fetched** one — an install with no egress ran on the shipped snapshot forever, silently (surfaced from a test-caveat) | live (`/api/system/status`, egress blocked) | **Fixed ✓ (PR #32)** |
+| 40 | **High** | A solved JS challenge could be **shared with a whole botnet** — the salt was bound to nobody and never spent, so one solve minted a valid cookie for every replaying IP; defeats the under-attack/flood defence | `dataplane/test/challenge.lua` + live PoC (1 solve → cross-IP cookies) | **Fixed ✓ (PR #34)** |
 
 ---
 
@@ -898,6 +905,56 @@ which has no Docker — could not run, so it was exercised here on the VM:
     keeps serving the ranges (so crawlers still verify offline, which is the entire point
     of shipping a snapshot), and surfaces `last_error: context deadline exceeded` against
     the source it could not reach.
+
+### Round 15 — the proof-of-work challenge, and the heaviest bug of the engagement
+
+The JS challenge is what a site falls back on when it is under attack: the per-IP and
+site-wide limits above decide *whether* to challenge, and the challenge itself is the wall
+that a flood has to climb. A browser solves a small proof of work — find a nonce whose
+SHA-256 hash starts with N zero bits — and is given a signed cookie; a plain bot cannot,
+and the docstring's promise was that "a botnet that wants to keep flooding pays thousands
+of times more CPU than the server does." Round 15 tested that promise. It did not hold.
+
+**40. A solved challenge could be handed to an entire botnet — HIGH.** The promise rests
+on a solution being non-transferable, and it was not. The salt in the puzzle was bound to
+nobody — its signature covered the salt alone — and no record was kept of a salt having
+been redeemed. So one machine could fetch a challenge, solve its 16-bit proof of work once
+(tens of thousands of hashes, a few milliseconds), and hand the `(salt, signature, nonce)`
+to the whole botnet; each member replayed it to `/__moswaf/verify` and was issued a valid
+cookie **bound to its own address**, having done no work at all. The cost of the defence
+collapsed from one solve per attacking IP to one solve every two minutes for the entire
+botnet — and it collapsed precisely under attack, where the challenge is the thing holding
+the line.
+
+Proven live against the running data plane. One IP solved once; the solution was replayed
+from three others:
+
+  - the solving IP's first redemption returned `302` with a cookie — a real visitor still
+    passes;
+  - replayed from two other IPs, one solve minted two more distinct, valid cookies, each
+    bound to the replaying address (the cookie signatures were confirmed against an
+    independent HMAC computation, so they were genuinely valid, not just issued);
+  - which is the whole attack: solve once, flood from thousands of addresses, none of them
+    paying the price the challenge is supposed to extract.
+
+**Fixed (PR #34)**, with two changes because either alone leaves a case open, and
+re-verified live afterwards:
+
+  - the salt's signature is now bound to the address it was issued to, so a solution earned
+    at one address does not verify at another — the same replay from a different IP now
+    fails with `bad signature`;
+  - and a salt is *spent* when it is redeemed (an atomic `add` into a shared dict that
+    expires with the salt), so it cannot be replayed even from the address that earned it —
+    a second redemption from the *same* IP now fails with `challenge already used`.
+
+The two halves were checked independently: the same-IP replay is refused by the spend
+(the binding would have let it through), and the cross-IP replay is refused by the binding
+(the spend never gets a chance) — so neither is quietly carrying the other. The spend fails
+*open* on a full or missing dictionary, on purpose: refusing there would turn a memory
+problem into every visitor failing the challenge, which is the exact denial of service the
+layer exists to prevent, and the address binding still stands in that case. The spend also
+happens only *after* the proof of work is checked, so a garbage request cannot burn a
+visitor's in-flight challenge by replaying its salt with a wrong nonce.
 
 ---
 
