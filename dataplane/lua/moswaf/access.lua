@@ -183,6 +183,21 @@ function _M.run()
     }
     ngx.ctx.moswaf = ctx
 
+    -- Hand the upstream the address we decided on, not the one the socket came
+    -- from. Behind a CDN those differ, and if the origin is told the second it
+    -- logs, rate-limits and geolocates the CDN while the firewall does all three
+    -- against the visitor - the same system disagreeing with itself about who is
+    -- being served.
+    --
+    -- Assigned here rather than in nginx because this is the only place that knows
+    -- the answer: it took the trusted-proxy walk to get it.
+    -- pcall because writing an nginx variable that was never declared raises,
+    -- and this runs on every request: a site whose config predates the `set`
+    -- directive would answer 500 to everything rather than merely telling its
+    -- upstream the wrong address. Generated configs always declare it; a
+    -- hand-written one, or one left over from an older version, might not.
+    pcall(function() ngx.var.moswaf_client_ip = ip end)
+
     -- 0. the login gate
     --
     -- Ahead of the protection mode and ahead of the allowlist, and neither is an
