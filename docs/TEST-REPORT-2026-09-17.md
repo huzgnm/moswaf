@@ -1115,8 +1115,10 @@ before implementation: the credential store had to be bcrypt and the data plane 
 see a password (login is proxied to the control plane, which alone holds the hashes); the
 internal endpoint the data plane calls had to require a token *and* have that token stripped
 from any inbound request, or the mechanism added to stop header spoofing would itself be the
-spoofable header; and the exemptions for the login page and the ACME path had to be exact
-matches, since an exemption that matches more than it names is a way around the gate.
+spoofable header; and the login page had to be matched exactly while the ACME path — whose
+token lives in the path, so it cannot be an exact match — had to be a prefix that ends in a
+slash, since either one matching more than it names is a way around the gate (a prefix
+without the trailing slash would exempt `/.well-known/acme-challenge-anything/…` too).
 
 **The attacks, live against a running gate.** A site was stood up with TLS and a real account,
 its upstream pointed at a server that echoes the headers it receives, and every property was
