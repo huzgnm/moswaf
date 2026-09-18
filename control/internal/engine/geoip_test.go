@@ -224,3 +224,23 @@ func TestMappedRangesInTheFileAreStoredAsIPv4(t *testing.T) {
 		t.Errorf("Lookup(8.8.8.8) = %q, want US", got)
 	}
 }
+
+// Loopback and private addresses have no country, and that is now load-bearing
+// rather than incidental: the dashboard asks where its administrator is calling
+// from in order to open in a language they can read. The install this project
+// recommends binds the dashboard to 127.0.0.1 and is reached over an SSH tunnel,
+// so on that setup the answer is always "no idea" - and the dashboard has to be
+// built expecting it rather than treating it as the odd case.
+func TestPrivateAndLoopbackAddressesHaveNoCountry(t *testing.T) {
+	g := loadSample(t)
+	for _, ip := range []string{
+		"127.0.0.1", "::1", "::ffff:127.0.0.1",
+		"10.0.0.5", "192.168.1.10", "172.16.4.2",
+		"169.254.1.1", "fd00::1", "0.0.0.0",
+	} {
+		if got := g.Lookup(ip); got != "" {
+			t.Errorf("Lookup(%s) = %q; an address with no country must answer unknown, "+
+				"not a country somebody could be shown a language for", ip, got)
+		}
+	}
+}
