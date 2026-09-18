@@ -28,6 +28,14 @@ type Config struct {
 	// already carries the Redis password and the whole published configuration in
 	// the clear. What authenticates the caller is the internal token, not the
 	// transport.
+	//
+	// That reasoning assumes a trusted single-host network - the docker bridge the
+	// supported compose file creates, where the traffic never reaches a wire. It is
+	// exactly the assumption Redis is already deployed under here. Spread the two
+	// halves across machines on an overlay network and this would travel in the
+	// clear, but so would the Redis password: that topology is not supported, and
+	// making it safe is one decision about every link between the halves rather
+	// than a special case for this one.
 	InternalListen string
 
 	// How the data plane addresses that listener - the compose service name and the

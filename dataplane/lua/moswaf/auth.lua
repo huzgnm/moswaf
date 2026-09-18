@@ -25,8 +25,11 @@ local LOGOUT_URI = "/__moswaf/logout"
 -- install, carry through an upgrade, and fail to rotate, for no separation:
 -- anything able to read one can read the other, since they live in the same file
 -- on the same host for the same two processes. What keeps the two uses from being
--- confused is the signed string - a challenge token and a session token have
--- different shapes and neither parses as the other.
+-- confused is the signed string, and specifically that the first field of a
+-- challenge message is an address. An address is a constrained format; a site id
+-- is not one, so no challenge token can be read as a session for a site, in
+-- either direction. "They look different" would not have been enough - that is an
+-- observation about the tokens in use today rather than a property of them.
 --
 -- No default. A key written into this repository would let anybody mint a session
 -- for any protected site, so with nothing configured the gate refuses every
