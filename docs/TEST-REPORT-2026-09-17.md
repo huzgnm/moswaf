@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `6151da3` (all 42 findings across 16 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–16 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `23dda80` (42 findings across 17 rounds — round 17 raised none above cosmetic; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–17 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38)
 
 ---
 
@@ -20,7 +20,9 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across sixteen rounds, **42 findings were raised and all 42 fixed and re-verified**. Rounds
+Across seventeen rounds, **42 findings were raised and all 42 fixed and re-verified**;
+round 17 is the exception that proves the pattern — a whole feature reviewed and attacked
+that yielded nothing above cosmetic. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -71,7 +73,13 @@ button could quietly spend a domain's weekly Let's Encrypt allowance — its coo
 looser than the CA's own limit and it re-issued healthy certificates — and, in fixing that,
 a third bug surfaced that had to be closed alongside it: nothing checked whether a stored
 certificate actually *covered* the site's domains, so a domain added later was served the
-wrong certificate for up to two months.
+wrong certificate for up to two months. Round 17 reviewed the geolocation feature — a
+seventy-megabyte file fetched from a third party, parsed, and written to the database — and
+this is the round that found nothing above cosmetic: the parse skips bad rows and bounds its
+memory, the database write is parameterised, the dashboard escapes and tolerates a junk
+label, and the "reversed range" that looked like a bug turned out to be inert. It is written
+up because a clean surface is a result, and a report that lists only the breakages cannot
+tell a reader whether the quiet parts were examined or merely skipped.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -1018,6 +1026,64 @@ decision to defer it is visible rather than forgotten.
 they are about on a real domain. The limits are taken from the CA's published documentation,
 the decision logic is verified with real certificates in a unit test, and the end-to-end
 issuance it feeds is unchanged since the round-5 Pebble run.
+
+### Round 17 — geolocation, a clean surface written up as one
+
+The attack log gained a country column, from DB-IP Lite: a seventy-megabyte CSV fetched
+monthly from a third party, parsed into memory, and its answer written to the database with
+each recorded event. The shape is a real attack surface — an external file that becomes data
+and then a database row — but the feature was built with that in mind, and the review found
+nothing above cosmetic. It is recorded here in full because "no findings" written on its own
+does not tell a reader whether the surface was examined or skipped.
+
+What was checked, and held:
+
+  - **The file into memory.** The download is size-bounded and the gzip stream is bounded on
+    the *decompressed* side, so a redirected or replaced file cannot exhaust memory by
+    expanding. The one gap raised — that a byte limit does not bound the number of rows, so a
+    replaced file could pack millions of minimal lines inside it and grow the parsed tables
+    until the control plane runs out of memory — was taken as a real fix rather than a nit: a
+    download that becomes an outage is worth closing, and it is now capped at two million rows
+    with the decompressed limit lowered besides.
+  - **The file into the database.** The country code is written with a parameterised `COPY`,
+    so nothing in the file reaches SQL as text — no injection, whatever the row says.
+  - **The file onto the dashboard.** The code is rendered through Vue's text interpolation,
+    which escapes it, and the name lookup (`Intl.DisplayNames`) is wrapped so an
+    unrecognised code falls back to the raw string rather than throwing. A control-character
+    label from a corrupt file is therefore harmless — it would show as escaped text, not run
+    as script and not break the render. The parser now also requires the code to be two
+    letters, so junk does not reach that far in the first place.
+  - **The lookup itself.** A binary search over ranges sorted by upper bound. The "reversed
+    range" the feature had not handled — a row whose start is above its end — was proven inert
+    with a test through the real parser: it never matches itself, and because the search is
+    ordered by the upper bound it does not disturb the ranges around it; a lookup that would
+    fall in it simply reads as unknown. It is now skipped at parse anyway, since a row that can
+    never match should not hold a slot. IPv4 written as IPv6 is unmapped before the lookup —
+    and now on the way *in* as well, closing the same representation split as #35 one layer
+    over. `ZZ`, the dataset's "not a country", is reported as unknown rather than as a country
+    no map has.
+  - **The monthly refresh.** DB-IP name their files by month and this month's does not exist
+    until they publish it, so a check on the first of the month falls back to last month's
+    rather than ending up with nothing, and a refresh that cannot reach either file keeps the
+    dataset already loaded instead of wiping it. That logic was correct; the one inefficiency
+    raised — re-downloading last month's file every day while this month's is still
+    unpublished — is now skipped when the fallback month is the one already loaded.
+
+Two design decisions were reviewed for their reasoning, not just their result, and both
+hold. The lookup runs in the *control plane* as each event is recorded, not in the data plane
+per request: geography decides nothing a request is blocked on, so a per-request lookup would
+be paying, on every request, for an answer no decision needs — where per-event is orders of
+magnitude fewer. And unlike the crawler ranges of round 14, there is deliberately **no
+bundled snapshot**: seventy megabytes cannot ship in the repository, and the consequence of
+having no data differs in kind — a missing crawler list gets search engines challenged during
+an attack, real damage, while missing geolocation is a blank column on a report. The absence
+that is acceptable for one is not for the other, which is why the two features answer the
+"no internet" case differently.
+
+One thing was left unfixed by agreement: an event recorded in the first minute after boot, or
+during a spell with no dataset, keeps an empty country and is not back-filled when the data
+later loads. The window is small, the mode is degraded rather than wrong, and back-filling
+would mean a job re-scanning the events table — more machinery than a reporting column earns.
 
 ---
 
