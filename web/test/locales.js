@@ -19,6 +19,16 @@
 //
 //   node test/locales.js
 
+// i18n.js touches browser globals at import time, so stub the few it uses. The
+// point is to check the picker's list and the default against the tables that
+// actually exist: a locale file nobody lists is invisible, and a default nobody
+// translated opens every dashboard on the fallback path.
+globalThis.localStorage = { getItem: () => null, setItem: () => {} }
+// vue/runtime-dom probes document on import; give it enough to load.
+globalThis.document = { documentElement: {}, createElement: () => ({ content: {} }) }
+
+const { LOCALES, DEFAULT_LOCALE } = await import('../src/i18n.js')
+
 import en from '../src/locales/en.js'
 import vi from '../src/locales/vi.js'
 import ru from '../src/locales/ru.js'
@@ -38,6 +48,25 @@ function unbalancedBraces(value) {
 }
 
 const enKeys = Object.keys(en).sort()
+const codes = { en, ...locales }
+
+// The picker's list and the tables have to be the same set, both ways round.
+for (const { code } of LOCALES) {
+  if (!Object.hasOwn(codes, code)) {
+    problems.push(`LOCALES offers ${code}, but there is no message table for it`)
+  }
+}
+for (const code of Object.keys(codes)) {
+  if (!LOCALES.some((l) => l.code === code)) {
+    problems.push(`${code} has a message table but is missing from LOCALES, so nobody can pick it`)
+  }
+}
+for (const { code, label, english } of LOCALES) {
+  if (!label || !english) problems.push(`LOCALES entry ${code} is missing a label`)
+}
+if (!Object.hasOwn(codes, DEFAULT_LOCALE)) {
+  problems.push(`DEFAULT_LOCALE is ${DEFAULT_LOCALE}, which has no message table`)
+}
 
 // English is the reference, so check it for the one thing it can still get wrong.
 for (const [key, value] of Object.entries(en)) {
