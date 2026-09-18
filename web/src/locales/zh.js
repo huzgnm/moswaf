@@ -545,6 +545,8 @@ export default {
   'ratelimit.bans.title': '当前受限',
   'ratelimit.bans.sub': '引擎在地址反复超限后自动封禁的地址。它们会自行过期，不会写入数据库。',
   'ratelimit.bans.emptyHint': '当某个地址在一分钟内三次超限时，会连同剩余封禁时间显示在这里。',
+  'ratelimit.bans.count': '当前封禁 {n} 个地址',
+  'ratelimit.bans.partial': '仅显示前 {shown} 个，还有更多。引擎不会全部统计：那会占用每个请求用来检查自身是否被封禁的同一把锁。',
   'ratelimit.bans.action': '操作',
   'ratelimit.bans.blockedFor': '拒绝 {seconds} 秒',
   'ratelimit.reason.rate_rps': '超出每秒限制',

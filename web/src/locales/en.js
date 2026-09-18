@@ -542,6 +542,8 @@ export default {
   'ratelimit.bans.title': 'Currently limited',
   'ratelimit.bans.sub': 'Addresses the engine banned on its own after repeatedly crossing a threshold. They expire by themselves; nothing is written to the database.',
   'ratelimit.bans.emptyHint': 'When an address crosses a threshold three times in a minute it shows up here with the time left on its ban.',
+  'ratelimit.bans.count': '{n} addresses are banned right now',
+  'ratelimit.bans.partial': 'Showing the first {shown} - there are more. The engine does not count them all: that would hold the same lock every request uses to check whether it is banned.',
   'ratelimit.bans.action': 'Action',
   'ratelimit.bans.blockedFor': 'Rejected for {seconds}s',
   'ratelimit.reason.rate_rps': 'Per-second limit',

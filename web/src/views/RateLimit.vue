@@ -16,6 +16,15 @@ import Icon from '../components/Icon.vue'
 
 const settings = ref(null)
 const bans = ref([])
+
+// What the ban list said about itself. The data plane will not walk the whole
+// dict to count - doing so holds the same lock every request needs to ask "am I
+// banned", and the only time the number is large enough to care about is a
+// flood, which is the worst possible moment to slow that question down. So it
+// answers "is there more" for the price of one extra key, and leaves the exact
+// total out rather than filling in a figure that would read as an answer.
+const bansTruncated = ref(false)
+const bansTotal = ref(null)
 const loading = ref(true)
 const busy = ref(false)
 const editing = ref('')     // 'access' | 'flood' | 'error'
@@ -32,6 +41,10 @@ async function load(first = false) {
     const [st, b] = await Promise.all([api.get('/api/settings'), api.get('/api/bans')])
     settings.value = st
     bans.value = b.items || []
+    bansTruncated.value = !!b.truncated
+    // Absent on a control plane older than this field, and absent by design
+    // when the list was cut - either way there is no total to show.
+    bansTotal.value = typeof b.total === 'number' ? b.total : null
   } catch (e) {
     notify(e.message, true)
   } finally {
@@ -248,6 +261,13 @@ onUnmounted(() => clearInterval(timer))
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="!loading && bans.length" class="card-foot">
+      <Icon v-if="bansTruncated" name="info" style="width:14px;height:14px" />
+      <span>{{ bansTruncated
+        ? t('ratelimit.bans.partial', { shown: fmtNumber(bans.length) })
+        : t('ratelimit.bans.count', { n: fmtNumber(bansTotal ?? bans.length) }) }}</span>
     </div>
   </div>
 
