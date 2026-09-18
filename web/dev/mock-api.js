@@ -213,8 +213,20 @@ export function mockApi() {
           return send({ items: items.slice(offset, offset + limit), total: items.length, limit, offset })
         }
 
+        if (p === '/api/sites' && req.method === 'POST') {
+          const b = await body(req)
+          state.sites.push({ ...state.sites[0], ...b, id: 's' + Math.random().toString(16).slice(2, 11), has_tls: !!b.tls_cert })
+          return send(state.sites[state.sites.length - 1])
+        }
         if (p === '/api/sites') return send(state.sites)
         if (p.startsWith('/api/sites/') && p.endsWith('/users')) return send([{ id: 1, username: 'ketoan', created_at: new Date(now() - 12 * 864e5).toISOString() }])
+        if (p.startsWith('/api/sites/') && req.method === 'PUT') {
+          const b = await body(req)
+          const id = p.split('/')[3]
+          const i = state.sites.findIndex((x) => x.id === id)
+          if (i >= 0) state.sites[i] = { ...state.sites[i], ...b }
+          return send(state.sites[i] || state.sites[0])
+        }
         if (p.startsWith('/api/sites/')) return send(state.sites[0])
 
         if (p === '/api/rules') return send(state.rules)
