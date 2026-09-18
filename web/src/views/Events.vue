@@ -100,51 +100,53 @@ onUnmounted(() => clearInterval(timer))
     <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
     <div v-else-if="!items.length" class="empty">{{ t('events.empty') }}</div>
 
-    <table v-else class="table">
-      <thead>
-        <tr>
-          <th style="width:150px">{{ t('events.col.time') }}</th>
-          <th style="width:130px">{{ t('events.col.ip') }}</th>
-          <th style="width:110px">{{ t('events.col.action') }}</th>
-          <th>{{ t('events.col.request') }}</th>
-          <th>{{ t('events.col.rule') }}</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <template v-for="e in items" :key="e.id">
-          <tr @click="expanded = expanded === e.id ? null : e.id" style="cursor:pointer">
-            <td class="card-sub">{{ fmtTime(e.ts) }}</td>
-            <td class="mono">{{ e.ip }}</td>
-            <td>
-              <span class="tag" :class="`tag-${e.action}`">
-                <span class="dot"></span>{{ actionLabel(e.action) }}
-              </span>
-            </td>
-            <td class="mono truncate">{{ e.method }} {{ e.uri }}</td>
-            <td class="truncate">{{ e.rule_name || e.reason }}</td>
-            <td style="text-align:right">
-              <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">{{ t('events.blockIP') }}</button>
-            </td>
+    <div v-else class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:150px">{{ t('events.col.time') }}</th>
+            <th style="width:130px">{{ t('events.col.ip') }}</th>
+            <th style="width:110px">{{ t('events.col.action') }}</th>
+            <th>{{ t('events.col.request') }}</th>
+            <th>{{ t('events.col.rule') }}</th>
+            <th></th>
           </tr>
-          <tr v-if="expanded === e.id">
-            <td colspan="6" style="background:var(--surface-2)">
-              <div class="detail">
-                <div><span>{{ t('events.detail.id') }}</span><b class="mono">{{ e.ray || '-' }}</b></div>
-                <div><span>{{ t('events.detail.host') }}</span><b class="mono">{{ e.host }}</b></div>
-                <div><span>{{ t('events.detail.path') }}</span><b class="mono">{{ e.uri }}</b></div>
-                <div><span>{{ t('events.detail.ua') }}</span><b class="mono">{{ e.ua || t('events.detail.emptyUA') }}</b></div>
-                <div><span>{{ t('events.detail.referer') }}</span><b class="mono">{{ e.referer || '-' }}</b></div>
-                <div><span>{{ t('events.detail.reason') }}</span><b>{{ e.reason || '-' }}</b></div>
-                <div><span>{{ t('events.detail.ruleId') }}</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
-                <div><span>{{ t('events.detail.severity') }}</span><b>{{ e.severity ? t(`severity.${e.severity}`) : '-' }}</b></div>
-                <div><span>{{ t('events.detail.status') }}</span><b class="mono">{{ e.status }}</b></div>
-              </div>
-            </td>
-          </tr>
-        </template>
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          <template v-for="e in items" :key="e.id">
+            <tr @click="expanded = expanded === e.id ? null : e.id" style="cursor:pointer">
+              <td class="card-sub">{{ fmtTime(e.ts) }}</td>
+              <td class="mono">{{ e.ip }}</td>
+              <td>
+                <span class="tag" :class="`tag-${e.action}`">
+                  <span class="dot"></span>{{ actionLabel(e.action) }}
+                </span>
+              </td>
+              <td class="mono truncate">{{ e.method }} {{ e.uri }}</td>
+              <td class="truncate">{{ e.rule_name || e.reason }}</td>
+              <td style="text-align:right">
+                <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">{{ t('events.blockIP') }}</button>
+              </td>
+            </tr>
+            <tr v-if="expanded === e.id">
+              <td colspan="6" style="background:var(--surface-2)">
+                <div class="detail">
+                  <div><span>{{ t('events.detail.id') }}</span><b class="mono">{{ e.ray || '-' }}</b></div>
+                  <div><span>{{ t('events.detail.host') }}</span><b class="mono">{{ e.host }}</b></div>
+                  <div><span>{{ t('events.detail.path') }}</span><b class="mono">{{ e.uri }}</b></div>
+                  <div><span>{{ t('events.detail.ua') }}</span><b class="mono">{{ e.ua || t('events.detail.emptyUA') }}</b></div>
+                  <div><span>{{ t('events.detail.referer') }}</span><b class="mono">{{ e.referer || '-' }}</b></div>
+                  <div><span>{{ t('events.detail.reason') }}</span><b>{{ e.reason || '-' }}</b></div>
+                  <div><span>{{ t('events.detail.ruleId') }}</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
+                  <div><span>{{ t('events.detail.severity') }}</span><b>{{ e.severity ? t(`severity.${e.severity}`) : '-' }}</b></div>
+                  <div><span>{{ t('events.detail.status') }}</span><b class="mono">{{ e.status }}</b></div>
+                </div>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
 
     <div class="row" style="margin-top:14px">
       <span class="card-sub">{{ t('events.total', { count: fmtNumber(total) }) }}</span>

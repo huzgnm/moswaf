@@ -147,50 +147,52 @@ onMounted(load)
     <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
     <div v-else-if="!sites.length" class="empty">{{ t('sites.empty') }}</div>
 
-    <table v-else class="table">
-      <thead>
-        <tr>
-          <th>{{ t('sites.col.name') }}</th>
-          <th>{{ t('sites.col.domains') }}</th>
-          <th>{{ t('sites.col.upstream') }}</th>
-          <th>{{ t('sites.col.mode') }}</th>
-          <th>{{ t('sites.col.rate') }}</th>
-          <th>{{ t('sites.col.https') }}</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="s in sites" :key="s.id">
-          <td>{{ s.name }}</td>
-          <td class="mono truncate">{{ s.domains.join(', ') }}</td>
-          <td class="mono">{{ s.upstream_scheme }}://{{ s.upstream_host }}:{{ s.upstream_port }}</td>
-          <td>
-            <span class="tag" :class="s.mode === 'protect' ? 'tag-ok' : s.mode === 'monitor' ? 'tag-monitor' : 'tag-off'">
-              <span class="dot"></span>{{ modeLabel(s.mode) }}
-            </span>
-          </td>
-          <td class="mono">
-            {{ s.rate_rps ? t('sites.rate.rps', { n: s.rate_rps }) : t('sites.rate.default') }}
-          </td>
-          <td>
-            <span class="tag" :class="certTone(s)" :title="s.acme_last_error || ''">
-              <span class="dot"></span>{{ certLabel(s) }}
-            </span>
-            <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">{{ t('sites.cert.auto') }}</span>
-          </td>
-          <td style="text-align:right; white-space:nowrap">
-            <button
-              v-if="s.acme_enabled"
-              class="btn btn-sm" :disabled="issuing === s.id"
-              :title="t('sites.getCertHint')"
-              @click="issueCert(s)"
-            >{{ issuing === s.id ? t('sites.getCertBusy') : t('sites.getCert') }}</button>
-            <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">{{ t('common.edit') }}</button>
-            <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">{{ t('common.delete') }}</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('sites.col.name') }}</th>
+            <th>{{ t('sites.col.domains') }}</th>
+            <th>{{ t('sites.col.upstream') }}</th>
+            <th>{{ t('sites.col.mode') }}</th>
+            <th>{{ t('sites.col.rate') }}</th>
+            <th>{{ t('sites.col.https') }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="s in sites" :key="s.id">
+            <td>{{ s.name }}</td>
+            <td class="mono truncate">{{ s.domains.join(', ') }}</td>
+            <td class="mono">{{ s.upstream_scheme }}://{{ s.upstream_host }}:{{ s.upstream_port }}</td>
+            <td>
+              <span class="tag" :class="s.mode === 'protect' ? 'tag-ok' : s.mode === 'monitor' ? 'tag-monitor' : 'tag-off'">
+                <span class="dot"></span>{{ modeLabel(s.mode) }}
+              </span>
+            </td>
+            <td class="mono">
+              {{ s.rate_rps ? t('sites.rate.rps', { n: s.rate_rps }) : t('sites.rate.default') }}
+            </td>
+            <td>
+              <span class="tag" :class="certTone(s)" :title="s.acme_last_error || ''">
+                <span class="dot"></span>{{ certLabel(s) }}
+              </span>
+              <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">{{ t('sites.cert.auto') }}</span>
+            </td>
+            <td style="text-align:right; white-space:nowrap">
+              <button
+                v-if="s.acme_enabled"
+                class="btn btn-sm" :disabled="issuing === s.id"
+                :title="t('sites.getCertHint')"
+                @click="issueCert(s)"
+              >{{ issuing === s.id ? t('sites.getCertBusy') : t('sites.getCert') }}</button>
+              <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">{{ t('common.edit') }}</button>
+              <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">{{ t('common.delete') }}</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <Modal

@@ -124,48 +124,52 @@ onMounted(load)
 
     <template v-else-if="kind === 'ban'">
       <div v-if="!bans.length" class="empty">{{ t('ips.noBans') }}</div>
-      <table v-else class="table">
-        <thead>
-          <tr><th>{{ t('ips.col.ip') }}</th><th>{{ t('ips.col.reason') }}</th><th>{{ t('ips.col.timeLeft') }}</th><th></th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="b in bans" :key="b.ip">
-            <td class="mono">{{ b.ip }}</td>
-            <td><span class="tag tag-deny"><span class="dot"></span>{{ b.reason }}</span></td>
-            <td class="card-sub">{{ fmtTTL(b.ttl) }}</td>
-            <td style="text-align:right">
-              <button class="btn btn-sm" @click="unban(b.ip)">{{ t('ips.liftBan') }}</button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-else class="table-wrap">
+        <table class="table">
+          <thead>
+            <tr><th>{{ t('ips.col.ip') }}</th><th>{{ t('ips.col.reason') }}</th><th>{{ t('ips.col.timeLeft') }}</th><th></th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="b in bans" :key="b.ip">
+              <td class="mono">{{ b.ip }}</td>
+              <td><span class="tag tag-deny"><span class="dot"></span>{{ b.reason }}</span></td>
+              <td class="card-sub">{{ fmtTTL(b.ttl) }}</td>
+              <td style="text-align:right">
+                <button class="btn btn-sm" @click="unban(b.ip)">{{ t('ips.liftBan') }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
 
     <div v-else-if="!items.length" class="empty">
       {{ t(kind === 'black' ? 'ips.emptyBlock' : 'ips.emptyAllow') }}
     </div>
 
-    <table v-else class="table">
-      <thead>
-        <tr>
-          <th>{{ t('ips.col.address') }}</th>
-          <th>{{ t('ips.col.reason') }}</th>
-          <th>{{ t('ips.col.expires') }}</th>
-          <th>{{ t('ips.col.added') }}</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="e in items" :key="e.id">
-          <td class="mono">{{ e.cidr }}</td>
-          <td>{{ e.reason || '-' }}</td>
-          <td class="card-sub">{{ e.expires_at ? fmtTime(e.expires_at) : t('common.never') }}</td>
-          <td class="card-sub">{{ fmtTime(e.created_at) }}</td>
-          <td style="text-align:right">
-            <button class="btn btn-sm btn-danger" @click="remove(e)">{{ t('common.remove') }}</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>{{ t('ips.col.address') }}</th>
+            <th>{{ t('ips.col.reason') }}</th>
+            <th>{{ t('ips.col.expires') }}</th>
+            <th>{{ t('ips.col.added') }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="e in items" :key="e.id">
+            <td class="mono">{{ e.cidr }}</td>
+            <td>{{ e.reason || '-' }}</td>
+            <td class="card-sub">{{ e.expires_at ? fmtTime(e.expires_at) : t('common.never') }}</td>
+            <td class="card-sub">{{ fmtTime(e.created_at) }}</td>
+            <td style="text-align:right">
+              <button class="btn btn-sm btn-danger" @click="remove(e)">{{ t('common.remove') }}</button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </template>
