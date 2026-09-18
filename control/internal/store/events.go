@@ -199,20 +199,27 @@ func (s *Store) PurgeOldEvents(ctx context.Context, days int) (int64, error) {
 
 func (s *Store) UpsertStat(ctx context.Context, p StatPoint) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO stats_minute (minute, total, blocked, challenged, monitored)
-		VALUES ($1,$2,$3,$4,$5)
+		INSERT INTO stats_minute (minute, total, blocked, challenged, monitored,
+		                          errors_4xx, blocked_4xx, errors_5xx, page_views)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
 		ON CONFLICT (minute) DO UPDATE SET
 			total = GREATEST(stats_minute.total, EXCLUDED.total),
 			blocked = GREATEST(stats_minute.blocked, EXCLUDED.blocked),
 			challenged = GREATEST(stats_minute.challenged, EXCLUDED.challenged),
-			monitored = GREATEST(stats_minute.monitored, EXCLUDED.monitored)`,
-		p.Minute, p.Total, p.Blocked, p.Challenged, p.Monitored)
+			monitored = GREATEST(stats_minute.monitored, EXCLUDED.monitored),
+			errors_4xx = GREATEST(stats_minute.errors_4xx, EXCLUDED.errors_4xx),
+			blocked_4xx = GREATEST(stats_minute.blocked_4xx, EXCLUDED.blocked_4xx),
+			errors_5xx = GREATEST(stats_minute.errors_5xx, EXCLUDED.errors_5xx),
+			page_views = GREATEST(stats_minute.page_views, EXCLUDED.page_views)`,
+		p.Minute, p.Total, p.Blocked, p.Challenged, p.Monitored,
+		p.Errors4xx, p.Blocked4xx, p.Errors5xx, p.PageViews)
 	return err
 }
 
 func (s *Store) Timeseries(ctx context.Context, since time.Time) ([]StatPoint, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT minute, total, blocked, challenged, monitored
+		SELECT minute, total, blocked, challenged, monitored,
+		       errors_4xx, blocked_4xx, errors_5xx, page_views
 		FROM stats_minute WHERE minute >= $1 ORDER BY minute`, since)
 	if err != nil {
 		return nil, err
@@ -222,7 +229,8 @@ func (s *Store) Timeseries(ctx context.Context, since time.Time) ([]StatPoint, e
 	out := []StatPoint{}
 	for rows.Next() {
 		var p StatPoint
-		if err := rows.Scan(&p.Minute, &p.Total, &p.Blocked, &p.Challenged, &p.Monitored); err != nil {
+		if err := rows.Scan(&p.Minute, &p.Total, &p.Blocked, &p.Challenged, &p.Monitored,
+			&p.Errors4xx, &p.Blocked4xx, &p.Errors5xx, &p.PageViews); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -234,9 +242,12 @@ func (s *Store) StatTotals(ctx context.Context, since time.Time) (StatPoint, err
 	var p StatPoint
 	err := s.pool.QueryRow(ctx, `
 		SELECT coalesce(sum(total),0), coalesce(sum(blocked),0),
-		       coalesce(sum(challenged),0), coalesce(sum(monitored),0)
+		       coalesce(sum(challenged),0), coalesce(sum(monitored),0),
+		       coalesce(sum(errors_4xx),0), coalesce(sum(blocked_4xx),0),
+		       coalesce(sum(errors_5xx),0), coalesce(sum(page_views),0)
 		FROM stats_minute WHERE minute >= $1`, since).
-		Scan(&p.Total, &p.Blocked, &p.Challenged, &p.Monitored)
+		Scan(&p.Total, &p.Blocked, &p.Challenged, &p.Monitored,
+			&p.Errors4xx, &p.Blocked4xx, &p.Errors5xx, &p.PageViews)
 	return p, err
 }
 

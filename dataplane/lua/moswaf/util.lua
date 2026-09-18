@@ -13,6 +13,19 @@ local REDIS_PASS = os.getenv("MOSWAF_REDIS_PASSWORD") or ""
 
 -- ---------------------------------------------------------------- redis
 
+-- lua-resty-redis builds a method per command from a fixed list, and the
+-- HyperLogLog commands are not on it: red:pfadd(...) is a nil call, which the
+-- flush timer's pcall swallows, so the unique-visitor counts came back as zero
+-- with nothing in the log to say why. add_commands generates the missing ones.
+-- Called once here rather than per connection; a second call is harmless.
+--
+-- Guarded because add_commands is itself a recent addition to the library, and
+-- because the unit tests stub resty.redis with only the handful of methods they
+-- need - an unguarded call made every Lua suite fail to load.
+if type(redis.add_commands) == "function" then
+    redis.add_commands("pfadd", "pfcount", "pfmerge")
+end
+
 function _M.redis()
     local red = redis:new()
     red:set_timeouts(1000, 1000, 1000)

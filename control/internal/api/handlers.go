@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -409,6 +411,41 @@ func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request) {
 
 // --------------------------------------------------------------- thong ke
 
+// uniqueCounts merges the per-hour HyperLogLogs the data plane writes and returns
+// the number of distinct addresses and distinct visitors over the window.
+//
+// PFCOUNT over several keys computes the union, which is the whole reason the
+// sketches exist: summing per-hour counts would count a visitor who stayed for
+// three hours three times. A missing key is simply an hour with no traffic, so
+// the call is not an error when some of the range has expired or never existed.
+func (s *Server) uniqueCounts(ctx context.Context, hours int) (ips, visitors int64) {
+	if s.rdb == nil {
+		return 0, 0
+	}
+	// One extra hour: the window starts partway through the earliest hour, and
+	// leaving it out would drop traffic the totals above do include.
+	now := time.Now().Unix()
+	ipKeys := make([]string, 0, hours+1)
+	uvKeys := make([]string, 0, hours+1)
+	for h := 0; h <= hours; h++ {
+		hour := (now-int64(h)*3600) / 3600 * 3600
+		ipKeys = append(ipKeys, fmt.Sprintf("moswaf:uip:%d", hour))
+		uvKeys = append(uvKeys, fmt.Sprintf("moswaf:uv:%d", hour))
+	}
+	ips, _ = s.rdb.PFCount(ctx, ipKeys...).Result()
+	visitors, _ = s.rdb.PFCount(ctx, uvKeys...).Result()
+	return ips, visitors
+}
+
+// rate returns part/whole as a percentage, rounded to one decimal. Zero traffic
+// is 0%, not a division by zero and not "NaN" arriving in the dashboard.
+func rate(part, whole int64) float64 {
+	if whole <= 0 {
+		return 0
+	}
+	return math.Round(float64(part)/float64(whole)*1000) / 10
+}
+
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	hours := queryInt(r, "hours", 24)
@@ -452,12 +489,24 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	uniqueIPs, visitors := s.uniqueCounts(ctx, hours)
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"hours":          hours,
 		"requests":       totals.Total,
 		"blocked":        totals.Blocked,
 		"challenged":     totals.Challenged,
 		"monitored":      totals.Monitored,
+		"page_views":     totals.PageViews,
+		"visitors":       visitors,
+		"unique_ips":     uniqueIPs,
+		"errors_4xx":     totals.Errors4xx,
+		"blocked_4xx":    totals.Blocked4xx,
+		"errors_5xx":     totals.Errors5xx,
+		"blocked_rate":   rate(totals.Blocked, totals.Total),
+		"rate_4xx":       rate(totals.Errors4xx, totals.Total),
+		"rate_5xx":       rate(totals.Errors5xx, totals.Total),
+		"qps":            math.Round(float64(totals.Total)/float64(hours*3600)*100) / 100,
 		"events":         byAction,
 		"top_attackers":  attackers,
 		"top_rules":      topRules,
