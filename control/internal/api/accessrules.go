@@ -93,11 +93,28 @@ func (s *Server) ruleHits(ctx context.Context, rules []*store.AccessRule) map[st
 	return out
 }
 
+// ruleBody is the decoded request, with Enabled as a pointer so that "the caller
+// did not mention it" and "the caller said false" are different things.
+//
+// They have to be. A bool would make an omitted field mean off, and a deny rule
+// that is off is a silent no-op: somebody writes "block this" and is told it was
+// created, while nothing about the request is being blocked. Nothing in the
+// response or the list says otherwise until they look at a column.
+type ruleBody struct {
+	store.AccessRule
+	Enabled *bool `json:"enabled"`
+}
+
 func (s *Server) handleCreateAccessRule(w http.ResponseWriter, r *http.Request) {
-	var rule store.AccessRule
-	if !readJSON(w, r, &rule) {
+	var body ruleBody
+	if !readJSON(w, r, &body) {
 		return
 	}
+	rule := body.AccessRule
+	// A rule somebody just wrote is meant to be in force. That is what they think
+	// they did, and for a deny rule the alternative is protection that was never
+	// switched on.
+	rule.Enabled = body.Enabled == nil || *body.Enabled
 
 	n, err := s.db.CountAccessRules(r.Context())
 	if err != nil {
@@ -141,9 +158,18 @@ func (s *Server) handleUpdateAccessRule(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var rule store.AccessRule
-	if !readJSON(w, r, &rule) {
+	var body ruleBody
+	if !readJSON(w, r, &body) {
 		return
+	}
+	rule := body.AccessRule
+	// Left as it was when the caller does not mention it, rather than reset to
+	// off. An edit that says nothing about whether a rule is on should not be able
+	// to switch it off.
+	if body.Enabled == nil {
+		rule.Enabled = existing.Enabled
+	} else {
+		rule.Enabled = *body.Enabled
 	}
 	// The id comes from the path, never from the body: a body that could rename a
 	// rule could overwrite a different one.
