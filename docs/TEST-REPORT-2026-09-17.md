@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `5bdce40` (all 35 findings across 12 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–12 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `c1ceb35` (all 37 findings across 13 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–13 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across twelve rounds, **35 findings were raised and all 35 fixed and re-verified**. Rounds
+Across thirteen rounds, **37 findings were raised and all 37 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -45,7 +45,14 @@ overflow, and a multi-host counter path that silently under-reported by half.
 Round 12 hardened the IP-list matching ahead of the coming Anti-Bot feature and
 found that an **IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) was a second identity**
 that neither matched nor was matched by any IPv4 entry — a block/allowlist and
-crawler-range walk-around, closed before the feature could be built on it.
+crawler-range walk-around, closed before the feature could be built on it. Round 13,
+prompted by the project going public, reviewed the **default security posture a
+stranger gets from `docker compose`**: it turned up that the nginx workers and both
+containers ran as **root** (fixed — workers drop to `nobody`, the control plane to an
+unprivileged user) and that the internal API failed *open* before its first config
+sync (fixed — it fails closed now); and it put on record the half that was already
+sound, because a public reader deciding whether to trust this needs the passing checks
+as much as the failing ones.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -85,6 +92,8 @@ crawler-range walk-around, closed before the feature could be built on it.
 | 33 | Medium | `hours` never clamped → `?hours=3e6` allocates millions of Redis keys and overflows `time.Duration(hours)*time.Hour` past ~2.5M h | `clampHours` `[1,168]` | **Fixed ✓ (PR #24)** |
 | 34 | Medium | Per-minute counters shipped under one key per minute as absolute values → a two-host deploy overwrote itself and under-reported by ~half, silently | `engine/stats_test.go` (per-host sum) | **Fixed ✓ (PR #24)** |
 | 35 | Medium | IPv4-mapped IPv6 (`::ffff:1.2.3.4`) not folded → a second identity that neither matches nor is matched by any IPv4 CIDR/entry (block/allowlist + crawler-range walk-around) | `dataplane/test/ipv6.lua` (mapped both ways) | **Fixed ✓ (PR #27)** |
+| 36 | Medium | nginx workers and both containers ran as **root** (no `USER`, `user root;`) → a worker/app bug is container-root, and Docker does not remap userns by default | live: `ps`/`/proc/1/status` (workers `nobody`, PID 1 uid 10001) | **Fixed ✓ (PR #29)** |
+| 37 | Low | Internal API failed **open** before its first config sync when no token was set (allow list is a network boundary, not an identity) | source review (`api.lua` → 503) | **Fixed ✓ (PR #29)** |
 
 ---
 
@@ -721,6 +730,95 @@ mints a fresh identity regardless, so the defence is `trusted_proxies` and the
 right-to-left hop walk (#6b), not address folding; and it fails *closed* — `::1.2.3.4`
 becomes `::102:304`, which matches no IPv4 allowlist entry, so it can never impersonate a
 trusted address. Empirically confirmed both ways.
+
+### Round 13 — the default posture a stranger gets from `docker compose`
+
+The project was announced publicly, which changes the most important question from
+"is the code correct" to "what does someone who pastes the one-line command tonight
+actually get, by default, before they configure anything." That is a different review
+from the integrity one (does it build, do the tests pass, does the published file match
+`main`) — it is the default *attack surface*. It was run on a throwaway Linux VM, never
+against anyone's live server.
+
+Two things were wrong; the rest of the posture was sound, and both halves are recorded
+below because a reader deciding whether to trust this needs the passing checks as much
+as the failing ones.
+
+**36. The workers and both containers ran as root — MEDIUM.** Neither Dockerfile set a
+`USER`, and `nginx.conf` said `user root;`, so the control plane ran as root and — the
+part that matters — every nginx worker ran as root. The workers are the processes that
+touch hostile traffic: every request, header and body, through Lua and PCRE. A bug
+anywhere in that path would be root inside the container, and Docker does not remap user
+namespaces by default, so container root is host root to anything that escapes. Not a
+direct exploit on its own — it needs a separate worker bug — but it removes the last
+wall behind one, on the one component whose whole job is to stand in front of attacks.
+
+**Fixed (PR #29), and verified on a live upgrade rather than a fresh install** — because
+a fresh install never exercises the part that could turn this into an outage. The site
+and certificate directories are Docker volumes; on an install that predates the fix they
+already exist owned by root, so a container that simply started as a non-root user would
+find them unwritable and fail to publish any configuration. The fix keeps the nginx
+master as root (it has to, to bind 80/443 and read the private keys while parsing the
+config) and drops the workers to `nobody`; the control plane starts as root only long
+enough for its entrypoint to `chown` those volumes, then hands off to an unprivileged
+user (uid 10001) via `su-exec`, so it stays PID 1 and still receives Docker's `SIGTERM`.
+
+Verified by upgrading an existing install whose volumes were confirmed root-owned
+beforehand:
+
+  - the nginx master stays root, all four workers are now `nobody` (`ps`);
+  - the control plane's PID 1 really runs as uid 10001 — read from `/proc/1/status`,
+    not from `docker exec ... id`, which reports root because a new `exec` uses the
+    image's (unset, therefore root) user rather than the identity PID 1 dropped to;
+  - the volumes were re-owned root → 10001 on startup, and a real
+    `POST /api/sites` wrote its `.conf` into the volume owned by 10001 — the proof that
+    the non-root process can *write*, not merely start;
+  - `443` still completes a TLS handshake and serves (the master loads the certificate
+    before the drop), and `openresty -s reload` still works afterwards with the workers
+    **still** `nobody` — the reload path is where a privilege drop tends to break
+    silently, so it was re-checked after a reload, not only at boot.
+
+**37. The internal API failed open before its first config sync — LOW.** The
+data-plane API on `:8081` (unban, force-sync, ban list, flood state) requires a shared
+token. When no token was known yet — no environment variable and no configuration
+published — it let the call through on the strength of the `:8081` IP allow list alone.
+But the allow list is a network boundary, not an identity: anything on the Docker
+network sits inside it. The window is narrow (`install.sh` always generates the token,
+so a normal install never hits it; `8081` is not published to the host) which is why it
+is Low, but "anyone on this network may lift bans" is exactly what the token is there to
+prevent. **Fixed (PR #29):** it now refuses with `503` until it has a real token, and
+`install.sh` backfills a missing token on update so an upgraded install heals itself.
+Verified by code review, not live — the fail-open window only exists with no token, and
+`install.sh` always sets one, so it is not reachable on a real install.
+
+#### What a fresh install gets right
+
+The reason to write these down is that they are the concrete questions a stranger asks
+before trusting a WAF with their traffic, and here the answers are good:
+
+- **Secrets are generated fresh, per install, with real entropy.** `install.sh` draws
+  from `/dev/urandom` over a 62-character alphabet: the admin password is 16 characters
+  (~95 bits), the JWT, challenge and internal-API secrets 48 (~285 bits), the database
+  and Redis passwords 32. There is no shipped default to forget to change; an install
+  that still carries a `changeme` value is refused at boot (finding #2).
+- **The secrets do not leak to other users on the host.** `.env` is `chmod 600` and
+  root-owned — confirmed live: a non-root shell on the host cannot read it. The
+  containers run under Docker (a root-owned daemon), so `/proc/<pid>/environ` is not
+  readable by an unprivileged co-tenant either. The one place the admin password is
+  shown is `install.sh`'s own output, on purpose, for the operator — worth rotating
+  after first login, but not a broadcast.
+- **Only what should be public is published.** Confirmed live on the running stack: the
+  host publishes the dashboard (`9443`) and the WAF (`80`/`443`) and nothing else —
+  Postgres (`5432`), Redis (`6379`) and the internal API (`8081`) are reachable only
+  inside the Docker network. The dashboard's admin bind is overridable
+  (`MOSWAF_ADMIN_BIND=127.0.0.1`) for operators who want it off the public interface.
+- **The first seconds are safe.** Before any site is configured, a request for an
+  unknown domain gets a static, in-memory `403` "not configured" page — no upstream, no
+  crash, no stack trace — and the ACME challenge path is already exempt so a first
+  certificate can still be issued. The admin TLS private key is `600`.
+- **It fails loud, not open.** A bare `docker compose up` without an `.env` does not
+  quietly run with blank secrets: Postgres refuses to start without a password, so the
+  stack stops rather than coming up unprotected.
 
 ---
 
