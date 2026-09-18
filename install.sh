@@ -166,6 +166,12 @@ MOSWAF_JWT_SECRET=$(rand 48)
 MOSWAF_CHALLENGE_SECRET=$(rand 48)
 MOSWAF_INTERNAL_TOKEN=$(rand 48)
 
+# Certificate authority for automatic certificates. Empty means Let's Encrypt
+# production. Test against staging first - production rate limits are strict and a
+# handful of failed attempts can lock a domain out for a week:
+#   MOSWAF_ACME_DIRECTORY=https://acme-staging-v02.api.letsencrypt.org/directory
+MOSWAF_ACME_DIRECTORY=
+
 MOSWAF_DATA_DIR=${INSTALL_DIR}/data
 MOSWAF_LOG_LEVEL=warn
 TZ=$(cat /etc/timezone 2>/dev/null || echo UTC)
