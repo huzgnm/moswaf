@@ -337,6 +337,12 @@ onMounted(() => { load(); loadGeo() })
               >
                 <Icon name="globe" style="width:11px;height:11px" />{{ (s.geo_countries || []).length }}
               </span>
+              <span
+                v-else-if="s.geo_mode === 'off'"
+                class="tag tag-off" style="margin-left:6px" :title="t('geo.tagOffHint')"
+              >
+                <Icon name="globeOff" style="width:11px;height:11px" />{{ t('geo.tagOff') }}
+              </span>
             </td>
             <td class="mono sub">
               {{ s.rate_rps ? t('sites.rate.rps', { n: s.rate_rps }) : t('sites.rate.default') }}
@@ -451,7 +457,7 @@ onMounted(() => { load(); loadGeo() })
 
       <div v-if="form.geo_mode === 'allow' && !form.geo_countries.length" class="alert alert-critical" style="margin-bottom:12px">
         <Icon name="alert" />
-        <div class="alert-body"><b>{{ t('geo.allowEmpty') }}</b> {{ t('geo.allowEmptyHint') }}</div>
+        <div class="alert-body"><b>{{ t('geo.allowEmptySite') }}</b> {{ t('geo.allowEmptySiteHint') }}</div>
       </div>
       <div v-else-if="form.geo_mode === 'allow'" class="alert alert-warn" style="margin-bottom:12px">
         <Icon name="info" />
