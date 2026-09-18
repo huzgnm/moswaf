@@ -2,7 +2,7 @@
 import { ref, watch, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, session, toast, notify, logout, fmtShortTime } from './api'
-import { t } from './i18n'
+import { t, applyCountryLocale } from './i18n'
 import { ui } from './ui'
 import LanguagePicker from './components/LanguagePicker.vue'
 import Icon from './components/Icon.vue'
@@ -42,6 +42,7 @@ async function loadContext() {
       api.get('/api/settings'),
     ])
     session.user = me
+    applyCountryLocale(me)
     underAttack.value = settings.under_attack
   } catch (e) {
     /* requireAuth already redirects to the sign-in page on a bad token */

@@ -29,16 +29,35 @@ export const LOCALES = [
   { code: 'zh', label: '中文',         english: 'Chinese' },
 ]
 
-// The language a dashboard opens in when nobody has chosen one yet.
+// The base language. It is what the dashboard opens in for a country with no
+// language of its own here, and what t() falls back to for a key a translation
+// is missing.
+export const DEFAULT_LOCALE = 'en'
+
+// Where the dashboard lands when nothing at all can be worked out about who is
+// looking at it - an admin port reached through an SSH tunnel, a browser that
+// reports no language. The operators of this product are Vietnamese, so that is
+// the better guess than the base language.
+export const FALLBACK_LOCALE = 'vi'
+
+// Country -> interface language. Only countries where one of the four is
+// genuinely the working language are listed; everywhere else opens in English,
+// which is the safer guess than a language the reader may not have.
 //
-// Deliberately fixed rather than read from navigator.language. The browser's
-// language is a property of whoever is sitting at the machine, not of the
-// installation: an operator in Hanoi opening a colleague's server would see a
-// different dashboard than the colleague does, screenshots and documentation
-// would not match what anyone sees, and support questions start with "which
-// language is yours in". A fixed default means one dashboard that everybody
-// describes the same way, and one click to change it.
-export const DEFAULT_LOCALE = 'vi'
+// The table lives here rather than in the control plane on purpose: which
+// language a country should open in is a product decision that changes when a
+// language is added, and the server's job is only to report which country it is.
+//
+// Singapore is English: four official languages, but English is the language of
+// administration and of most working screens. Hong Kong and Macau get Chinese
+// even though they read traditional characters and this ships simplified -
+// closer than English for most readers there, and one click from right.
+// Ukraine is deliberately absent: a Russian interface is not a neutral default.
+const COUNTRY_LOCALE = {
+  VN: 'vi',
+  CN: 'zh', HK: 'zh', MO: 'zh',
+  RU: 'ru', BY: 'ru', KZ: 'ru', KG: 'ru',
+}
 
 // Intl tags for dates and numbers. Separate from the locale code because the two
 // do not always match, and Intl wants a full tag.
@@ -55,23 +74,57 @@ function known(table, key) {
   return typeof key === 'string' && Object.hasOwn(table, key)
 }
 
-// A language the operator picked before, or the fixed default. Nothing is
-// guessed from the browser - see DEFAULT_LOCALE.
-function initialLocale() {
+// The language the operator picked, if they ever picked one. Only an explicit
+// choice is stored, so a guess never hardens into a setting nobody made.
+function savedLocale() {
   const saved = localStorage.getItem(STORAGE_KEY)
-  return known(messages, saved) ? saved : DEFAULT_LOCALE
+  return known(messages, saved) ? saved : ''
 }
 
-export const i18n = reactive({ locale: initialLocale() })
+export const i18n = reactive({ locale: savedLocale() || DEFAULT_LOCALE })
 
-export function setLocale(code) {
+export function setLocale(code, remember = true) {
   if (!known(messages, code)) return
   i18n.locale = code
-  localStorage.setItem(STORAGE_KEY, code)
+  if (remember) localStorage.setItem(STORAGE_KEY, code)
   document.documentElement.lang = code
 }
 
 document.documentElement.lang = i18n.locale
+
+/**
+ * Open the dashboard in the language of the country the operator is signing in
+ * from. Called with the account the control plane just returned - `country` is
+ * resolved there, against the same geolocation dataset the firewall decides
+ * with, so an admin's address is never sent to a third party and a machine with
+ * no route to the internet behaves the same as one with.
+ *
+ * Three cases:
+ *
+ *   - a country with a language here      -> that language
+ *   - a country without one (say France)  -> DEFAULT_LOCALE, because knowing
+ *                                            the reader is not in Vietnam is
+ *                                            worth more than knowing nothing
+ *   - no country                          -> FALLBACK_LOCALE
+ *
+ * **The last case is the ordinary one, not the exception.** The setup the README
+ * recommends binds the panel to 127.0.0.1 and reaches it over an SSH tunnel, and
+ * a loopback address has no country; neither does a private LAN one. This only
+ * tells anyone anything on an installation whose panel is exposed directly.
+ *
+ * A language the operator picked themselves beats all of it - that is checked
+ * first, and nothing here is written to storage, so a guess never hardens into a
+ * setting they did not make.
+ */
+export function applyCountryLocale(account) {
+  if (savedLocale()) return
+  const country = String(account?.country || '').toUpperCase()
+  if (!account?.country_resolved || !country) {
+    setLocale(FALLBACK_LOCALE, false)
+    return
+  }
+  setLocale(COUNTRY_LOCALE[country] || DEFAULT_LOCALE, false)
+}
 
 /**
  * Translate a key. Reading i18n.locale is what makes every component using t()

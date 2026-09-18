@@ -128,6 +128,18 @@ const SETTINGS = {
 
 const COUNTRY_CODES = ['AD', 'AE', 'AR', 'AT', 'AU', 'BD', 'BE', 'BR', 'CA', 'CH', 'CL', 'CN', 'CZ', 'DE', 'DK', 'EG', 'ES', 'FI', 'FR', 'GB', 'HK', 'ID', 'IE', 'IL', 'IN', 'IR', 'IT', 'JP', 'KR', 'MY', 'NL', 'NO', 'NZ', 'PH', 'PL', 'PT', 'RO', 'RU', 'SE', 'SG', 'TH', 'TR', 'TW', 'UA', 'US', 'VN', 'ZA']
 
+// The signed-in account. MOSWAF_MOCK_COUNTRY drives the language guess: a
+// two-letter code, or "-" for an address the dataset cannot place - a tunnel or
+// a private network, which is what most installations will actually look like.
+function account(username = 'admin') {
+  const c = (process.env.MOSWAF_MOCK_COUNTRY || 'VN').toUpperCase()
+  const resolved = c !== '-'
+  return {
+    id: 1, username, created_at: new Date(now() - 30 * 864e5).toISOString(),
+    country: resolved ? c : '', country_resolved: resolved,
+  }
+}
+
 function body(req) {
   return new Promise((resolve) => {
     let raw = ''
@@ -159,9 +171,9 @@ export function mockApi() {
         if (p === '/api/auth/login') {
           const b = await body(req)
           if (!b.password) return send({ error: 'Sai tên đăng nhập hoặc mật khẩu' }, 401)
-          return send({ token: 'mock-token', expires_at: new Date(now() + 864e5).toISOString(), user: { id: 1, username: b.username || 'admin', created_at: new Date().toISOString() } })
+          return send({ token: 'mock-token', expires_at: new Date(now() + 864e5).toISOString(), user: account(b.username) })
         }
-        if (p === '/api/auth/me') return send({ id: 1, username: 'admin', created_at: new Date().toISOString() })
+        if (p === '/api/auth/me') return send(account())
         if (p === '/api/health') return send({ status: 'ok' })
 
         if (p === '/api/settings' && req.method === 'PUT') {

@@ -2,7 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, setToken, session } from '../api'
-import { t } from '../i18n'
+import { t, applyCountryLocale } from '../i18n'
 import LanguagePicker from '../components/LanguagePicker.vue'
 import Logo from '../components/Logo.vue'
 import Icon from '../components/Icon.vue'
@@ -27,6 +27,7 @@ async function submit() {
     })
     setToken(res.token)
     session.user = res.user
+    applyCountryLocale(res.user)
     router.push('/')
   } catch (e) {
     error.value = e.message
