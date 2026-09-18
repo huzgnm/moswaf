@@ -78,6 +78,43 @@ function _M.parse_cidr(cidr)
     return from, from + size - 1
 end
 
+-- "::ffff:1.2.3.4" is 1.2.3.4. Fold it, or the host has two identities.
+--
+-- A dual-stack socket hands every IPv4 client to the application in this form,
+-- and an X-Forwarded-For header can carry it whatever the socket is. Without
+-- folding, the two spellings never meet: ipv4_to_int rejects the mapped form for
+-- containing a colon, ipv6_groups rejects the dotted form for having two groups,
+-- so a blocklist entry of 1.2.3.4 matches one of them and not the other. That is
+-- an address ban walked around by writing the address differently - the same
+-- class as zero-padded IPv4 octets and uncompressed IPv6, one layer further down.
+--
+-- Only ::ffff:0:0/96 is folded. The deprecated IPv4-compatible form (::1.2.3.4)
+-- deliberately is not: ::1 is the IPv6 loopback, and folding that shape would
+-- turn it into 0.0.0.1, inventing an address nobody wrote.
+function _M.unmap_ipv4(v)
+    local g = _M.ipv6_groups(v)
+    if not g then return nil end
+    if g[1] ~= 0 or g[2] ~= 0 or g[3] ~= 0 or g[4] ~= 0 or g[5] ~= 0 or g[6] ~= 0xffff then
+        return nil
+    end
+    return format("%d.%d.%d.%d",
+        math.floor(g[7] / 256), g[7] % 256,
+        math.floor(g[8] / 256), g[8] % 256)
+end
+
+-- One entry from a list, in whichever family it really belongs to. A mapped
+-- prefix is an IPv4 prefix: ::ffff:1.2.3.0/120 covers exactly 1.2.3.0/24.
+local function unmap_entry(item)
+    local addr, bits = item:match("^(.+)/(%d+)$")
+    if not addr then
+        return _M.unmap_ipv4(item) or item
+    end
+    local v4 = _M.unmap_ipv4(addr)
+    bits = tonumber(bits)
+    if not v4 or not bits or bits < 96 then return item end
+    return v4 .. "/" .. (bits - 96)
+end
+
 -- Does an IPv6 address fall inside a prefix?
 --
 -- Compared group by group rather than as one number: an IPv6 address is 128 bits
@@ -115,34 +152,39 @@ end
 function _M.ip_in_list(ip, list)
     if not list or #list == 0 then return false end
 
+    -- Fold before comparing, on both sides: the address being tested and every
+    -- entry it is tested against can each be written in the mapped form.
+    ip = _M.unmap_ipv4(ip) or ip
+
     local n = _M.ipv4_to_int(ip)
     local v6 = (not n) and _M.ipv6_groups(ip) or nil
 
     for i = 1, #list do
-        local item = list[i]
+        local original = list[i]
+        local item = unmap_entry(original)
 
         if n then
             local from, to = _M.parse_cidr(item)
-            if from and n >= from and n <= to then return true, item end
+            if from and n >= from and n <= to then return true, original end
         elseif v6 then
             local prefix, bits = item:match("^(.+)/(%d+)$")
             if prefix then
-                if _M.ipv6_in_prefix(ip, prefix, tonumber(bits)) then return true, item end
+                if _M.ipv6_in_prefix(ip, prefix, tonumber(bits)) then return true, original end
             elseif _M.normalize_ip(item) == _M.normalize_ip(ip) then
                 -- Compared in canonical form: 2001:db8::1 and 2001:0db8:0:0:0:0:0:1
                 -- are one host, and a blocklist that disagrees is a blocklist that
                 -- can be stepped around by writing the address differently.
-                return true, item
+                return true, original
             end
         end
 
-        if item == ip then return true, item end
+        if item == ip then return true, original end
     end
     return false
 end
 
 function _M.is_private_ip(ip)
-    local n = _M.ipv4_to_int(ip)
+    local n = _M.ipv4_to_int(_M.unmap_ipv4(ip) or ip)
     if not n then return false end
     return (n >= 167772160  and n <= 184549375)    -- 10/8
         or (n >= 2886729728 and n <= 2887778303)   -- 172.16/12
@@ -264,7 +306,15 @@ function _M.normalize_ip(v)
         return format("%d.%d.%d.%d", a, b, c, d)
     end
 
-    if find(v, ":", 1, true) then return normalize_ipv6(v) end
+    if find(v, ":", 1, true) then
+        -- An IPv4 client arriving over a dual-stack socket, or named that way in a
+        -- forwarded header, is still that IPv4 client. Canonicalise it to the one
+        -- form everything else keys on - bans, the counters and both lists - so a
+        -- host cannot hold two identities at once.
+        local mapped = _M.unmap_ipv4(v)
+        if mapped then return mapped end
+        return normalize_ipv6(v)
+    end
     return nil
 end
 

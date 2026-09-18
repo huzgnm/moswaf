@@ -128,6 +128,71 @@ do
         not util.ip_in_list("2001:db8::1", { "not-an-address/64", "::/nope" }))
 end
 
+-- ------------------------------------------------ IPv4 written as IPv6
+--
+-- "::ffff:1.2.3.4" is 1.2.3.4. A dual-stack socket hands every IPv4 client to the
+-- application in that form, and a forwarded header can carry it whatever the
+-- socket is - so if the two spellings do not meet, one host holds two identities
+-- and an address ban is walked around by writing the address differently.
+--
+-- The two halves could not meet by construction: ipv4_to_int rejects the mapped
+-- form for containing a colon, and ipv6_groups rejects the dotted form for having
+-- two groups. Every IPv4 entry in either list returned false for the mapped form,
+-- silently.
+
+do
+    check("a mapped address normalises to the IPv4 address it is",
+        util.normalize_ip("::ffff:1.2.3.4") == "1.2.3.4",
+        "got " .. tostring(util.normalize_ip("::ffff:1.2.3.4")))
+
+    check("the uppercase spelling folds too",
+        util.normalize_ip("::FFFF:1.2.3.4") == "1.2.3.4")
+    check("the fully written out spelling folds too",
+        util.normalize_ip("0:0:0:0:0:ffff:1.2.3.4") == "1.2.3.4")
+    check("the hex spelling of the same thing folds too",
+        util.normalize_ip("::ffff:102:304") == "1.2.3.4",
+        "got " .. tostring(util.normalize_ip("::ffff:102:304")))
+
+    -- The blocklist, from both directions.
+    check("a mapped client is caught by an IPv4 /32",
+        (util.ip_in_list("::ffff:1.2.3.4", { "1.2.3.4/32" })),
+        "a banned host walked away by writing its address as IPv6")
+    check("a mapped client is caught by an IPv4 /24",
+        (util.ip_in_list("::ffff:1.2.3.4", { "1.2.3.0/24" })))
+    check("a mapped client is caught by a bare IPv4 entry",
+        (util.ip_in_list("::ffff:1.2.3.4", { "1.2.3.4" })))
+    check("a dotted client is caught by an entry written in mapped form",
+        (util.ip_in_list("1.2.3.4", { "::ffff:1.2.3.4" })),
+        "an allowlist written in mapped form would not recognise its own client")
+    check("a mapped prefix is the IPv4 prefix it covers",
+        (util.ip_in_list("1.2.3.9", { "::ffff:1.2.3.0/120" })),
+        "::ffff:1.2.3.0/120 is 1.2.3.0/24")
+
+    check("a mapped client outside the range is still outside it",
+        not util.ip_in_list("::ffff:9.9.9.9", { "1.2.3.0/24" }))
+
+    -- Private ranges have to be visible through the mapped form as well.
+    check("mapped loopback is private", util.is_private_ip("::ffff:127.0.0.1"))
+    check("mapped RFC1918 is private", util.is_private_ip("::ffff:10.0.0.1"))
+    check("a mapped public address is not private", not util.is_private_ip("::ffff:8.8.8.8"))
+
+    -- The deprecated IPv4-compatible form is deliberately NOT folded: ::1 is the
+    -- IPv6 loopback, and folding that shape would turn it into 0.0.0.1 - an
+    -- address nobody wrote, matching lists nobody meant.
+    check("::1 stays the IPv6 loopback and does not become 0.0.0.1",
+        util.normalize_ip("::1") == "::1",
+        "got " .. tostring(util.normalize_ip("::1")))
+    check("an IPv4-compatible address is not folded",
+        util.normalize_ip("::1.2.3.4") ~= "1.2.3.4")
+
+    -- And a real IPv6 address must not be mistaken for a mapped one.
+    check("a real IPv6 address is untouched",
+        util.normalize_ip("2001:db8::1") == "2001:db8::1")
+    check("ffff in the wrong group is not a mapped address",
+        util.unmap_ipv4("::ffff:0:1.2.3.4") == nil,
+        "only ::ffff:0:0/96 is the mapped range")
+end
+
 -- ------------------------------------------------------------ report
 
 io.write("\n\n")
@@ -135,6 +200,7 @@ if #failures == 0 then
     print(string.format("%d/%d checks passed", total, total))
     print("\n  an IPv6 prefix in the block or allow list now matches the range it names")
     print("  the same host written several ways is still the same host")
+    print("  an IPv4 client arriving as ::ffff:1.2.3.4 is that IPv4 client everywhere")
     os.exit(0)
 end
 print(string.format("%d of %d checks FAILED:\n", #failures, total))
