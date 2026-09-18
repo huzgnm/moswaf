@@ -18,6 +18,42 @@ const siteCols = `id, name, domains, upstream_scheme, upstream_host, upstream_po
 	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try,
 	auth_enabled, auth_paths, geo_mode, geo_countries`
 
+// NormaliseSiteGeo is NormaliseGeo with the one difference a site has: there is a
+// rule above it to fall back to.
+//
+// NormaliseGeo answers "off" for two different things - a rule that says off, and
+// a rule that cannot be used. Globally those are the same answer. On a site they
+// are not, and treating them alike loses protection: if the global rule blocks a
+// country and an operator picks "allow" here without filling the list in yet,
+// answering "off" stops this site inheriting that block. A half-finished rule
+// would leave the site less protected than before anybody touched it, and the
+// dashboard would show "off" as though somebody had asked for it.
+//
+// So an unusable rule becomes "" - follow the global rule - which is what "I have
+// not finished choosing" should mean. A deliberate "off" is left alone, because
+// that is an operator opting this site out and it must survive the next change to
+// the global rule.
+//
+// One function rather than the same three lines in the read path and the write
+// path: two copies that have to agree are one edit away from not agreeing, which
+// is how a site would validate as one thing and load as another.
+func NormaliseSiteGeo(mode string, countries []string) (string, []string) {
+	if mode == "" {
+		if countries == nil {
+			countries = []string{}
+		}
+		return "", countries
+	}
+	out, list := NormaliseGeo(mode, countries)
+	if out == "off" && mode != "off" {
+		out = ""
+	}
+	if list == nil {
+		list = []string{}
+	}
+	return out, list
+}
+
 func scanSite(row pgx.Row) (*Site, error) {
 	var s Site
 	var domains, rulesOff, authPaths, geoCountries []byte
@@ -40,12 +76,7 @@ func scanSite(row pgx.Row) (*Site, error) {
 	_ = json.Unmarshal(authPaths, &s.AuthPaths)
 	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
 	_ = json.Unmarshal(geoCountries, &s.GeoCountries)
-	if s.GeoMode != "" {
-		s.GeoMode, s.GeoCountries = NormaliseGeo(s.GeoMode, s.GeoCountries)
-	}
-	if s.GeoCountries == nil {
-		s.GeoCountries = []string{}
-	}
+	s.GeoMode, s.GeoCountries = NormaliseSiteGeo(s.GeoMode, s.GeoCountries)
 	s.HasTLS = s.TLSCert != "" && s.TLSKey != ""
 	return &s, nil
 }
@@ -166,15 +197,7 @@ func ValidateSite(s *Site) error {
 
 	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
 
-	// "" means "follow the global rule" and is left exactly as it is. Anything else
-	// is normalised, which is also what turns "allow, listing nothing" - a rule
-	// that reads as allow and means refuse everybody - back into off.
-	if s.GeoMode != "" {
-		s.GeoMode, s.GeoCountries = NormaliseGeo(s.GeoMode, s.GeoCountries)
-	}
-	if s.GeoCountries == nil {
-		s.GeoCountries = []string{}
-	}
+	s.GeoMode, s.GeoCountries = NormaliseSiteGeo(s.GeoMode, s.GeoCountries)
 
 	// A login gate over plain HTTP hands the password and then the session cookie
 	// to everybody between the visitor and the server. The gate would appear to
