@@ -69,6 +69,7 @@ jobs:
         run: |
           luajit dataplane/test/run.lua
           luajit dataplane/test/ratelimit.lua
+          luajit dataplane/test/flood.lua
       - name: Check shell syntax
         run: bash -n dataplane/entrypoint.sh && bash -n install.sh
       - name: Run entrypoint tests

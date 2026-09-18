@@ -8,7 +8,7 @@
 --   3. IP allowlist
 --   4. temporary bans and the blocklist
 --   5. per-IP rate limiting (flood protection)
---   6. under-attack mode -> force a JS challenge
+--   6. under-attack mode, whether switched on by hand or by the flood detector
 --   7. signature scanning over URI / query / body / headers
 --
 -- The outcome is written to ngx.ctx.moswaf for the log phase to pick up.
@@ -18,6 +18,7 @@ local util      = require "moswaf.util"
 local ipset     = require "moswaf.ipset"
 local ratelimit = require "moswaf.ratelimit"
 local rules     = require "moswaf.rules"
+local flood     = require "moswaf.flood"
 local challenge = require "moswaf.challenge"
 
 local _M = {}
@@ -122,6 +123,11 @@ function _M.run()
         return
     end
 
+    -- Count the request against the site total before anything can return. A
+    -- flood is still a flood when most of it is being rejected, and the totals
+    -- are what tells the difference between one noisy address and ten thousand.
+    flood.observe(site_id)
+
     -- 2. allowlist: skip every remaining check
     if ipset.is_whitelisted(ip) then
         ctx.action = "allow_white"
@@ -184,10 +190,31 @@ function _M.run()
         return block(ctx, mode, "flood:" .. rreason, nil, 429)
     end
 
-    -- 6. under-attack mode, or a site that always challenges
-    if st.under_attack or site.challenge == "always" then
+    -- 6. under-attack mode: switched on by hand, set on the site, or engaged by
+    --    the flood detector on its own.
+    --
+    -- The per-IP limit above cannot see a distributed flood - that is the whole
+    -- point of building one - so this is the layer that answers it. The check is
+    -- one shared-dict read per request; the measurement behind it runs at most
+    -- once a second per worker.
+    local auto_reason
+    if not st.under_attack and site.challenge ~= "always" then
+        local engaged
+        engaged, auto_reason = flood.evaluate(site_id, flood.threshold(site, st))
+        if engaged then
+            ctx.auto_flood = auto_reason or "flood"
+        end
+    end
+
+    if st.under_attack or site.challenge == "always" or ctx.auto_flood then
         if not challenge.has_valid_cookie(ip, ua) then
-            return do_challenge(ctx, mode, st.under_attack and "under_attack" or "site_challenge")
+            local why = "site_challenge"
+            if st.under_attack then
+                why = "under_attack"
+            elseif ctx.auto_flood then
+                why = "auto_flood:" .. ctx.auto_flood
+            end
+            return do_challenge(ctx, mode, why)
         end
     end
 

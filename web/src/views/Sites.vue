@@ -22,6 +22,7 @@ function blank() {
     challenge: 'auto',
     rate_rps: 0,
     rate_burst: 0,
+    flood_rps: 0,
     force_https: false,
     acme_enabled: false,
     acme_email: '',
@@ -101,6 +102,7 @@ async function save() {
     upstream_port: Number(form.value.upstream_port) || 80,
     rate_rps: Number(form.value.rate_rps) || 0,
     rate_burst: Number(form.value.rate_burst) || 0,
+    flood_rps: Number(form.value.flood_rps) || 0,
   }
   busy.value = true
   try {
@@ -263,6 +265,12 @@ onMounted(load)
         <label class="label">{{ t('sites.form.burst') }}</label>
         <input v-model="form.rate_burst" type="number" class="input mono" />
       </div>
+    </div>
+
+    <div class="field">
+      <label class="label">{{ t('sites.form.floodRPS') }}</label>
+      <input v-model="form.flood_rps" type="number" min="0" class="input mono" />
+      <div class="hint">{{ t('sites.form.floodRPSHint') }}</div>
     </div>
 
     <label class="switch" style="margin-bottom:14px">

@@ -58,6 +58,17 @@ func ValidateSettings(st *Settings) error {
 	if st.BlockStatus < 400 || st.BlockStatus > 599 {
 		st.BlockStatus = 403
 	}
+	if st.FloodRPS < 0 || st.FloodErrorRate < 0 {
+		return fmt.Errorf("flood thresholds cannot be negative")
+	}
+	if st.FloodErrorRate > 100 {
+		return fmt.Errorf("the origin error threshold is a percentage, so it cannot exceed 100")
+	}
+	if st.FloodHold < 10 {
+		// Below this the defence drops as soon as the flood pauses for breath, and
+		// every visitor pays for another challenge when it resumes.
+		st.FloodHold = 10
+	}
 	if st.MaxBodyScan < 0 || st.MaxBodyScan > 1048576 {
 		st.MaxBodyScan = 65536
 	}

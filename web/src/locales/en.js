@@ -147,6 +147,7 @@ export default {
   'sites.form.rps': 'Requests per second per IP',
   'sites.form.rpsHint': '0 = use the global value from Settings',
   'sites.form.burst': 'Limit over 10 seconds',
+  'sites.form.floodRPS': 'Flood threshold for this site (r/s)',
   'sites.form.acme': 'Get and renew the certificate automatically (Let\'s Encrypt)',
   'sites.form.acmeEmail': 'Contact email for the certificate authority',
   'sites.form.acmeHint': 'The domain must already resolve to this server and port 80 must be reachable from the internet - that is how the authority verifies you own it. Renewal happens on its own once there are 30 days left.',
@@ -311,6 +312,15 @@ export default {
   'settings.retainDays': 'Keep the attack log for (days)',
   'settings.scanBody': 'Scan POST bodies',
   'settings.logAllowed': 'Log normal requests too (uses a lot of disk)',
+
+  'settings.flood': 'Automatic flood defence',
+  'settings.floodSub': 'Every other limit here counts per IP, and a distributed flood is built to stay under one. These thresholds are measured across the whole site.',
+  'settings.floodRPS': 'Site-wide requests per second',
+  'settings.floodRPSHint': 'When one site receives more than this in total - from any number of addresses - every visitor without a solved challenge gets one. 0 switches it off.',
+  'settings.floodErrorRate': 'Origin error rate that engages it (%)',
+  'settings.floodErrorRateHint': 'A slow endpoint can be taken down with far fewer requests than a fast one, and the origin starting to fail is the symptom that shows up first. 0 switches it off.',
+  'settings.floodHold': 'Stay engaged for (seconds)',
+  'settings.floodHoldHint': 'Counted from the last moment the site was over the threshold. It releases on its own; nobody has to switch it back.',
 
   'settings.password': 'Change admin password',
   'settings.currentPassword': 'Current password',
