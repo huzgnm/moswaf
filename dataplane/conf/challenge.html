@@ -4,39 +4,189 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow">
-<title>Checking your browser...</title>
+<meta name="color-scheme" content="light">
+<title>Checking your browser</title>
+<!--
+  Self-contained for the same reason as the block page. No percentage anywhere:
+  the work is memoryless, so a bar filling toward 2^N would be an animation
+  impersonating knowledge nobody has. Shown instead is what is known - that work
+  is happening, how much has been tried, how long it has taken.
+-->
 <style>
-  :root{--bg:#0b0e14;--card:#11161f;--line:#1f2733;--fg:#e6edf3;--mut:#8b949e;--acc:#3b82f6}
+  :root{
+    --bg:#fbfcfd; --surface:#fff;
+    --line:#e7ebef; --line-2:#dde3e9;
+    --ink:#0a0a0a; --ink-2:#4c5967; --ink-3:#6b7885;
+    --good:#1f9d68; --warn:#a8701a;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  }
   *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-       background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-  .card{width:min(92vw,440px);background:var(--card);border:1px solid var(--line);border-radius:14px;
-        padding:32px 28px;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.45)}
-  .logo{font-size:13px;letter-spacing:.18em;color:var(--mut);text-transform:uppercase;margin-bottom:18px}
-  .logo b{color:var(--acc)}
-  h1{font-size:19px;margin:0 0 10px;font-weight:600}
-  p{margin:0;color:var(--mut);font-size:13.5px}
-  .bar{height:5px;background:#0d1117;border-radius:99px;overflow:hidden;margin:24px 0 12px;border:1px solid var(--line)}
-  .fill{height:100%;width:6%;background:linear-gradient(90deg,var(--acc),#60a5fa);border-radius:99px;transition:width .2s}
-  .meta{font-size:12px;color:#5c6672;font-variant-numeric:tabular-nums}
-  .err{color:#f87171;font-size:13px;margin-top:14px;display:none}
-  footer{margin-top:22px;font-size:11.5px;color:#4b5563}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.6 var(--sans);-webkit-font-smoothing:antialiased;
+    display:flex;flex-direction:column;min-height:100%;
+  }
+  .eyebrow{font-family:var(--mono);font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--ink-3)}
+
+  header{
+    border-bottom:1px solid var(--line);background:var(--surface);
+    padding:16px 32px;display:flex;align-items:center;gap:10px;
+  }
+  header svg.mark{width:22px;height:22px;color:var(--ink);flex:none}
+  header .name{font-size:15px;font-weight:700;letter-spacing:-.02em}
+  header .status{margin-left:auto}
+
+  main{flex:1;display:flex;align-items:center;justify-content:center;padding:56px 32px}
+  .wrap{
+    width:100%;max-width:1000px;
+    display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:56px;align-items:center;
+  }
+
+  h1{font-size:36px;line-height:1.14;letter-spacing:-.035em;font-weight:600;margin:14px 0 0}
+  .say{color:var(--ink-2);font-size:15px;margin:16px 0 0;max-width:48ch}
+
+  /* The status panel. A fixed floor so nothing on the page moves when the
+     state changes - a layout that jumps at the moment of success reads as a
+     fault, not as progress. */
+  .panel{
+    border:1px solid var(--line);background:var(--surface);border-radius:4px;
+    padding:22px;display:flex;flex-direction:column;justify-content:center;
+    /* Tall enough for the state that needs the most room - the one with the
+       retry button - so the panel is the same size in all three and nothing
+       resizes at the moment the check ends. */
+    min-height:224px;
+  }
+  .panel h2{font-family:var(--mono);font-size:10.5px;letter-spacing:.26em;text-transform:uppercase;
+            color:var(--ink-3);font-weight:500;margin:0 0 16px}
+
+  /* Indeterminate: a segment that travels, with no start and no end position
+     that could be read as an amount completed. */
+  .track{height:3px;background:var(--line);overflow:hidden;position:relative}
+  .track span{
+    position:absolute;top:0;bottom:0;left:0;width:34%;background:var(--ink);
+    animation:sweep 1.5s cubic-bezier(.45,0,.35,1) infinite;
+  }
+  @keyframes sweep{0%{left:-34%}100%{left:100%}}
+
+  .state{margin:16px 0 0;font-size:14px;color:var(--ink);display:flex;align-items:center;gap:9px}
+  .state svg{width:16px;height:16px;flex:none}
+  .metrics{margin:8px 0 0;font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+           font-variant-numeric:tabular-nums;min-height:18px}
+
+  .retry{
+    margin-top:16px;min-height:42px;width:100%;
+    display:none;align-items:center;justify-content:center;gap:8px;
+    font:500 13px/1.2 var(--sans);color:#fafafa;background:#171717;
+    border:1px solid #171717;border-radius:2px;cursor:pointer;padding:10px 14px;
+  }
+  .retry:hover{background:#000}
+  .retry:focus-visible{outline:none;box-shadow:0 0 0 2px var(--bg),0 0 0 4px var(--ink)}
+
+  /* State switching. Only the panel changes; the page around it does not. */
+  body[data-state="done"] .track span{animation:none;left:0;width:100%;background:var(--good)}
+  body[data-state="done"] .state{color:var(--good)}
+  body[data-state="stalled"] .track span{animation:none;left:0;width:100%;background:var(--warn);opacity:.35}
+  body[data-state="stalled"] .retry{display:inline-flex}
+  body[data-state="stalled"] .metrics{color:var(--ink-2)}
+
+  .ico-done,.ico-wait,.ico-stall{display:none}
+  body[data-state="working"] .ico-wait{display:block}
+  body[data-state="done"] .ico-done{display:block;color:var(--good)}
+  body[data-state="stalled"] .ico-stall{display:block;color:var(--warn)}
+
+  footer{border-top:1px solid var(--line);padding:16px 32px;background:var(--surface)}
+  footer p{margin:0;font-family:var(--mono);font-size:10.5px;letter-spacing:.2em;
+           text-transform:uppercase;color:var(--ink-3)}
+
+  .nojs{
+    border:1px solid var(--line-2);border-left:2px solid var(--warn);background:var(--surface);
+    padding:16px 18px;margin:20px 0 0;max-width:48ch;font-size:14px;color:var(--ink-2);border-radius:2px;
+  }
+  .nojs b{color:var(--ink);font-weight:600}
+
+  /* Narrow: a full-screen wait, one column, the status near the top of the
+     fold rather than beside the text. Nothing is scaled down from the desktop
+     arrangement - the panel simply follows the message. */
+  @media (max-width:860px){
+    header{padding:14px 18px}
+    /* Stays centred on a phone: this is a screen somebody waits on, and the
+       content is short enough that pinning it to the top leaves the wait
+       floating above half a screen of nothing. */
+    main{padding:28px 18px 36px}
+    .wrap{display:block;max-width:520px;margin:0 auto}
+    h1{font-size:26px;margin:0}
+    .say{font-size:14.5px;margin-top:12px}
+    .panel{margin-top:22px;padding:18px;min-height:0}
+    .panel h2{margin-bottom:14px}
+    .retry{min-height:46px;font-size:14px}
+    footer{padding:14px 18px}
+  }
+  @media (max-width:380px){h1{font-size:23px}.say{font-size:14px}}
+
+  /* The travelling segment is motion for its own sake to anyone who has asked
+     for less of it. The counters below carry the same information. */
+  @media (prefers-reduced-motion:reduce){
+    .track span{animation:none;left:0;width:100%;background:var(--line-2)}
+    body[data-state="done"] .track span{background:var(--good)}
+    *{transition:none!important}
+  }
 </style>
 </head>
-<body>
-<div class="card">
-  <div class="logo">Mos<b>WAF</b></div>
-  <h1>Checking your browser</h1>
-  <p>This happens automatically and takes a few seconds. Please keep this tab open.</p>
-  <div class="bar"><div class="fill" id="fill"></div></div>
-  <div class="meta" id="meta">Starting...</div>
-  <div class="err" id="err">Your browser cannot run JavaScript, so we are unable to continue.</div>
-  <footer>Protected by MosWAF</footer>
-</div>
+<body data-state="working">
 
-<noscript>
-  <style>.bar,.meta{display:none}.err{display:block!important}</style>
-</noscript>
+<header>
+  <svg class="mark" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <path d="M16 3l10.5 3.8v7.9c0 6.3-4.4 11.1-10.5 12.8C9.9 25.8 5.5 21 5.5 14.7V6.8L16 3z"
+          stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+    <path d="M9.4 17.6c2-2.2 3.7-1.1 4.9.4 1.3 1.7 2.6 1.8 3.9-.2 1.2-1.7 2.8-2 4.6-.5"
+          stroke="currentColor" stroke-width="1.7" stroke-linecap="round" opacity=".55"/>
+  </svg>
+  <span class="name">MosWAF</span>
+  <span class="eyebrow status">HTTP 503</span>
+</header>
+
+<main>
+  <div class="wrap">
+    <div>
+      <p class="eyebrow">Automatic check</p>
+      <h1>Checking your browser</h1>
+      <p class="say">This happens by itself and usually takes a few seconds. Keep this tab open - the page continues on its own as soon as the check finishes.</p>
+
+      <noscript>
+        <div class="nojs">
+          <b>This check needs JavaScript.</b> Your browser has it switched off, so the check cannot run. Enable JavaScript for this site and reload the page.
+        </div>
+      </noscript>
+    </div>
+
+    <section class="panel" aria-label="Verification status">
+      <h2>Status</h2>
+
+      <div class="track" aria-hidden="true"><span></span></div>
+
+      <p class="state">
+        <svg class="ico-wait" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" opacity=".9"/>
+        </svg>
+        <svg class="ico-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M20 6L9 17l-5-5"/>
+        </svg>
+        <svg class="ico-stall" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+          <path d="M12 21a9 9 0 100-18 9 9 0 000 18zM12 7v5l3 2"/>
+        </svg>
+        <span id="live" role="status" aria-live="polite">Checking your browser</span>
+      </p>
+
+      <p class="metrics" id="metrics" aria-hidden="true">Starting</p>
+
+      <button type="button" class="retry" id="retry">Try again</button>
+    </section>
+  </div>
+</main>
+
+<footer><p>Protected by MosWAF</p></footer>
 
 <script>
 (function () {
@@ -106,33 +256,54 @@
     return n;
   }
 
-  var fill = document.getElementById("fill"),
-      meta = document.getElementById("meta"),
-      nonce = 0, started = Date.now(), CHUNK = 4000,
-      expected = Math.pow(2, BITS);
+  var live = document.getElementById("live"),
+      metrics = document.getElementById("metrics"),
+      retry = document.getElementById("retry"),
+      nonce = 0, started = Date.now(), CHUNK = 4000;
+
+  // The salt the server issued is good for two minutes; a solution presented
+  // after that is refused as expired. So the page stops a little before then
+  // rather than spending a slow phone's battery on work that cannot be
+  // redeemed - and reloading asks for a fresh one, which is why the button is
+  // offered only here and does nothing clever.
+  var DEADLINE = 110000;
+
+  function setState(s) { document.body.setAttribute("data-state", s); }
 
   function done(n) {
-    meta.textContent = "Verified, redirecting...";
-    fill.style.width = "100%";
+    setState("done");
+    live.textContent = "Verified - taking you to the site";
+    metrics.textContent = fmt(nonce) + " hashes in " + secs() + "s";
     var url = VERIFY + "?s=" + encodeURIComponent(SALT) +
               "&g=" + encodeURIComponent(SIG) +
               "&n=" + encodeURIComponent(String(n)) +
               "&r=" + encodeURIComponent(RET);
-    setTimeout(function () { window.location.replace(url); }, 120);
+    setTimeout(function () { window.location.replace(url); }, 450);
   }
+
+  function stalled() {
+    setState("stalled");
+    live.textContent = "This is taking longer than usual";
+    metrics.textContent = "Stopped after " + secs() + "s - the check has to start again";
+    retry.focus();
+  }
+
+  function secs() { return ((Date.now() - started) / 1000).toFixed(1); }
+  function fmt(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
 
   function work() {
     var end = nonce + CHUNK;
     for (; nonce < end; nonce++) {
       if (leadingZeroBits(sha256(SALT + nonce)) >= BITS) { done(nonce); return; }
     }
-    var pct = Math.min(96, Math.round((nonce / expected) * 100));
-    fill.style.width = Math.max(6, pct) + "%";
-    meta.textContent = nonce.toLocaleString("en-US") + " hashes computed - " +
-                       ((Date.now() - started) / 1000).toFixed(1) + "s";
+    if (Date.now() - started > DEADLINE) { stalled(); return; }
+    // Counted, not estimated: how much has been tried and how long it took.
+    // Neither says how much is left, because nothing does.
+    metrics.textContent = fmt(nonce) + " hashes - " + secs() + "s";
     setTimeout(work, 0);
   }
 
+  retry.addEventListener("click", function () { window.location.reload(); });
   setTimeout(work, 30);
 })();
 </script>
