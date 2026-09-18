@@ -176,6 +176,11 @@ CREATE INDEX IF NOT EXISTS site_users_site_idx ON site_users (site_id);
 
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS auth_enabled BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS auth_paths   JSONB   NOT NULL DEFAULT '["/"]';
+
+-- A site's own country rule. '' means "follow the global one", which is not the
+-- same as 'off' - 'off' is a site opting out of a rule everything else follows.
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS geo_mode      TEXT  NOT NULL DEFAULT '';
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS geo_countries JSONB NOT NULL DEFAULT '[]';
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

@@ -58,6 +58,7 @@ func ValidateSettings(st *Settings) error {
 	if st.BlockStatus < 400 || st.BlockStatus > 599 {
 		st.BlockStatus = 403
 	}
+	st.GeoMode, st.GeoCountries = NormaliseGeo(st.GeoMode, st.GeoCountries)
 	if st.FloodRPS < 0 || st.FloodErrorRate < 0 {
 		return fmt.Errorf("flood thresholds cannot be negative")
 	}

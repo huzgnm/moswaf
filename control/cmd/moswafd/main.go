@@ -136,6 +136,9 @@ func run(cfg *config.Config) error {
 	// --- event collection and housekeeping ---
 	consumer := engine.NewConsumer(db, rdb)
 	consumer.SetGeoIP(geo)
+	// The publisher needs it too, to turn a country rule into the address ranges
+	// the data plane decides with.
+	pub.SetGeoIP(geo)
 	consumer.OnChange = pub.Publish
 	consumer.Run(ctx)
 

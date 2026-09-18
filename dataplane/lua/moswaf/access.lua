@@ -22,6 +22,7 @@ local flood     = require "moswaf.flood"
 local crawler   = require "moswaf.crawler"
 local challenge = require "moswaf.challenge"
 local auth      = require "moswaf.auth"
+local geo       = require "moswaf.geo"
 
 local _M = {}
 
@@ -258,6 +259,24 @@ function _M.run()
         -- a way to get a competitor's monitoring cut off. The request carries on
         -- through every check as an ordinary visitor.
         ctx.fake_crawler = true
+    end
+
+    -- 3c. the country rule
+    --
+    -- After the allowlist, which is deliberate: an address somebody put on the
+    -- allowlist is an address they want through, and "block this country except
+    -- our partner in it" is the ordinary way this gets used. After the ban and
+    -- blocklist too, so that an address refused for what it did is reported as
+    -- that rather than as where it is.
+    --
+    -- And after crawler verification, which is the one that would otherwise go
+    -- unnoticed: an allow rule naming one country refuses Googlebot, and a site
+    -- silently leaving the search index is a far larger loss than whatever the
+    -- rule was written to prevent. Verification is against published address
+    -- ranges, not a user agent, so this cannot be claimed by an attacker.
+    if not ctx.crawler and geo.refuses(site.geo_mode, conf.geo_sets and conf.geo_sets[site.geo_set], ip) then
+        ctx.severity = "low"
+        return block(ctx, mode, "geo:" .. site.geo_mode, nil, 403)
     end
 
     -- 4. a visitor coming back from the challenge

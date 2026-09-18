@@ -193,6 +193,37 @@ do
         "only ::ffff:0:0/96 is the mapped range")
 end
 
+-- A parser that invents an address out of a string that is not one.
+--
+-- The splitter used to drop empty pieces, so a second "::" inside a half, a
+-- leading ":" and a trailing one all vanished instead of being refused: "::ffff:"
+-- came back as ::ffff and "1::2::3" as 1::2:3. Neither string is an address, and
+-- an address neither of them names is what every decision downstream - the
+-- blocklist included - would then have been made about.
+for _, bad in ipairs({
+    "::ffff:",      -- trailing colon
+    ":::",          -- three
+    "1::2::3",      -- two "::" is never valid
+    ":1:2:3:4:5:6:7",
+    "1:2:3:4:5:6:7:",
+    "::ffff::1",
+    "1:::2",
+}) do
+    check("a string that is not an address is refused: " .. bad,
+        util.ipv6_groups(bad) == nil,
+        "ipv6_groups accepted it and produced eight groups, which means every " ..
+        "check downstream was made about an address nobody sent")
+end
+
+-- And the valid spellings still parse, including the awkward ones.
+for _, good in ipairs({ "::", "::1", "1::", "2001:db8::1",
+                        "1:2:3:4:5:6:7:8", "::ffff:1.2.3.4",
+                        "0:0:0:0:0:ffff:1.2.3.4" }) do
+    check("a valid address still parses: " .. good,
+        util.ipv6_groups(good) ~= nil,
+        "the stricter splitter refused an address that is perfectly legal")
+end
+
 -- ------------------------------------------------------------ report
 
 io.write("\n\n")
