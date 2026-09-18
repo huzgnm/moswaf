@@ -190,7 +190,15 @@ func checkACMEDomain(d string) error {
 }
 
 // ManualIssueWindow is how long the dashboard button waits after an attempt.
-const ManualIssueWindow = 5 * time.Minute
+//
+// Sized against the authority's own limits rather than against impatience.
+// Let's Encrypt refuses an account that fails validation five times for one
+// hostname in an hour, and the refusal outlasts the mistake: an operator who
+// retries every five minutes while fixing a DNS record burns that allowance in
+// twenty-five minutes, and is then locked out for the rest of the hour even
+// after the record is correct. Fifteen minutes keeps the worst case at four
+// attempts an hour, just under the line.
+const ManualIssueWindow = 15 * time.Minute
 
 // ManualIssueCooldown returns how long is left before another manual order may be
 // placed, or zero when one may be placed now.

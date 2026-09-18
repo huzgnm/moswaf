@@ -145,8 +145,17 @@ func TestManualIssueCooldown(t *testing.T) {
 	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &recent}, now); w <= 0 {
 		t.Error("an attempt a minute ago should still be cooling down")
 	}
-	old := now.Add(-10 * time.Minute)
-	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &old}, now); w != 0 {
-		t.Errorf("an attempt ten minutes ago should be allowed, got %v", w)
+
+	// Written against the window rather than a fixed number of minutes: the
+	// window is sized by the authority's limits, and a test that hard-codes it
+	// has to be edited every time that reasoning changes - which is how a test
+	// stops checking anything and starts recording a number.
+	justInside := now.Add(-store.ManualIssueWindow + time.Second)
+	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &justInside}, now); w <= 0 {
+		t.Error("an attempt just inside the window should still be cooling down")
+	}
+	justOutside := now.Add(-store.ManualIssueWindow - time.Second)
+	if w := store.ManualIssueCooldown(&store.Site{AcmeLastTry: &justOutside}, now); w != 0 {
+		t.Errorf("an attempt just past the window should be allowed, got %v", w)
 	}
 }
