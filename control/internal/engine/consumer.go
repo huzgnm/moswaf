@@ -165,6 +165,10 @@ func (c *Consumer) absorbStat(ctx context.Context, key string) {
 		Blocked:    num("blocked"),
 		Challenged: num("challenged"),
 		Monitored:  num("monitored"),
+		Errors4xx:  num("errors_4xx"),
+		Blocked4xx: num("blocked_4xx"),
+		Errors5xx:  num("errors_5xx"),
+		PageViews:  num("page_views"),
 	}
 	if err := c.db.UpsertStat(ctx, p); err != nil {
 		log.Printf("moswaf: failed to write statistics: %v", err)

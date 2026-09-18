@@ -26,6 +26,44 @@ local function minute_key(t)
     return math.floor((t or ngx.time()) / 60) * 60
 end
 
+local function hour_key(t)
+    return math.floor((t or ngx.time()) / 3600) * 3600
+end
+
+-- Addresses and visitors seen this hour, held per worker until the next flush.
+--
+-- Bounded on purpose. Under a flood from a hundred thousand addresses this table
+-- is the one structure that would grow with the attack, so it stops growing and
+-- the hour's figure becomes a floor rather than a number - which is the right
+-- way round: a count that is too low is a bad statistic, a worker that runs out
+-- of memory is an outage.
+local UNIQUE_MAX = 20000
+local uniq_ip, uniq_ip_n = {}, 0
+local uniq_visitor, uniq_visitor_n = {}, 0
+local uniq_hour = 0
+
+local function remember_unique(ip, ua)
+    if not ip or ip == "" then return end
+
+    local hour = hour_key()
+    if hour ~= uniq_hour then
+        uniq_ip, uniq_ip_n = {}, 0
+        uniq_visitor, uniq_visitor_n = {}, 0
+        uniq_hour = hour
+    end
+
+    if uniq_ip_n < UNIQUE_MAX and not uniq_ip[ip] then
+        uniq_ip[ip] = true
+        uniq_ip_n = uniq_ip_n + 1
+    end
+
+    local visitor = ip .. "\0" .. (ua or "")
+    if uniq_visitor_n < UNIQUE_MAX and not uniq_visitor[visitor] then
+        uniq_visitor[visitor] = true
+        uniq_visitor_n = uniq_visitor_n + 1
+    end
+end
+
 -- --------------------------------------------------------------- record
 
 function _M.run()
@@ -53,6 +91,44 @@ function _M.run()
     elseif action == "monitor" or action == "log" then
         stats:incr("m:" .. minute, 1, 0, 300)
     end
+
+    -- What the visitor was actually served. These are the numbers an operator
+    -- reads to tell "we are under attack" from "our application is broken":
+    -- a wall of 4xx is usually someone probing, a wall of 5xx is usually us.
+    if status >= 400 and status < 500 then
+        stats:incr("e4:" .. minute, 1, 0, 300)
+        -- 4xx that MosWAF produced rather than the origin. The difference is the
+        -- whole question when an error rate jumps: the WAF working, or the site
+        -- turning visitors away.
+        if action == "deny" then stats:incr("b4:" .. minute, 1, 0, 300) end
+    elseif status >= 500 then
+        stats:incr("e5:" .. minute, 1, 0, 300)
+    end
+
+    -- Page views: pages a person looked at, as opposed to every image, script and
+    -- stylesheet the browser then fetched. Counted from the response content type
+    -- rather than the path, because a URL tells you nothing reliable about what
+    -- came back - a stylesheet request that 404s is served as HTML, and the path
+    -- would have called it a stylesheet.
+    --
+    -- Only a successful response counts. An error page is HTML too, so counting
+    -- content type alone made a site whose assets all 404 look like its busiest
+    -- day: every missing file became a page view.
+    if status < 400 then
+        local ctype = ngx.var.sent_http_content_type
+        if ctype and ctype:find("text/html", 1, true) then
+            stats:incr("pv:" .. minute, 1, 0, 300)
+        end
+    end
+
+    -- Unique addresses and unique visitors, remembered for the hour.
+    --
+    -- Deliberately no tracking cookie. A visitor is counted as an address and a
+    -- User-Agent together, which is approximate - a household behind one address
+    -- can look like one visitor - but a WAF that starts writing a cookie into
+    -- every response is making a decision about the site owner's visitors that
+    -- the site owner did not ask for. The approximation is the honest trade.
+    remember_unique(ctx.ip, ctx.ua)
 
     -- only keep details for requests worth looking at
     local st = config.get().settings
@@ -120,6 +196,84 @@ local function flush_events()
     end
 end
 
+-- Ship the hour's addresses and visitors as HyperLogLogs.
+--
+-- A plain count per worker cannot be added up - the same visitor is seen by
+-- several workers and on several nginx instances - and keeping the raw sets in
+-- Postgres to count them later would store every address of every flood. A
+-- HyperLogLog merges across workers and hosts, answers "how many distinct" over
+-- any span of hours by union, and costs a bounded few kilobytes whether the hour
+-- had ten visitors or ten million.
+--
+-- Hourly rather than per minute on purpose: the dashboard asks about the last
+-- hour, day or three days, and a union over 72 keys is cheap where a union over
+-- 4320 is not.
+local UNIQUE_TTL = 4 * 86400        -- outlives the longest range the dashboard offers
+
+-- PFADD takes its members as arguments, and unpack() on a table of twenty
+-- thousand overflows the LuaJIT stack, so the members go in batches.
+local UNIQUE_BATCH = 500
+
+local function pfadd_all(red, key, members)
+    local n = #members
+    if n == 0 then return end
+    for i = 1, n, UNIQUE_BATCH do
+        local chunk = {}
+        for j = i, math.min(i + UNIQUE_BATCH - 1, n) do
+            chunk[#chunk + 1] = members[j]
+        end
+        red:pfadd(key, unpack(chunk))
+    end
+    red:expire(key, UNIQUE_TTL)
+end
+
+-- Runs on every worker, unlike flush_stats.
+--
+-- The per-minute counters live in a shared dict, so one worker can ship them for
+-- all of them and a second worker doing the same would only write the same
+-- numbers again. The unique sets are the opposite: each worker accumulates its
+-- own, in its own memory, from the requests it happened to handle. Shipping them
+-- from worker 0 alone sent one worker's view and silently discarded the rest -
+-- which on a multi-worker install is most of the traffic, and was why the
+-- unique counts came back as zero.
+--
+-- Every worker adding to the same sketch is safe precisely because it is a
+-- HyperLogLog: adding a member twice changes nothing.
+local function flush_uniques()
+    local now = ngx.time()
+    local hour = hour_key(now)
+    if hour ~= uniq_hour then return end       -- the hour rolled over mid-flush; next tick
+
+    local ips = {}
+    for ip in pairs(uniq_ip) do ips[#ips + 1] = ip end
+    local visitors = {}
+    for v in pairs(uniq_visitor) do visitors[#visitors + 1] = v end
+
+    if #ips == 0 and #visitors == 0 then return end
+
+    local red, err = util.redis()
+    if not red then
+        ngx.log(ngx.WARN, "moswaf: could not ship unique counts: ", err)
+        return
+    end
+    red:init_pipeline()
+    pfadd_all(red, "moswaf:uip:" .. hour, ips)
+    pfadd_all(red, "moswaf:uv:" .. hour, visitors)
+    local _, perr = red:commit_pipeline()
+    util.redis_release(red)
+    if perr then
+        ngx.log(ngx.WARN, "moswaf: error shipping unique counts: ", perr)
+        return                                   -- keep the sets; try again next tick
+    end
+
+    -- Cleared once sent. Re-sending the same addresses every ten seconds would
+    -- move the whole set over the wire again and again for no gain: adding a
+    -- member a HyperLogLog already holds changes nothing. Anyone still browsing
+    -- is simply added again next tick, which is the same answer for less work.
+    uniq_ip, uniq_ip_n = {}, 0
+    uniq_visitor, uniq_visitor_n = {}, 0
+end
+
 local function flush_stats()
     local now = ngx.time()
     local red, err = util.redis()
@@ -135,10 +289,14 @@ local function flush_stats()
         local total = stats:get("t:" .. m) or 0
         if total > 0 then
             red:hset("moswaf:stat:" .. m,
-                     "total",     total,
-                     "blocked",   stats:get("b:" .. m) or 0,
+                     "total",      total,
+                     "blocked",    stats:get("b:" .. m) or 0,
                      "challenged", stats:get("c:" .. m) or 0,
-                     "monitored", stats:get("m:" .. m) or 0)
+                     "monitored",  stats:get("m:" .. m) or 0,
+                     "errors_4xx", stats:get("e4:" .. m) or 0,
+                     "blocked_4xx", stats:get("b4:" .. m) or 0,
+                     "errors_5xx", stats:get("e5:" .. m) or 0,
+                     "page_views", stats:get("pv:" .. m) or 0)
             red:expire("moswaf:stat:" .. m, 7200)
         end
     end
@@ -161,6 +319,9 @@ end
 
 function _M.start_flush()
     every(FLUSH_EVERY, flush_events, "flush_events")
+    -- Every worker: each holds its own set of addresses seen.
+    every(STATS_EVERY, flush_uniques, "flush_uniques")
+    -- Worker 0 only: these counters are in a shared dict, so one shipper is enough.
     if ngx.worker.id() == 0 then
         every(STATS_EVERY, flush_stats, "flush_stats")
     end

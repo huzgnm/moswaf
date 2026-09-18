@@ -51,7 +51,6 @@ function densify(points, rangeHours) {
 const tiles = computed(() => {
   const o = overview.value
   if (!o) return []
-  const blockRate = o.requests > 0 ? ((o.blocked / o.requests) * 100).toFixed(1) : '0.0'
   return [
     {
       label: t('overview.tile.requests'),
@@ -59,16 +58,59 @@ const tiles = computed(() => {
       sub: t('overview.tile.requestsSub', { hours: o.hours }),
     },
     {
+      label: t('overview.tile.pageViews'),
+      value: fmtNumber(o.page_views),
+      sub: t('overview.tile.pageViewsSub'),
+    },
+    {
+      label: t('overview.tile.visitors'),
+      value: fmtNumber(o.visitors),
+      sub: t('overview.tile.visitorsSub'),
+    },
+    {
+      label: t('overview.tile.uniqueIPs'),
+      value: fmtNumber(o.unique_ips),
+      sub: t('overview.tile.uniqueIPsSub'),
+    },
+    {
       label: t('overview.tile.blocked'),
       value: fmtNumber(o.blocked),
-      sub: t('overview.tile.blockedSub', { percent: blockRate }),
+      sub: t('overview.tile.blockedSub', { percent: o.blocked_rate ?? 0 }),
       tone: 'serious',
     },
     {
-      label: t('overview.tile.challenged'),
-      value: fmtNumber(o.challenged),
-      sub: t('overview.tile.challengedSub'),
+      label: t('overview.tile.qps'),
+      value: fmtNumber(o.qps),
+      sub: t('overview.tile.qpsSub'),
+    },
+  ]
+})
+
+// The second row answers one question: when an error rate jumps, is that MosWAF
+// working or the site falling over? So the WAF's own 4xx are shown next to the
+// total 4xx rather than folded into it, and 5xx - which MosWAF never produces
+// for a blocked request - stands on its own as the origin's number.
+const errorTiles = computed(() => {
+  const o = overview.value
+  if (!o) return []
+  return [
+    {
+      label: t('overview.tile.errors4xx'),
+      value: fmtNumber(o.errors_4xx),
+      sub: t('overview.tile.rateOfTraffic', { percent: o.rate_4xx ?? 0 }),
+      tone: (o.rate_4xx ?? 0) >= 20 ? 'serious' : '',
+    },
+    {
+      label: t('overview.tile.blocked4xx'),
+      value: fmtNumber(o.blocked_4xx),
+      sub: t('overview.tile.blocked4xxSub'),
       tone: 'good',
+    },
+    {
+      label: t('overview.tile.errors5xx'),
+      value: fmtNumber(o.errors_5xx),
+      sub: t('overview.tile.rateOfTraffic', { percent: o.rate_5xx ?? 0 }),
+      tone: (o.errors_5xx ?? 0) > 0 ? 'serious' : '',
     },
     {
       label: t('overview.tile.sites'),
@@ -124,8 +166,16 @@ function barWidth(b, list) {
     {{ t('overview.alert') }}
   </div>
 
-  <div class="grid grid-4">
+  <div class="grid grid-tiles">
     <div v-for="tile in tiles" :key="tile.label" class="card tile">
+      <div class="tile-label">{{ tile.label }}</div>
+      <div class="tile-value" :class="tile.tone">{{ tile.value }}</div>
+      <div class="tile-sub">{{ tile.sub }}</div>
+    </div>
+  </div>
+
+  <div class="grid grid-tiles" style="margin-top:12px">
+    <div v-for="tile in errorTiles" :key="tile.label" class="card tile">
       <div class="tile-label">{{ tile.label }}</div>
       <div class="tile-value" :class="tile.tone">{{ tile.value }}</div>
       <div class="tile-sub">{{ tile.sub }}</div>

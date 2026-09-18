@@ -143,6 +143,14 @@ type StatPoint struct {
 	Blocked    int64     `json:"blocked"`
 	Challenged int64     `json:"challenged"`
 	Monitored  int64     `json:"monitored"`
+
+	// What the visitor was served. Kept apart from Blocked because the question
+	// an operator is answering when an error rate jumps is which side produced
+	// it: Errors4xx counts every 4xx, Blocked4xx only the ones MosWAF produced.
+	Errors4xx  int64 `json:"errors_4xx"`
+	Blocked4xx int64 `json:"blocked_4xx"`
+	Errors5xx  int64 `json:"errors_5xx"`
+	PageViews  int64 `json:"page_views"`
 }
 
 // User is an administrator account.
