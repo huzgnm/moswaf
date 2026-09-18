@@ -74,10 +74,12 @@ lua-check: ## Check the Lua engine syntax (needs luajit: brew install luajit)
 	done
 	@echo "Lua syntax OK"
 
-lua-test: ## Run the pure-Lua data plane unit tests (needs luajit)
+lua-test: ## Run the data plane test suites (needs luajit)
 	@command -v luajit >/dev/null || { echo "luajit is missing: brew install luajit"; exit 1; }
 	@luajit dataplane/test/run.lua
 	@luajit dataplane/test/ratelimit.lua
+	@luajit dataplane/test/flood.lua
 	@luajit dataplane/test/flood_attack.lua
+	@bash dataplane/test/entrypoint.sh
 
 .PHONY: help up down destroy restart logs logs-proxy logs-mgmt ps shell-proxy nginx-test reload web-dev web-build go-build go-test fmt lua-check lua-test
