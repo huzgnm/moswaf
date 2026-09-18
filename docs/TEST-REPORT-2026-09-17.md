@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `db5c216` (all 40 findings across 15 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–15 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `6151da3` (all 42 findings across 16 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–16 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across fifteen rounds, **40 findings were raised and all 40 fixed and re-verified**. Rounds
+Across sixteen rounds, **42 findings were raised and all 42 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -65,7 +65,13 @@ attack — and found the heaviest bug of the engagement: a solved challenge coul
 to an **entire botnet**. The puzzle was bound to nobody and never marked as spent, so one
 machine solved it once and every other replayed the solution for its own cookie, doing no
 work — the defence collapsed to one solve every two minutes for a whole botnet, at exactly
-the moment it is the thing holding the line (fixed, and re-verified live).
+the moment it is the thing holding the line (fixed, and re-verified live). Round 16 followed
+the automatic-certificate path into its *failure* modes and found that the dashboard's issue
+button could quietly spend a domain's weekly Let's Encrypt allowance — its cooldown was
+looser than the CA's own limit and it re-issued healthy certificates — and, in fixing that,
+a third bug surfaced that had to be closed alongside it: nothing checked whether a stored
+certificate actually *covered* the site's domains, so a domain added later was served the
+wrong certificate for up to two months.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -110,6 +116,8 @@ the moment it is the thing holding the line (fixed, and re-verified live).
 | 38 | Medium | Crawler-range over-broad guard was IPv4-only in aggregate: no whole-list IPv6 ceiling and a loose `/32` per entry, so a compromised source could get broad IPv6 space trusted; mapped `::ffff:0:0/33..95` also slipped past | `go test` (validator, mapped + `2000::/32`) | **Fixed ✓ (PR #31)** |
 | 39 | Low | No way to tell a **bundled** crawler list from a **fetched** one — an install with no egress ran on the shipped snapshot forever, silently (surfaced from a test-caveat) | live (`/api/system/status`, egress blocked) | **Fixed ✓ (PR #32)** |
 | 40 | **High** | A solved JS challenge could be **shared with a whole botnet** — the salt was bound to nobody and never spent, so one solve minted a valid cookie for every replaying IP; defeats the under-attack/flood defence | `dataplane/test/challenge.lua` + live PoC (1 solve → cross-IP cookies) | **Fixed ✓ (PR #34)** |
+| 41 | Medium | Manual **issue-certificate** button could burn a domain's Let's Encrypt allowance — 5-min cooldown (12/hr > CA's 5-failed/hr) and it re-issued healthy certs (→ the 5-duplicate/week limit), silent until a cert is genuinely needed | `go test` (cooldown/decision) | **Fixed ✓ (PR #36)** |
+| 42 | Medium | `NeedsCertificate` never checked cert **coverage** → a domain added to a site with a valid cert was served the wrong cert for up to ~2 months (surfaced while fixing #41) | `go test` (real cert SANs) | **Fixed ✓ (PR #36)** |
 
 ---
 
@@ -955,6 +963,61 @@ problem into every visitor failing the challenge, which is the exact denial of s
 layer exists to prevent, and the address binding still stands in that case. The spend also
 happens only *after* the proof of work is checked, so a garbage request cannot burn a
 visitor's in-flight challenge by replaying its salt with a wrong nonce.
+
+### Round 16 — the certificate path, following it into failure
+
+Round 5 tested that automatic certificates *work*; round 16 asked what they do when the
+authority says no, or when a site changes under a certificate that already exists. The
+automatic renewal loop held up — it sweeps every six hours, backs a failing site off for an
+hour, and renews thirty days before expiry, so a broken DNS record cannot approach Let's
+Encrypt's failed-validation limit. (The one-hour back-off is in fact shorter than the
+six-hour sweep, so today the sweep is the real limiter and the back-off never fires; it was
+left in place deliberately, as the guard that would bind if the sweep were ever made faster.)
+The findings were on the manual path and in the decision that drives both.
+
+**41. The issue button could spend a domain's weekly certificate allowance — MEDIUM.** The
+dashboard's "issue certificate" button places a real order at the CA, and the only thing
+limiting it was a five-minute cooldown — twelve orders an hour. Let's Encrypt allows five
+*failed* validations per hostname per hour, so an operator retrying a misconfigured domain
+every few minutes could exhaust that in under half an hour and then be refused for the rest
+of the hour *even after fixing the DNS*. Worse, the button did not check whether a
+certificate was actually needed, so it would re-issue a perfectly healthy one — and five
+re-issues of the same domain set is the weekly duplicate-certificate limit, spent in
+twenty-five minutes of clicking, with no symptom until the next real renewal is refused for
+a week. **Fixed (PR #36):** the cooldown is fifteen minutes (four an hour, under the CA's
+five), and the button refuses with `409` when there is nothing to do — no certificate is
+issued for a site that already has a valid one covering its domains.
+
+**42. Nothing checked that a certificate covered the site's domains — MEDIUM.** This one was
+forced into the open by the fix for #41. A certificate is issued for the domains a site has
+at the time; add another later and the stored certificate is still valid and weeks from
+expiry, it simply does not name the new host. Nothing looked, so nothing asked for a new
+one, and the added domain was served the old certificate — a name mismatch, a browser
+warning on every visit — until the certificate neared expiry and renewal happened to include
+it. That can be two months, on a domain the operator added and reasonably believed was
+handled. It also had to be fixed *in the same change* as #41: refusing the manual button
+when "no certificate is needed" would otherwise have left an operator who added a domain with
+no way at all to get one — the button would answer `409` forever. **Fixed (PR #36):** the
+decision now parses the stored certificate's SAN list and asks for a new certificate when any
+of the site's domains is missing from it (case-folded, and tolerant of a trailing dot).
+Verified against real certificates generated with specific SANs: a site whose domains exceed
+its certificate's names is correctly told it wants one, and a site fully covered and weeks
+from expiry is correctly left alone — so the button neither burns the allowance on a healthy
+site nor strands a newly added domain.
+
+The renewal sweep and the button now ask different questions on purpose — the sweep respects
+the failure back-off (what stops a broken domain hammering the CA), the button ignores it
+(it exists to retry the moment DNS is fixed) — and both refuse a site that genuinely has
+nothing to do. The one path left standing, noted rather than fixed: if storing a freshly
+issued certificate fails *after* the CA has already handed it over, the next sweep cannot
+tell and orders again, which over a sustained database outage would walk into the weekly
+duplicate limit. It needs a database failing for hours to reach, and is recorded here so the
+decision to defer it is visible rather than forgotten.
+
+**These findings were not run against Let's Encrypt.** Doing so would spend the very quota
+they are about on a real domain. The limits are taken from the CA's published documentation,
+the decision logic is verified with real certificates in a unit test, and the end-to-end
+issuance it feeds is unchanged since the round-5 Pebble run.
 
 ---
 
