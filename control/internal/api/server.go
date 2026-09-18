@@ -23,6 +23,7 @@ type Server struct {
 	cfg       *config.Config
 	db        *store.Store
 	rdb       *redis.Client
+	geo       *engine.GeoIP
 	pub       *engine.Publisher
 	certifier *engine.Certifier
 	login     *loginGuard
@@ -216,6 +217,9 @@ func queryInt(r *http.Request, key string, def int) int {
 	}
 	return def
 }
+
+// SetGeoIP attaches the geolocation dataset so its state can be reported.
+func (s *Server) SetGeoIP(g *engine.GeoIP) { s.geo = g }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if err := s.db.Ping(r.Context()); err != nil {

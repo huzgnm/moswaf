@@ -123,8 +123,19 @@ func run(cfg *config.Config) error {
 	certifier := engine.NewCertifier(db, rdb, cfg.ACMEDirectory, cfg.ACMEInsecure, pub.Publish)
 	certifier.Run(ctx)
 
+	// --- geolocation for the attack log ---
+	//
+	// Several megabytes downloaded in the background, used only to label recorded
+	// events. Nothing waits on it and nothing breaks without it.
+	geo := engine.NewGeoIP()
+	geo.Start(ctx)
+
+	apiServer := api.New(cfg, db, rdb, pub, certifier)
+	apiServer.SetGeoIP(geo)
+
 	// --- event collection and housekeeping ---
 	consumer := engine.NewConsumer(db, rdb)
+	consumer.SetGeoIP(geo)
 	consumer.OnChange = pub.Publish
 	consumer.Run(ctx)
 
@@ -136,7 +147,7 @@ func run(cfg *config.Config) error {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.New(cfg, db, rdb, pub, certifier).Handler(),
+		Handler:           apiServer.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -20,12 +20,14 @@ func (s *Store) InsertEvents(ctx context.Context, evs []*Event) error {
 		rows = append(rows, []any{
 			e.TS, e.Ray, e.Site, e.IP, e.Method, e.Host, e.URI, e.UA, e.Referer,
 			e.Action, e.Reason, e.RuleID, e.RuleName, e.Severity, e.Status, e.RT,
+			e.Country,
 		})
 	}
 	_, err := s.pool.CopyFrom(ctx,
 		pgx.Identifier{"events"},
 		[]string{"ts", "ray", "site", "ip", "method", "host", "uri", "ua", "referer",
-			"action", "reason", "rule_id", "rule_name", "severity", "status", "rt"},
+			"action", "reason", "rule_id", "rule_name", "severity", "status", "rt",
+			"country"},
 		pgx.CopyFromRows(rows))
 	return err
 }
@@ -255,4 +257,31 @@ func (s *Store) PurgeOldStats(ctx context.Context, days int) error {
 	_, err := s.pool.Exec(ctx,
 		fmt.Sprintf(`DELETE FROM stats_minute WHERE minute < now() - interval '%d days'`, days))
 	return err
+}
+
+// TopCountries counts recorded events by country.
+//
+// Events only: this is where attacks came from, not where visitors came from.
+// Counting every request would mean a geolocation lookup per request, and the
+// question an operator asks of a WAF is about the attacks.
+func (s *Store) TopCountries(ctx context.Context, since time.Time, limit int) ([]Bucket, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT country, count(*) FROM events
+		WHERE ts >= $1 AND country <> ''
+		GROUP BY country ORDER BY count(*) DESC LIMIT $2`, since, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []Bucket{}
+	for rows.Next() {
+		var b Bucket
+		if err := rows.Scan(&b.Key, &b.Count); err != nil {
+			return nil, err
+		}
+		b.Label = b.Key
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }

@@ -285,6 +285,23 @@ Worth knowing before putting this in front of production traffic:
 - No two-factor authentication for the dashboard.
 - No Telegram/email alerting when an attack starts.
 
+## Data sources
+
+The attack log is labelled with the country each address belongs to, using the
+[DB-IP Lite](https://db-ip.com/db/download/ip-to-country-lite) database, which is
+free to download and needs no account. It is licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), so the dashboard
+carries the attribution the licence asks for, next to the figures it produces.
+
+Country-level accuracy is good but not perfect — anycast addresses in particular
+are often attributed to whichever region the block was registered in. It is used
+for reporting only; no blocking decision depends on it.
+
+Crawler verification uses the address ranges Google, Bing and Apple publish. A
+snapshot ships with the release so an installation with no route to the internet
+still recognises search engines; it is refreshed from the published lists when
+one is available.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

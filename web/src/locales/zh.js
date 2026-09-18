@@ -89,6 +89,11 @@ export default {
   'overview.topRules': '命中最多的规则',
   'overview.viewRules': '查看规则',
   'overview.noRules': '尚无规则被命中',
+  'overview.topCountries': '攻击来自哪里',
+  'overview.topCountriesSub': '攻击日志中各地址所属国家/地区',
+  'overview.noCountries': '尚未记录到可确定国家/地区的攻击',
+  'overview.geoAttribution': 'IP 地理位置数据由 DB-IP 提供',
+  'overview.geoMissing': '地理位置数据库尚未下载',
 
   'overview.system': '系统状态',
   'overview.configVersion': '配置版本：{version}',

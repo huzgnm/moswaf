@@ -91,6 +91,11 @@ export default {
   'overview.topRules': 'Чаще всего срабатывающие правила',
   'overview.viewRules': 'Смотреть правила',
   'overview.noRules': 'Ни одно правило ещё не сработало',
+  'overview.topCountries': 'Откуда шли атаки',
+  'overview.topCountriesSub': 'страны адресов из журнала атак',
+  'overview.noCountries': 'Атак с определённой страной пока не зафиксировано',
+  'overview.geoAttribution': 'Геолокация IP: DB-IP',
+  'overview.geoMissing': 'База геолокации ещё не загружена',
 
   'overview.system': 'Состояние системы',
   'overview.configVersion': 'Версия конфигурации: {version}',
