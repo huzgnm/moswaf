@@ -545,6 +545,8 @@ export default {
   'ratelimit.bans.title': 'Đang bị giới hạn',
   'ratelimit.bans.sub': 'Các địa chỉ engine tự cấm sau khi liên tục vượt ngưỡng. Chúng tự hết hạn; không có gì được ghi vào cơ sở dữ liệu.',
   'ratelimit.bans.emptyHint': 'Khi một địa chỉ vượt ngưỡng ba lần trong một phút, nó sẽ hiện ở đây cùng thời gian cấm còn lại.',
+  'ratelimit.bans.count': 'Đang cấm {n} địa chỉ',
+  'ratelimit.bans.partial': 'Đang xem {shown} địa chỉ đầu tiên - vẫn còn nữa. Engine không đếm hết vì phải giữ đúng cái khoá mà mỗi request dùng để kiểm tra mình có bị cấm không.',
   'ratelimit.bans.action': 'Hành động',
   'ratelimit.bans.blockedFor': 'Từ chối trong {seconds} giây',
   'ratelimit.reason.rate_rps': 'Vượt ngưỡng mỗi giây',

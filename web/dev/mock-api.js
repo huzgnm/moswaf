@@ -324,11 +324,20 @@ export function mockApi() {
         if (p.startsWith('/api/ips/')) { state.ips = state.ips.filter((i) => String(i.id) !== p.split('/').pop()); return send({ ok: true }) }
 
         if (p === '/api/bans') {
-          return send({ items: [
+          // MOSWAF_MOCK_BANS=many exercises the cut list, which is the state
+          // that cannot be reached with three rows of sample data
+          if (process.env.MOSWAF_MOCK_BANS === 'many') {
+            const items = []
+            for (let i = 0; i < 1000; i++) {
+              items.push({ ip: `45.83.${Math.floor(i / 256)}.${i % 256}`, reason: i % 3 ? 'rate_rps' : 'rate_burst', ttl: 600 - (i % 590) })
+            }
+            return send({ items, shown: items.length, truncated: true })
+          }
+          return send({ truncated: false, total: 3, items: [
             { ip: '45.83.122.9', reason: 'rate_rps', ttl: 463.8 },
             { ip: '185.220.101.44', reason: 'rate_burst', ttl: 128.2 },
             { ip: '2001:db8:ac10:fe01::9', reason: 'rate_rps', ttl: 41.5 },
-          ], total: 3 })
+          ], shown: 3 })
         }
         if (p.startsWith('/api/bans/')) return send({ ok: true })
 
