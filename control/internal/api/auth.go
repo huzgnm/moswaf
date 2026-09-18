@@ -256,7 +256,38 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, "this account no longer exists")
 		return
 	}
-	writeJSON(w, http.StatusOK, full)
+
+	// Where this administrator is calling from, so the dashboard can open in a
+	// language they can read without anybody choosing one first.
+	//
+	// Answered here rather than by a second request because the dashboard already
+	// calls this at boot to find out whether its session is still good, and the
+	// answer is about the caller either way.
+	//
+	// Answered here rather than in the browser because the browser cannot know: it
+	// would take asking a geolocation service on the internet, which means handing
+	// an administrator's address to a third party and breaking entirely on a
+	// machine with no route out. The dataset is already loaded in this process.
+	country := ""
+	if s.geo != nil {
+		country = s.geo.Lookup(clientIP(r))
+	}
+
+	// A flat map rather than a struct embedding the user, so that adding a field
+	// here can never change what the user record itself serialises to.
+	out := map[string]any{
+		"id": full.ID, "username": full.Username, "created_at": full.CreatedAt,
+
+		"country": country,
+		// Told apart from "" so the dashboard knows whether to keep looking or to
+		// settle. It is false far more often than it looks: the recommended install
+		// binds the dashboard to 127.0.0.1 and is reached over an SSH tunnel, and a
+		// loopback address has no country - so on the setup this project tells people
+		// to use, this is always false. That is a limit of the idea, not a fault in
+		// it, and the dashboard needs to be built expecting it.
+		"country_resolved": country != "",
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
