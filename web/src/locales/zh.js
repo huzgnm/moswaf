@@ -150,6 +150,7 @@ export default {
   'sites.form.rps': '每个 IP 每秒请求数',
   'sites.form.rpsHint': '0 = 使用设置中的全局值',
   'sites.form.burst': '10 秒内的上限',
+  'sites.form.floodRPS': '本站点的洪水阈值（次/秒）',
   'sites.form.acme': '自动申请并续期证书（Let\'s Encrypt）',
   'sites.form.acmeEmail': '证书颁发机构的联系邮箱',
   'sites.form.acmeHint': '域名必须已解析到本服务器，且 80 端口可从互联网访问 - 颁发机构正是以此验证域名归属。证书剩余 30 天时会自动续期。',
@@ -314,6 +315,15 @@ export default {
   'settings.retainDays': '攻击日志保留天数',
   'settings.scanBody': '扫描 POST 请求体',
   'settings.logAllowed': '同时记录正常请求（占用大量磁盘）',
+
+  'settings.flood': '自动抗洪水攻击',
+  'settings.floodSub': '这里其余的限制都按单个 IP 计数，而分布式洪水攻击正是为了绕开这类限制而设计的。以下阈值按整个站点统计。',
+  'settings.floodRPS': '全站每秒请求数',
+  'settings.floodRPSHint': '当一个站点总共收到超过此数量的请求时 - 无论来自多少个地址 - 所有尚未通过验证的访客都会被要求验证。填 0 表示关闭。',
+  'settings.floodErrorRate': '触发的源站错误率（%）',
+  'settings.floodErrorRateHint': '慢接口所需的请求量远少于快接口，而源站开始报错是最先出现的征兆。填 0 表示关闭。',
+  'settings.floodHold': '保持开启（秒）',
+  'settings.floodHoldHint': '从站点最后一次超过阈值算起。它会自动解除，无需人工恢复。',
 
   'settings.password': '修改管理员密码',
   'settings.currentPassword': '当前密码',

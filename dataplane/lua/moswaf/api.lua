@@ -4,6 +4,7 @@ local config = require "moswaf.config"
 local rules  = require "moswaf.rules"
 local ipset  = require "moswaf.ipset"
 local log    = require "moswaf.log"
+local flood  = require "moswaf.flood"
 
 local util = require "moswaf.util"
 
@@ -100,8 +101,22 @@ function _M.metrics()
         "# HELP moswaf_counter_free_bytes Free space in the counter shared dict",
         "# TYPE moswaf_counter_free_bytes gauge",
         "moswaf_counter_free_bytes " .. (cnt:free_space() or 0),
-        "",
     }
+
+    -- Per-site flood state. Worth alerting on: the automatic defence engaging is
+    -- the first machine-readable sign that a site is under a distributed flood.
+    out[#out + 1] = "# HELP moswaf_flood_engaged 1 while the automatic flood defence is on"
+    out[#out + 1] = "# TYPE moswaf_flood_engaged gauge"
+    out[#out + 1] = "# HELP moswaf_site_rps Requests per second measured across the site"
+    out[#out + 1] = "# TYPE moswaf_site_rps gauge"
+    for id in pairs(config.get().sites or {}) do
+        local st = flood.state(id)
+        local label = '{site="' .. id:gsub('"', '') .. '"}'
+        out[#out + 1] = "moswaf_flood_engaged" .. label .. " " .. (st.engaged and 1 or 0)
+        out[#out + 1] = "moswaf_site_rps" .. label .. " " .. st.rps
+    end
+    out[#out + 1] = ""
+
 
     ngx.status = 200
     ngx.header["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
@@ -145,6 +160,20 @@ function _M.unban()
     ipset.unban(ip)
     ngx.log(ngx.NOTICE, "moswaf: lifted the ban for ", ip)
     return json(200, { unbanned = ip })
+end
+
+-- Live flood state per site, for the dashboard. Read-only, and it reads shared
+-- memory only - safe to poll.
+function _M.flood()
+    if not authorised() then return end
+    local items = {}
+    for id, site in pairs(config.get().sites or {}) do
+        local st = flood.state(id)
+        st.site = id
+        st.name = site.name
+        items[#items + 1] = st
+    end
+    return json(200, { items = items })
 end
 
 -- Called by the control plane after an admin saves, so the config loads now

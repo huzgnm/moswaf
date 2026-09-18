@@ -139,6 +139,7 @@ ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_email      TEXT NOT NULL DEFAULT
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS cert_expires_at TIMESTAMPTZ;
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_last_error TEXT NOT NULL DEFAULT '';
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS acme_last_try   TIMESTAMPTZ;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS flood_rps       INT NOT NULL DEFAULT 0;
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

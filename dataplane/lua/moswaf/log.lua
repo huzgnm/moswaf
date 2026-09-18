@@ -8,6 +8,7 @@
 local cjson  = require "cjson.safe"
 local util   = require "moswaf.util"
 local config = require "moswaf.config"
+local flood  = require "moswaf.flood"
 
 local stats = ngx.shared.moswaf_stats
 local _M    = {}
@@ -33,6 +34,15 @@ function _M.run()
 
     local action = ctx.action or "allow"
     local minute = minute_key()
+    local status = ctx.status or tonumber(ngx.var.status) or 200
+
+    -- Tell the flood detector what the origin actually did. A request that the
+    -- WAF answered itself - a block page, a challenge - says nothing about the
+    -- origin's health, so only requests that were passed through are counted.
+    if action == "allow" or action == "allow_white" or action == "bypass"
+       or action == "monitor" or action == "log" then
+        flood.observe_status(ctx.site or "", status)
+    end
 
     -- counters that feed the chart
     stats:incr("t:" .. minute, 1, 0, 300)
@@ -71,7 +81,7 @@ function _M.run()
         rule_id   = ctx.rule_id,
         rule_name = ctx.rule_name,
         severity  = ctx.severity,
-        status    = ctx.status or tonumber(ngx.var.status) or 200,
+        status    = status,
         rps       = ctx.rps,
         rt        = tonumber(ngx.var.request_time) or 0,
         bytes     = tonumber(ngx.var.bytes_sent) or 0,

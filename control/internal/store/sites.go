@@ -13,7 +13,7 @@ import (
 )
 
 const siteCols = `id, name, domains, upstream_scheme, upstream_host, upstream_port,
-	mode, challenge, rate_rps, rate_burst, tls_cert, tls_key, force_https,
+	mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key, force_https,
 	enabled, rules_off, created_at, updated_at,
 	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try`
 
@@ -21,7 +21,7 @@ func scanSite(row pgx.Row) (*Site, error) {
 	var s Site
 	var domains, rulesOff []byte
 	err := row.Scan(&s.ID, &s.Name, &domains, &s.UpstreamScheme, &s.UpstreamHost, &s.UpstreamPort,
-		&s.Mode, &s.Challenge, &s.RateRPS, &s.RateBurst, &s.TLSCert, &s.TLSKey, &s.ForceHTTPS,
+		&s.Mode, &s.Challenge, &s.RateRPS, &s.RateBurst, &s.FloodRPS, &s.TLSCert, &s.TLSKey, &s.ForceHTTPS,
 		&s.Enabled, &rulesOff, &s.CreatedAt, &s.UpdatedAt,
 		&s.AcmeEnabled, &s.AcmeEmail, &s.CertExpiresAt, &s.AcmeLastError, &s.AcmeLastTry)
 	if err != nil {
@@ -211,10 +211,10 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO sites (id, name, domains, upstream_scheme, upstream_host, upstream_port,
-		                   mode, challenge, rate_rps, rate_burst, tls_cert, tls_key,
+		                   mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key,
 		                   force_https, enabled, rules_off, acme_enabled, acme_email,
 		                   cert_expires_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, now())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			domains = EXCLUDED.domains,
@@ -225,6 +225,7 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 			challenge = EXCLUDED.challenge,
 			rate_rps = EXCLUDED.rate_rps,
 			rate_burst = EXCLUDED.rate_burst,
+			flood_rps = EXCLUDED.flood_rps,
 			tls_cert = EXCLUDED.tls_cert,
 			tls_key = EXCLUDED.tls_key,
 			force_https = EXCLUDED.force_https,
@@ -235,8 +236,8 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 			cert_expires_at = EXCLUDED.cert_expires_at,
 			updated_at = now()`,
 		site.ID, site.Name, domains, site.UpstreamScheme, site.UpstreamHost, site.UpstreamPort,
-		site.Mode, site.Challenge, site.RateRPS, site.RateBurst, site.TLSCert, site.TLSKey,
-		site.ForceHTTPS, site.Enabled, rulesOff, site.AcmeEnabled, site.AcmeEmail,
+		site.Mode, site.Challenge, site.RateRPS, site.RateBurst, site.FloodRPS, site.TLSCert,
+		site.TLSKey, site.ForceHTTPS, site.Enabled, rulesOff, site.AcmeEnabled, site.AcmeEmail,
 		site.CertExpiresAt)
 	return err
 }

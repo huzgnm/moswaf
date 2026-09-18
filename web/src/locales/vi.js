@@ -150,6 +150,7 @@ export default {
   'sites.form.rps': 'Số request mỗi giây cho mỗi IP',
   'sites.form.rpsHint': '0 = dùng giá trị chung trong Cài đặt',
   'sites.form.burst': 'Giới hạn trong 10 giây',
+  'sites.form.floodRPS': 'Ngưỡng flood riêng cho website này (r/s)',
   'sites.form.acme': 'Tự động xin và gia hạn chứng chỉ (Let\'s Encrypt)',
   'sites.form.acmeEmail': 'Email liên hệ với nhà cung cấp chứng chỉ',
   'sites.form.acmeHint': 'Tên miền phải đã trỏ về máy chủ này và cổng 80 phải mở ra internet - đó là cách nhà cung cấp xác minh bạn sở hữu tên miền. Việc gia hạn diễn ra tự động khi chứng chỉ còn 30 ngày.',
@@ -314,6 +315,15 @@ export default {
   'settings.retainDays': 'Giữ nhật ký tấn công trong (ngày)',
   'settings.scanBody': 'Quét nội dung POST',
   'settings.logAllowed': 'Ghi log cả request bình thường (tốn rất nhiều dung lượng)',
+
+  'settings.flood': 'Tự động chống flood',
+  'settings.floodSub': 'Mọi giới hạn khác ở đây đều đếm theo từng IP, mà tấn công phân tán được dựng ra đúng để luôn nằm dưới ngưỡng đó. Các ngưỡng này đo trên toàn bộ website.',
+  'settings.floodRPS': 'Số request mỗi giây trên toàn website',
+  'settings.floodRPSHint': 'Khi một website nhận tổng cộng nhiều hơn mức này - từ bao nhiêu địa chỉ cũng vậy - mọi khách chưa giải thử thách đều bị bắt giải. Để 0 là tắt.',
+  'settings.floodErrorRate': 'Tỷ lệ lỗi của backend đủ để kích hoạt (%)',
+  'settings.floodErrorRateHint': 'Một endpoint chậm có thể bị hạ bằng lượng request ít hơn nhiều so với endpoint nhanh, và backend bắt đầu lỗi là dấu hiệu xuất hiện sớm nhất. Để 0 là tắt.',
+  'settings.floodHold': 'Giữ trạng thái bật trong (giây)',
+  'settings.floodHoldHint': 'Tính từ lần cuối website còn vượt ngưỡng. Nó tự tắt, không ai phải bật lại.',
 
   'settings.password': 'Đổi mật khẩu quản trị',
   'settings.currentPassword': 'Mật khẩu hiện tại',

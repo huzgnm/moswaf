@@ -14,6 +14,7 @@ type Site struct {
 	Challenge      string    `json:"challenge"` // auto | always | off
 	RateRPS        int       `json:"rate_rps"`  // 0 means use the global value
 	RateBurst      int       `json:"rate_burst"`
+	FloodRPS       int       `json:"flood_rps"` // site-wide flood threshold, 0 means use the global value
 	TLSCert        string    `json:"tls_cert,omitempty"`
 	TLSKey         string    `json:"tls_key,omitempty"`
 	HasTLS         bool      `json:"has_tls"`
@@ -94,6 +95,17 @@ type Settings struct {
 	ScanBody            bool     `json:"scan_body"`
 	LogAllowed          bool     `json:"log_allowed"`
 	LogRetainDays       int      `json:"log_retain_days"`
+
+	// Automatic flood defence.
+	//
+	// Every other limit here is per IP, and a distributed flood is built to stay
+	// under one: ten thousand addresses at 2 r/s each is 20,000 r/s at the origin
+	// and nothing a per-IP threshold can object to. These thresholds are measured
+	// across the whole site, and crossing one turns the JS challenge on for
+	// everyone until the flood stops.
+	FloodRPS       int `json:"flood_rps"`        // site-wide requests/second, 0 = off
+	FloodErrorRate int `json:"flood_error_rate"` // origin 5xx percentage, 0 = off
+	FloodHold      int `json:"flood_hold"`       // seconds to stay engaged after the last trigger
 }
 
 func DefaultSettings() Settings {
@@ -112,6 +124,15 @@ func DefaultSettings() Settings {
 		ScanBody:            true,
 		LogAllowed:          false,
 		LogRetainDays:       7,
+
+		// 1000 r/s to one site is far above anything an ordinary site sees and far
+		// below what a flood delivers, so it engages on an attack and not on a busy
+		// afternoon. 50% of origin answers failing is the other way in: a slow
+		// endpoint can be taken down with a fraction of that request rate, and the
+		// origin failing is the symptom that shows up first.
+		FloodRPS:       1000,
+		FloodErrorRate: 50,
+		FloodHold:      120,
 	}
 }
 

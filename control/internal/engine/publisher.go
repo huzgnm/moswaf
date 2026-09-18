@@ -26,6 +26,7 @@ type luaSite struct {
 	Challenge string   `json:"challenge"`
 	RateRPS   int      `json:"rate_rps"`
 	RateBurst int      `json:"rate_burst"`
+	FloodRPS  int      `json:"flood_rps"`
 	RulesOff  []string `json:"rules_off"`
 }
 
@@ -116,7 +117,8 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		}
 		cfg.Sites[s.ID] = luaSite{
 			ID: s.ID, Name: s.Name, Mode: s.Mode, Challenge: s.Challenge,
-			RateRPS: s.RateRPS, RateBurst: s.RateBurst, RulesOff: s.RulesOff,
+			RateRPS: s.RateRPS, RateBurst: s.RateBurst, FloodRPS: s.FloodRPS,
+			RulesOff: s.RulesOff,
 		}
 	}
 	for _, r := range rules {

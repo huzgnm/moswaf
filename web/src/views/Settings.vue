@@ -30,6 +30,9 @@ async function save() {
       challenge_difficulty: Number(settings.value.challenge_difficulty),
       challenge_ttl: Number(settings.value.challenge_ttl),
       block_status: Number(settings.value.block_status),
+      flood_rps: Number(settings.value.flood_rps),
+      flood_error_rate: Number(settings.value.flood_error_rate),
+      flood_hold: Number(settings.value.flood_hold),
       max_body_scan: Number(settings.value.max_body_scan),
       log_retain_days: Number(settings.value.log_retain_days),
     }
@@ -161,6 +164,36 @@ onMounted(load)
             <span class="track"></span>
             <span>{{ t('settings.logAllowed') }}</span>
           </label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <div class="card-title">{{ t('settings.flood') }}</div>
+          <div class="card-sub">{{ t('settings.floodSub') }}</div>
+        </div>
+        <button class="btn btn-primary" :disabled="busy" @click="save">
+          {{ busy ? t('common.saving') : t('settings.saveButton') }}
+        </button>
+      </div>
+
+      <div class="grid grid-2">
+        <div class="field">
+          <label class="label">{{ t('settings.floodRPS') }}</label>
+          <input v-model="settings.flood_rps" type="number" min="0" class="input mono" />
+          <div class="hint">{{ t('settings.floodRPSHint') }}</div>
+        </div>
+        <div class="field">
+          <label class="label">{{ t('settings.floodErrorRate') }}</label>
+          <input v-model="settings.flood_error_rate" type="number" min="0" max="100" class="input mono" />
+          <div class="hint">{{ t('settings.floodErrorRateHint') }}</div>
+        </div>
+        <div class="field">
+          <label class="label">{{ t('settings.floodHold') }}</label>
+          <input v-model="settings.flood_hold" type="number" min="10" class="input mono" />
+          <div class="hint">{{ t('settings.floodHoldHint') }}</div>
         </div>
       </div>
     </div>
