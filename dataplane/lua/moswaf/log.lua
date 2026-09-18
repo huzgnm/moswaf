@@ -42,6 +42,10 @@ local function minute_key(t)
     return math.floor((t or ngx.time()) / 60) * 60
 end
 
+local function day_key(t)
+    return os.date("!%Y-%m-%d", t)
+end
+
 local function hour_key(t)
     return math.floor((t or ngx.time()) / 3600) * 3600
 end
@@ -105,6 +109,22 @@ function _M.run()
 
     -- counters that feed the chart
     stats:incr("t:" .. minute, 1, 0, 300)
+
+    -- Which of the operator's own rules decided this request, if any.
+    --
+    -- Counted because the rule list cannot answer the question it most needs to:
+    -- which rule is actually deciding. A rule near the top matching everything
+    -- looks exactly like a rule near the top matching nothing, and with
+    -- first-match-wins the difference is whether the rules below it are reachable
+    -- at all.
+    --
+    -- Keyed by day rather than by minute: the figure is read as "today", and a
+    -- per-minute key would be sixty times the writes for a number nobody asks at
+    -- that resolution.
+    if ctx.rule_id and ctx.rule_hit then
+        stats:incr("rh:" .. day_key(ctx.start or ngx.time()) .. ":" .. ctx.rule_id,
+                   1, 0, 172800)
+    end
     if action == "deny" then
         stats:incr("b:" .. minute, 1, 0, 300)
     elseif action == "challenge" then
@@ -341,6 +361,48 @@ local function flush_stats()
     if perr then ngx.log(ngx.WARN, "moswaf: error shipping statistics: ", perr) end
 end
 
+-- Today's rule hit counts, shipped the same way and for the same reason: they are
+-- counted per worker in shared memory and have to be added up somewhere both
+-- workers and both hosts can see.
+--
+-- hset rather than hincrby: each worker holds its own running total for the day,
+-- so the value it ships is already the sum of everything it has seen. Adding it
+-- again on every flush would multiply it by the number of flushes.
+local function flush_rule_hits()
+    local day = day_key(ngx.time())
+    local prefix = "rh:" .. day .. ":"
+
+    local keys = stats:get_keys(0)
+    local pairs_out, n = {}, 0
+    for i = 1, #keys do
+        local k = keys[i]
+        if k:sub(1, #prefix) == prefix then
+            local v = stats:get(k)
+            if v and v > 0 then
+                n = n + 1
+                pairs_out[#pairs_out + 1] = k:sub(#prefix + 1)
+                pairs_out[#pairs_out + 1] = v
+            end
+        end
+    end
+    if n == 0 then return end
+
+    local red, err = util.redis()
+    if not red then
+        ngx.log(ngx.WARN, "moswaf: could not ship rule hits: ", err)
+        return
+    end
+    local key = "moswaf:rulehits:" .. day .. ":" .. HOST
+    red:init_pipeline()
+    red:hset(key, unpack(pairs_out))
+    -- Two days, so yesterday's figure survives long enough to be read on a
+    -- dashboard left open over midnight, and nothing accumulates beyond that.
+    red:expire(key, 172800)
+    local _, perr = red:commit_pipeline()
+    util.redis_release(red)
+    if perr then ngx.log(ngx.WARN, "moswaf: error shipping rule hits: ", perr) end
+end
+
 local function every(delay, fn, name)
     local function tick(premature)
         if premature then return end
@@ -360,6 +422,7 @@ function _M.start_flush()
     -- Worker 0 only: these counters are in a shared dict, so one shipper is enough.
     if ngx.worker.id() == 0 then
         every(STATS_EVERY, flush_stats, "flush_stats")
+        every(STATS_EVERY, flush_rule_hits, "flush_rule_hits")
     end
 end
 
