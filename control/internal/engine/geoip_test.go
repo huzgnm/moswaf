@@ -143,3 +143,84 @@ func TestRangesAreSorted(t *testing.T) {
 		}
 	}
 }
+
+// Bounding the download in bytes does not bound the memory the tables take. A
+// source that has been replaced could pack millions of minimal rows inside the
+// byte limit and leave the control plane building tables until it runs out of
+// memory - on a small server, a download that turns into an outage.
+func TestAnAbsurdNumberOfRowsIsRefused(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i <= geoMaxRows; i++ {
+		b.WriteString("1.0.0.0,1.0.0.1,AU\n")
+	}
+	if _, _, err := parseCSV(strings.NewReader(b.String())); err == nil {
+		t.Fatal("a file past the row ceiling was accepted")
+	}
+}
+
+// A range that ends before it starts is not a range. It matched nothing either
+// way - the lookup checks both bounds - but a row that can never be right should
+// not be kept, and keeping it made the table larger than the data it holds.
+func TestReversedRangesAreSkipped(t *testing.T) {
+	const csv = `1.0.0.0,1.0.0.255,AU
+3.0.0.0,2.0.0.0,XX
+8.8.8.0,8.8.8.255,US
+`
+	v4, _, err := parseCSV(strings.NewReader(csv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v4) != 2 {
+		t.Errorf("kept %d ranges, want 2 - the reversed one should be skipped", len(v4))
+	}
+
+	// And the ranges either side of it still answer correctly.
+	g := NewGeoIP()
+	g.v4 = v4
+	if got := g.Lookup("8.8.8.8"); got != "US" {
+		t.Errorf("a reversed row disturbed its neighbours: Lookup(8.8.8.8) = %q", got)
+	}
+}
+
+// len == 2 is not the same as "is a country code". Everything downstream is
+// already defended - writes are parameterised, the dashboard escapes - but a
+// label made of control characters is not a country, and it should not reach
+// either.
+func TestOnlyRealCountryCodesAreKept(t *testing.T) {
+	for _, cc := range []string{"\x00\x01", "12", "a1", "!!", " U", "U ", "USA", "U", ""} {
+		if isCountryCode(cc) {
+			t.Errorf("isCountryCode(%q) = true", cc)
+		}
+	}
+	for _, cc := range []string{"US", "vn", "Gb"} {
+		if !isCountryCode(cc) {
+			t.Errorf("isCountryCode(%q) = false", cc)
+		}
+	}
+
+	v4, _, err := parseCSV(strings.NewReader("1.0.0.0,1.0.0.1,\x00\x01\n8.8.8.0,8.8.8.255,US\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v4) != 1 {
+		t.Errorf("kept %d ranges, want 1 - the row with a nonsense code should be skipped", len(v4))
+	}
+}
+
+// A file writing its IPv4 ranges in mapped form would otherwise fill the IPv6
+// table with ranges no IPv4 lookup ever consults - the lookup unmaps, so the
+// parser has to as well or the two disagree about which table an address is in.
+func TestMappedRangesInTheFileAreStoredAsIPv4(t *testing.T) {
+	v4, v6, err := parseCSV(strings.NewReader("::ffff:8.8.8.0,::ffff:8.8.8.255,US\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v4) != 1 || len(v6) != 0 {
+		t.Fatalf("a mapped range was stored as IPv6 (v4=%d v6=%d)", len(v4), len(v6))
+	}
+	g := NewGeoIP()
+	g.v4 = v4
+	if got := g.Lookup("8.8.8.8"); got != "US" {
+		t.Errorf("Lookup(8.8.8.8) = %q, want US", got)
+	}
+}

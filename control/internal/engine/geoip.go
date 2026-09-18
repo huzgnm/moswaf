@@ -31,8 +31,16 @@ import (
 const (
 	// The CSV is about four megabytes compressed and expands to some seventy.
 	// Bounded so that a redirected or replaced download cannot exhaust memory.
-	geoMaxDownload = 32 << 20
+	geoMaxDownload = 32 << 20  // compressed
+	geoMaxUnpacked = 192 << 20 // after gzip
 	geoTimeout     = 3 * time.Minute
+
+	// And a ceiling on rows, because bounding bytes alone does not bound memory.
+	// The tables are built in RAM: a source that has been replaced could pack
+	// millions of minimal rows into the byte limit and turn a download into a
+	// control plane that runs out of memory on a small server. The real file is
+	// seven hundred thousand rows, so this is nearly three times over.
+	geoMaxRows = 2_000_000
 
 	// DB-IP publish a new file monthly and keep the previous ones, so a daily
 	// check finds the new one shortly after it appears without asking often.
@@ -130,6 +138,23 @@ func (g *GeoIP) Lookup(ip string) string {
 // dashboard labelled with a code no map has, above real countries with fewer
 // attacks. Unknown is already how this answers when it has no idea, so it says
 // that instead.
+// Two letters, and only letters. len == 2 alone let whatever a replaced file
+// contained through to the database and onto the dashboard - defanged by
+// parameterised writes and Vue's escaping, but a label made of control
+// characters is not a country either.
+func isCountryCode(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	for i := 0; i < 2; i++ {
+		c := s[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') {
+			return false
+		}
+	}
+	return true
+}
+
 func known(cc string) string {
 	if cc == "ZZ" {
 		return ""
@@ -160,12 +185,18 @@ func parseCSV(r io.Reader) ([]geoRange4, []geoRange6, error) {
 		v4      []geoRange4
 		v6      []geoRange6
 		skipped int
+		rows    int
 	)
 
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	for sc.Scan() {
+		rows++
+		if rows > geoMaxRows {
+			return nil, nil, fmt.Errorf(
+				"the dataset has more than %d rows; keeping the previous one", geoMaxRows)
+		}
 		line := sc.Text()
 		a := strings.IndexByte(line, ',')
 		if a < 0 {
@@ -179,14 +210,29 @@ func parseCSV(r io.Reader) ([]geoRange4, []geoRange6, error) {
 		}
 		startS, endS := line[:a], line[a+1:a+1+b]
 		ccS := strings.TrimSpace(line[a+b+2:])
-		if len(ccS) != 2 {
+		if !isCountryCode(ccS) {
 			skipped++
 			continue
 		}
 
+		// Unmapped on the way in, the same as on the way out: a file that wrote its
+		// IPv4 ranges as ::ffff:1.2.3.0 would otherwise fill the IPv6 table with
+		// ranges no IPv4 lookup ever consults.
 		start, err1 := netip.ParseAddr(startS)
 		end, err2 := netip.ParseAddr(endS)
-		if err1 != nil || err2 != nil || start.Is4() != end.Is4() {
+		if err1 != nil || err2 != nil {
+			skipped++
+			continue
+		}
+		start, end = start.Unmap(), end.Unmap()
+		if start.Is4() != end.Is4() {
+			skipped++
+			continue
+		}
+		// A range that ends before it starts is not a range. It would sit in the
+		// table matching nothing - harmless, but a row that can never be right is a
+		// row that should not be kept.
+		if end.Less(start) {
 			skipped++
 			continue
 		}
@@ -251,7 +297,7 @@ func (g *GeoIP) fetch(ctx context.Context, month string) ([]geoRange4, []geoRang
 	}
 	defer gz.Close()
 
-	return parseCSV(io.LimitReader(gz, geoMaxDownload*8))
+	return parseCSV(io.LimitReader(gz, geoMaxUnpacked))
 }
 
 // Refresh loads the newest dataset available, this month's or last month's.
@@ -273,6 +319,13 @@ func (g *GeoIP) Refresh(ctx context.Context) {
 
 	var lastErr error
 	for _, m := range months {
+		// Already holding this one. Reached when the current month has not been
+		// published yet: without this the fallback month is downloaded and parsed
+		// again every day until it is, several megabytes and a re-sort for a file
+		// already in memory.
+		if m == have {
+			return
+		}
 		v4, v6, err := g.fetch(ctx, m)
 		if err != nil {
 			lastErr = err
