@@ -123,7 +123,12 @@ export function applyCountryLocale(account) {
     setLocale(FALLBACK_LOCALE, false)
     return
   }
-  setLocale(COUNTRY_LOCALE[country] || DEFAULT_LOCALE, false)
+  // known(), not a plain lookup: `country` arrives from the network, and every
+  // string inherits "constructor" and "toString" from Object.prototype, so a
+  // truthy lookup would accept one of those as a country. The control plane
+  // only emits two upper-case letters today - this is here so the dashboard
+  // does not depend on it continuing to.
+  setLocale(known(COUNTRY_LOCALE, country) ? COUNTRY_LOCALE[country] : DEFAULT_LOCALE, false)
 }
 
 /**
