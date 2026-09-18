@@ -5,6 +5,22 @@
 -- 0.1-0.3s, a plain curl or python bot fails outright, and a botnet that wants to
 -- keep flooding pays thousands of times more CPU than the server does.
 --
+-- That last sentence is only true if a solution cannot be shared, and the first
+-- version of this got it wrong. The salt was bound to nobody and the signature
+-- covered the salt alone, with no record of a salt having been spent - so one
+-- machine could solve once and hand (salt, signature, nonce) to the whole
+-- botnet, each member replaying it for its own cookie without doing any work.
+-- The defence collapsed to one solve every two minutes for an entire botnet,
+-- precisely when it matters: under attack, where it is the thing holding the
+-- line. Two changes close it, and both are here because either alone leaves a
+-- case open:
+--
+--   the signature binds the salt to the address it was issued to, so a solution
+--   is worthless anywhere else;
+--
+--   and a salt is spent when it is redeemed, so it cannot be replayed even from
+--   the address that earned it - which is what a farm behind one NAT would do.
+--
 -- Flow:
 --   1. No valid cookie      -> serve the challenge page (status 503, never cached)
 --   2. The page solves it   -> GET /__moswaf/verify?s=&g=&n=&r=
@@ -19,6 +35,10 @@ local _M = {}
 local COOKIE     = "__moswaf"
 local VERIFY_URI = "/__moswaf/verify"
 local SALT_TTL   = 120        -- a salt is valid for 2 minutes
+
+-- Salts already redeemed. Keyed by salt, expiring with it, so the table holds at
+-- most two minutes of traffic.
+local spent = ngx.shared.moswaf_chal
 
 -- No fallback value here on purpose: a default published in this repository would
 -- let anyone forge the __moswaf cookie and walk past the challenge. If the variable
@@ -88,6 +108,35 @@ local function new_salt()
         .. "-" .. ngx.time()
 end
 
+-- The signature over a salt, bound to the address it was issued to.
+--
+-- Binding is what stops a solved challenge being passed around: the verifier
+-- recomputes this with the address of whoever is presenting it, so a solution
+-- earned at one address does not verify at another. A visitor whose address
+-- changes between the page and the solve is challenged again, which is rare and
+-- costs one puzzle.
+local function salt_sig(salt, ip)
+    return util.hmac(SECRET, salt .. "|" .. (ip or ""))
+end
+
+-- Redeem a salt, once.
+--
+-- add() is the atomic half: it fails when the key is already there, so two
+-- requests racing with the same salt cannot both win. Only "exists" is a
+-- refusal - if the dictionary is full or missing, the salt is allowed through
+-- and the address binding above still stands. Refusing on a full dictionary
+-- would turn a memory problem into every visitor being unable to pass the
+-- challenge at all, which is the failure this defence exists to prevent.
+local function spend_salt(salt)
+    if not spent then return true end
+    local ok, err = spent:add("s:" .. salt, 1, SALT_TTL)
+    if ok then return true end
+    if err == "exists" then return false end
+    ngx.log(ngx.WARN, "moswaf: cannot record a spent challenge salt (", tostring(err),
+            "); replay is still blocked by the address binding")
+    return true
+end
+
 local function salt_fresh(salt)
     local ts = salt:match("%-(%d+)$")
     ts = tonumber(ts)
@@ -108,7 +157,7 @@ function _M.serve(ip, ua, reason)
     local st   = config.get().settings
     local bits = tonumber(st.challenge_difficulty) or 16
     local salt = new_salt()
-    local sig  = util.hmac(SECRET, salt)
+    local sig  = salt_sig(salt, ip)
     local ret  = util.b64url(ngx.var.request_uri or "/")
 
     local html = config.challenge_html
@@ -146,9 +195,15 @@ function _M.handle_verify(ip, ua)
         return fail("missing parameters")
     end
     if not salt_fresh(salt) then return fail("salt expired") end
-    if not util.const_eq(sig, util.hmac(SECRET, salt)) then return fail("bad signature") end
+    -- Recomputed with the address presenting it, not the one it was issued to:
+    -- that is the check that makes a shared solution useless.
+    if not util.const_eq(sig, salt_sig(salt, ip)) then return fail("bad signature") end
     if #nonce > 32 then return fail("nonce too long") end
     if not pow_ok(salt, nonce, bits) then return fail("invalid proof of work") end
+    -- Last, and only once the work has been checked: spending a salt on a request
+    -- that was going to fail anyway would let anyone burn a visitor's challenge
+    -- by replaying its salt with a wrong nonce.
+    if not spend_salt(salt) then return fail("challenge already used") end
 
     set_cookie(ip, ua, ttl)
 

@@ -80,6 +80,7 @@ lua-test: ## Run the data plane test suites (needs luajit)
 	@luajit dataplane/test/ratelimit.lua
 	@luajit dataplane/test/ipv6.lua
 	@luajit dataplane/test/crawler.lua
+	@luajit dataplane/test/challenge.lua
 	@luajit dataplane/test/flood.lua
 	@luajit dataplane/test/flood_attack.lua
 	@bash dataplane/test/entrypoint.sh
