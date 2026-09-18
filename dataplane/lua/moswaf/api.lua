@@ -6,7 +6,8 @@ local ipset  = require "moswaf.ipset"
 local log    = require "moswaf.log"
 local flood  = require "moswaf.flood"
 
-local util = require "moswaf.util"
+local util     = require "moswaf.util"
+local rulesets = require "moswaf.accessrules"
 
 local _M = {}
 
@@ -197,6 +198,49 @@ function _M.sync()
     if not authorised() then return end
     local ok = config.sync()
     return json(ok and 200 or 502, { synced = ok, version = config.version() })
+end
+
+-- "Which of my rules would this request hit?"
+--
+-- Answered here, by the engine that will actually decide, rather than by a second
+-- implementation in the control plane. A dry-run that disagrees with the running
+-- firewall is worse than none at all: the operator would be reading a confident
+-- answer about a policy that is not the one in force, and would trust it exactly
+-- where trust matters - deciding whether a rule near the top is quietly shadowing
+-- everything below it.
+--
+-- So there is one matcher, and this is it.
+function _M.rule_test()
+    if not authorised() then return end
+
+    ngx.req.read_body()
+    local body = cjson.decode(ngx.req.get_body_data() or "")
+    if type(body) ~= "table" then
+        return json(400, { error = "expected a JSON object" })
+    end
+
+    local conf = config.get()
+    local subject = {
+        ip      = tostring(body.ip or ""),
+        crawler = body.crawler and "test" or nil,
+        path    = tostring(body.path or "/"),
+        host    = tostring(body.host or ""):lower(),
+        ua      = tostring(body.ua or ""),
+        method  = tostring(body.method or "GET"):upper(),
+    }
+
+    local site = tostring(body.site or "")
+    local hit = rulesets.match(conf.access_rules, site, subject, conf.geo_sets)
+    if not hit then
+        return json(200, { matched = false })
+    end
+    return json(200, {
+        matched = true,
+        id      = hit.id,
+        name    = hit.name,
+        action  = hit.action,
+        site    = hit.site,
+    })
 end
 
 return _M

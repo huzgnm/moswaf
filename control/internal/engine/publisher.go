@@ -82,6 +82,32 @@ type luaConfig struct {
 	// list. Only the countries somebody is actually deciding on appear here - a
 	// rule blocking two countries ships those two, not the whole world.
 	GeoSets map[string]GeoSet `json:"geo_sets"`
+
+	// The operator's own ordered rules, already sorted, already scoped, and with
+	// each country condition pointing at the set it is decided against. Sorting
+	// here rather than there is not an optimisation: order is the policy, and
+	// leaving the data plane to establish it every request would be leaving it
+	// somewhere it can differ between workers.
+	AccessRules []luaAccessRule `json:"access_rules"`
+}
+
+type luaAccessRule struct {
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Action     string             `json:"action"`
+	Enabled    bool               `json:"enabled"`
+	Site       string             `json:"site"`
+	Conditions []luaRuleCondition `json:"conditions"`
+}
+
+type luaRuleCondition struct {
+	Field  string   `json:"field"`
+	Op     string   `json:"op"`
+	Values []string `json:"values"`
+	// For a country condition: which published geo set answers it. Empty when the
+	// ranges could not be built, and the data plane treats that as "does not
+	// match" rather than guessing.
+	Set string `json:"set,omitempty"`
 }
 
 type luaCrawler struct {
@@ -210,7 +236,12 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	// The country rules in force, and the ranges each needs. Built before the sites
 	// loop because a rule that cannot be built has to be published as "off" rather
 	// than as itself - see geoResolver.
-	geo := p.resolveGeo(settings, sites)
+	accessRules, err := p.db.ListAccessRules(ctx, "")
+	if err != nil {
+		return fmt.Errorf("reading the access rules: %w", err)
+	}
+
+	geo := p.resolveGeo(settings, sites, accessRules)
 
 	cfg := luaConfig{
 		Version:       time.Now().UnixMilli(),
@@ -222,6 +253,7 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		Whitelist:     make([]string, 0, len(whites)),
 		Crawlers:      p.crawlerConfig(),
 		GeoSets:       geo.sets,
+		AccessRules:   buildAccessRules(accessRules, geo),
 	}
 
 	for _, s := range sites {

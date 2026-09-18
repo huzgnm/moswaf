@@ -53,15 +53,43 @@ end
 -- ---------------------------------------------------------------- IP
 
 -- "1.2.3.4" -> a 32 bit integer, or nil when it is not IPv4
+-- A zero-padded octet is not the address it looks like.
+--
+-- "01.2.3.4" reads as 1.2.3.4 here but as an octal literal to some resolvers and
+-- as an error to others, so accepting it means agreeing with nobody in
+-- particular. What makes it matter is that a blocklist and the thing it is
+-- compared against must never disagree about which host a string names: one
+-- spelling accepted here and refused elsewhere is a ban written around by adding
+-- a zero.
+local function octet(s)
+    if #s > 1 and s:sub(1, 1) == "0" then return nil end
+    local n = tonumber(s)
+    if not n or n > 255 then return nil end
+    return n
+end
+
 function _M.ipv4_to_int(ip)
     local a, b, c, d = ip:match("^(%d+)%.(%d+)%.(%d+)%.(%d+)$")
     if not a then return nil end
-    a, b, c, d = tonumber(a), tonumber(b), tonumber(c), tonumber(d)
-    if a > 255 or b > 255 or c > 255 or d > 255 then return nil end
+    a, b, c, d = octet(a), octet(b), octet(c), octet(d)
+    if not a or not b or not c or not d then return nil end
     return a * 16777216 + b * 65536 + c * 256 + d
 end
 
--- Parse "10.0.0.0/8" or "1.2.3.4" into an integer {from, to} range
+-- Parse "10.0.0.0/8" or "1.2.3.4" into an integer {from, to} range.
+--
+-- Strict, and deliberately stricter than it needs to be for the callers it has
+-- today. Everything currently reaching here has already been through Go's own
+-- parser and been rewritten in canonical form, so the loose spellings never
+-- arrive - but "no caller passes it" is a property of today's callers, not of
+-- this function, and the one that would matter is quiet: "1.2.3.4/00" read as a
+-- prefix length of zero is every address on the internet. Behind an allow rule
+-- that is the firewall switched off, entered as a typo.
+--
+-- So a mask with a leading zero is refused rather than read as decimal, the same
+-- way a padded octet is, and for the same reason: a spelling this accepts and
+-- another parser refuses is a difference of opinion about which hosts a string
+-- names.
 function _M.parse_cidr(cidr)
     local addr, bits = cidr:match("^([%d%.]+)/(%d+)$")
     if not addr then
@@ -69,6 +97,7 @@ function _M.parse_cidr(cidr)
         if not n then return nil end
         return n, n
     end
+    if #bits > 1 and bits:sub(1, 1) == "0" then return nil end
     local base = _M.ipv4_to_int(addr)
     bits = tonumber(bits)
     if not base or not bits or bits < 0 or bits > 32 then return nil end

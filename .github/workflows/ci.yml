@@ -75,6 +75,7 @@ jobs:
           luajit dataplane/test/flood_attack.lua
           luajit dataplane/test/auth.lua
           luajit dataplane/test/geo.lua
+          luajit dataplane/test/accessrules.lua
           luajit dataplane/test/flood.lua
       - name: Check shell syntax
         run: bash -n dataplane/entrypoint.sh && bash -n install.sh

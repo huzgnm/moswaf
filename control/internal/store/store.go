@@ -181,6 +181,22 @@ ALTER TABLE sites ADD COLUMN IF NOT EXISTS auth_paths   JSONB   NOT NULL DEFAULT
 -- same as 'off' - 'off' is a site opting out of a rule everything else follows.
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS geo_mode      TEXT  NOT NULL DEFAULT '';
 ALTER TABLE sites ADD COLUMN IF NOT EXISTS geo_countries JSONB NOT NULL DEFAULT '[]';
+
+-- The operator's own ordered allow/deny rules, tried before the firewall's own
+-- checks. priority is the evaluation order and part of the meaning: the first
+-- rule that matches decides, so two rules swapped are a different policy.
+CREATE TABLE IF NOT EXISTS access_rules (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    action     TEXT NOT NULL,
+    priority   INTEGER NOT NULL DEFAULT 1000,
+    enabled    BOOLEAN NOT NULL DEFAULT true,
+    site_id    TEXT NOT NULL DEFAULT '',
+    conditions JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS access_rules_order_idx ON access_rules (priority, created_at);
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

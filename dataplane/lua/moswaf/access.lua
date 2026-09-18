@@ -23,6 +23,7 @@ local crawler   = require "moswaf.crawler"
 local challenge = require "moswaf.challenge"
 local auth      = require "moswaf.auth"
 local geo       = require "moswaf.geo"
+local rulesets  = require "moswaf.accessrules"
 
 local _M = {}
 
@@ -246,10 +247,16 @@ function _M.run()
     -- overrule that - if a crawler range ever overlapped an address somebody had
     -- banned, the ban wins.
     --
-    -- Verification exempts from the JS challenge and nothing else. A crawler
-    -- cannot run JavaScript, so challenging one is the same as blocking it, and
-    -- losing search engines during an attack is its own kind of damage. Rules,
-    -- rate limiting and the flood defence all still apply below.
+    -- Established here, once, before anything consults it: the country rule below
+    -- exempts crawlers, and an access rule may be written on "is a verified
+    -- crawler". Both read ctx.crawler rather than checking again, so fifty rules
+    -- cost one verification.
+    --
+    -- What it is verified against matters more than when. crawler.verify compares
+    -- the address to ranges the search engines publish; it is not a user-agent
+    -- test. An access rule may say "allow verified crawlers" only because of that
+    -- - were this a user-agent test, the same rule would read "allow anybody who
+    -- types Googlebot into a header".
     local verified, faked = crawler.verify(ip, ua)
     if verified then
         ctx.crawler = verified
@@ -261,7 +268,58 @@ function _M.run()
         ctx.fake_crawler = true
     end
 
-    -- 3c. the country rule
+    -- 3c. the operator's own rules
+    --
+    -- Placed here on purpose: after the manual ban and blocklist, which must beat
+    -- everything, and before the country rule, the rate limit, the challenge and
+    -- the signature engine, which is what an "allow" rule exempts a request from.
+    --
+    -- What each action does, written out once so it is never a guess:
+    --
+    --   allow      stop checking. Skips the country rule, the rate limit, the JS
+    --              challenge and the signature rules - exactly what the manual IP
+    --              allowlist above already does, and no more. It does NOT skip the
+    --              manual ban or blocklist, which ran before this.
+    --   deny       refuse now, 403.
+    --   challenge  ask for the proof-of-work, unless this is a verified crawler,
+    --              which cannot run JavaScript - challenging one is blocking it.
+    --   log        record the match and carry on through every check below.
+    --
+    -- "Allow" is only allowed to be written on the address or on a verified
+    -- crawler; the control plane refuses the rest. The reason is that allow stops
+    -- the firewall, so whoever controls the condition that fires it controls
+    -- whether the firewall runs - and a path, a host, a method or a user agent is
+    -- part of the request, which means the attacker writes it. "Allow if the user
+    -- agent contains Mozilla" would not be a broad rule, it would be a back door
+    -- opened by sending a header.
+    local rule_hit
+    if conf.access_rules and #conf.access_rules > 0 then
+        rule_hit = rulesets.match(conf.access_rules, site_id,
+                                  rulesets.subject(ip, ctx), conf.geo_sets)
+    end
+    if rule_hit then
+        ctx.rule_id   = rule_hit.id
+        ctx.rule_name = rule_hit.name
+        -- Marks this as one of the operator's rules rather than a signature rule.
+        -- Both write ctx.rule_id, and only these are counted per rule per day.
+        ctx.rule_hit  = true
+        local act = rule_hit.action
+        if act == "allow" then
+            ctx.action = "allow_rule"
+            ctx.reason = "rule:" .. tostring(rule_hit.id)
+            return
+        elseif act == "deny" then
+            return block(ctx, mode, "rule:" .. tostring(rule_hit.id), nil, 403)
+        elseif act == "challenge" then
+            if not ctx.crawler and not challenge.has_valid_cookie(ip, ua) then
+                return do_challenge(ctx, mode, "rule:" .. tostring(rule_hit.id))
+            end
+        else -- log
+            ctx.reason = "rule:" .. tostring(rule_hit.id)
+        end
+    end
+
+    -- 3d. the country rule
     --
     -- After the allowlist, which is deliberate: an address somebody put on the
     -- allowlist is an address they want through, and "block this country except

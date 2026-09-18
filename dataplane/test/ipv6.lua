@@ -224,6 +224,46 @@ for _, good in ipairs({ "::", "::1", "1::", "2001:db8::1",
         "the stricter splitter refused an address that is perfectly legal")
 end
 
+-- A spelling this accepts and another parser refuses is a difference of opinion
+-- about which hosts a string names - and a blocklist is only as good as that
+-- agreement. These are the forms Go's own parser rejects, checked against a
+-- battery run through both sides.
+--
+-- The one that would have mattered most is "1.2.3.4/00": read as a prefix length
+-- of zero it is every address on the internet, and behind an allow rule that is
+-- the firewall switched off, entered as a typo.
+for _, bad in ipairs({
+    "1.2.3.4/00",            -- a mask with a leading zero
+    "1.2.3.4/024",
+    "01.2.3.4/24",           -- a zero-padded octet
+    "192.168.001.001/24",
+    "1.2.3.4/33",
+    "1.2.3.4/",
+}) do
+    check("a loose CIDR spelling is refused: " .. bad,
+        util.parse_cidr(bad) == nil,
+        "accepted it, so this parser and Go's disagree about which addresses " ..
+        "the string covers")
+end
+
+for _, ip in ipairs({ "01.2.3.4", "1.02.3.4", "192.168.001.001", "010.0.0.1" }) do
+    check("a zero-padded address is refused: " .. ip,
+        util.ipv4_to_int(ip) == nil,
+        "a padded octet reads as one address here and another - or an error - " ..
+        "elsewhere, which is a ban walked around by adding a zero")
+end
+
+-- And the ordinary spellings still work, including the one that really does mean
+-- every address. It is spelled the way an operator would recognise.
+do
+    local f, t = util.parse_cidr("0.0.0.0/0")
+    check("0.0.0.0/0 still covers everything", f == 0 and t == 4294967295)
+    local f2, t2 = util.parse_cidr("10.0.0.0/8")
+    check("an ordinary range still parses", f2 == 167772160 and t2 == 184549375)
+    check("a bare address still parses", util.ipv4_to_int("1.2.3.4") == 16909060)
+    check("a zero octet is not a padded one", util.ipv4_to_int("0.0.0.1") == 1)
+end
+
 -- ------------------------------------------------------------ report
 
 io.write("\n\n")

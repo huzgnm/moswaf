@@ -76,6 +76,17 @@ func (s *Server) Handler() http.Handler {
 	auth.HandleFunc("POST /api/rules/{id}/toggle", s.handleToggleRule)
 	auth.HandleFunc("DELETE /api/rules/{id}", s.handleDeleteRule)
 
+	// The operator's own ordered allow/deny rules. Separate from /api/rules, which
+	// is the attack signature set: one is policy, the other is detection.
+	auth.HandleFunc("GET /api/access-rules", s.handleListAccessRules)
+	auth.HandleFunc("POST /api/access-rules", s.handleCreateAccessRule)
+	auth.HandleFunc("PUT /api/access-rules/{id}", s.handleUpdateAccessRule)
+	auth.HandleFunc("DELETE /api/access-rules/{id}", s.handleDeleteAccessRule)
+	auth.HandleFunc("POST /api/access-rules/reorder", s.handleReorderAccessRules)
+	// Answered by the data plane, so it cannot disagree with the firewall it
+	// describes. See handleTestAccessRules.
+	auth.HandleFunc("POST /api/access-rules/test", s.handleTestAccessRules)
+
 	auth.HandleFunc("GET /api/ips", s.handleListIPs)
 	auth.HandleFunc("POST /api/ips", s.handleAddIP)
 	auth.HandleFunc("DELETE /api/ips/{id}", s.handleDeleteIP)

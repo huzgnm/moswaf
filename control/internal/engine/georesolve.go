@@ -32,7 +32,8 @@ type geoResolver struct {
 	globalSet  string
 }
 
-func (p *Publisher) resolveGeo(settings store.Settings, sites []*store.Site) *geoResolver {
+func (p *Publisher) resolveGeo(settings store.Settings, sites []*store.Site,
+	rules []*store.AccessRule) *geoResolver {
 	r := &geoResolver{sets: map[string]GeoSet{}, failed: map[string]bool{}}
 
 	g := p.geoIP()
@@ -53,7 +54,36 @@ func (p *Publisher) resolveGeo(settings store.Settings, sites []*store.Site) *ge
 		}
 		r.build(g, s.GeoMode, s.GeoCountries, "the rule on "+s.Name)
 	}
+
+	// Countries named by an access rule need their ranges published too. Missed,
+	// the condition would have nothing to test against and would simply never
+	// match - which reads as "the rule does not work" and gives no clue why.
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		for _, c := range rule.Conditions {
+			if c.Field == "country" {
+				r.build(g, "block", c.Values, "the country condition on rule "+rule.Name)
+			}
+		}
+	}
 	return r
+}
+
+// setFor names the published set for a country list, or reports that there is
+// none.
+//
+// The caller must treat "none" as "this rule cannot be applied" rather than as an
+// empty set to test against: a condition that can never match makes its whole rule
+// dead, and a rule that is published but never fires is the hardest kind of
+// configuration to debug, because everything about it looks correct.
+func (r *geoResolver) setFor(countries []string) (string, bool) {
+	key := GeoSetKey(countries)
+	if _, ok := r.sets[key]; !ok {
+		return "", false
+	}
+	return key, true
 }
 
 // build registers the ranges a rule needs and returns the mode that will actually
