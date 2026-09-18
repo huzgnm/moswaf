@@ -7,6 +7,7 @@
     "dev": "vite",
     "clean": "node -e \"require('fs').rmSync('../control/internal/web/dist/assets',{recursive:true,force:true})\"",
     "build": "npm run clean && vite build",
+    "test": "node test/locales.js",
     "preview": "vite preview"
   },
   "dependencies": {

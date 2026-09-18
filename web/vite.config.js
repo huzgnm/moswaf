@@ -17,7 +17,9 @@ export default defineConfig({
     proxy: {
       // During `npm run dev`, proxy API calls to the control plane running locally.
       '/api': {
-        target: 'https://127.0.0.1:9443',
+        // Override with MOSWAF_DEV_API when the control plane is not on 9443 -
+        // another service on the machine may already hold that port.
+        target: process.env.MOSWAF_DEV_API || 'https://127.0.0.1:9443',
         changeOrigin: true,
         secure: false, // self-signed certificate
       },

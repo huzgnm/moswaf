@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { fmtNumber, fmtShortTime } from '../api'
+import { t } from '../i18n'
 
 const props = defineProps({
   points: { type: Array, default: () => [] },   // [{ minute, total, blocked, challenged }]
@@ -10,9 +11,9 @@ const props = defineProps({
 // All three series share the same unit (requests), so they share one y axis.
 // Colours are taken in fixed palette order, never cycled.
 const SERIES = [
-  { key: 'total',      label: 'Total requests', color: 'var(--series-1)', area: true },
-  { key: 'blocked',    label: 'Blocked',      color: 'var(--series-2)' },
-  { key: 'challenged', label: 'Challenged',    color: 'var(--series-3)' },
+  { key: 'total',      label: 'chart.total',      color: 'var(--series-1)', area: true },
+  { key: 'blocked',    label: 'chart.blocked',    color: 'var(--series-2)' },
+  { key: 'challenged', label: 'chart.challenged', color: 'var(--series-3)' },
 ]
 
 const W = 900, H = 260
@@ -101,12 +102,12 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
   <div class="chart-wrap">
     <div class="legend">
       <span v-for="s in SERIES" :key="s.key" class="legend-item">
-        <span class="swatch" :style="{ background: s.color }"></span>{{ s.label }}
+        <span class="swatch" :style="{ background: s.color }"></span>{{ t(s.label) }}
       </span>
     </div>
 
-    <div v-if="loading" class="empty">Loading data...</div>
-    <div v-else-if="!points.length" class="empty">No traffic has passed through MosWAF yet</div>
+    <div v-if="loading" class="empty">{{ t('chart.loading') }}</div>
+    <div v-else-if="!points.length" class="empty">{{ t('chart.empty') }}</div>
 
     <div v-else class="plot">
       <svg
@@ -116,8 +117,8 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
         <!-- recessive grid -->
         <g>
           <line
-            v-for="t in yTicks" :key="'g' + t.v"
-            :x1="PAD.left" :x2="W - PAD.right" :y1="t.y" :y2="t.y"
+            v-for="tick in yTicks" :key="'g' + tick.v"
+            :x1="PAD.left" :x2="W - PAD.right" :y1="tick.y" :y2="tick.y"
             stroke="var(--line)" stroke-width="1"
           />
         </g>
@@ -147,15 +148,15 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
 
       <!-- y axis labels -->
       <div class="y-axis">
-        <span v-for="t in yTicks" :key="'y' + t.v" :style="{ top: `${(t.y / H) * 100}%` }">
-          {{ fmtNumber(Math.round(t.v)) }}
+        <span v-for="tick in yTicks" :key="'y' + tick.v" :style="{ top: `${(tick.y / H) * 100}%` }">
+          {{ fmtNumber(Math.round(tick.v)) }}
         </span>
       </div>
 
       <!-- x axis labels -->
       <div class="x-axis">
-        <span v-for="t in xTicks" :key="'x' + t.idx" :style="{ left: `${(t.x / W) * 100}%` }">
-          {{ t.label }}
+        <span v-for="tick in xTicks" :key="'x' + tick.idx" :style="{ left: `${(tick.x / W) * 100}%` }">
+          {{ tick.label }}
         </span>
       </div>
 
@@ -163,17 +164,18 @@ const lastPoint = computed(() => props.points[props.points.length - 1] || null)
         <div class="tip-time">{{ fmtShortTime(hovered.minute) }}</div>
         <div v-for="s in SERIES" :key="'t' + s.key" class="tip-row">
           <span class="swatch" :style="{ background: s.color }"></span>
-          <span class="tip-label">{{ s.label }}</span>
+          <span class="tip-label">{{ t(s.label) }}</span>
           <span class="tip-val">{{ fmtNumber(hovered[s.key]) }}</span>
         </div>
       </div>
     </div>
 
     <div v-if="lastPoint" class="last-line">
-      Latest minute:
-      <b>{{ fmtNumber(lastPoint.total) }}</b> requests ·
-      <b>{{ fmtNumber(lastPoint.blocked) }}</b> blocked ·
-      <b>{{ fmtNumber(lastPoint.challenged) }}</b> challenge
+      {{ t('chart.latestMinute', {
+        total: fmtNumber(lastPoint.total),
+        blocked: fmtNumber(lastPoint.blocked),
+        challenged: fmtNumber(lastPoint.challenged),
+      }) }}
     </div>
   </div>
 </template>

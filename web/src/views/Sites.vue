@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api, notify } from '../api'
+import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
 
 const sites = ref([])
@@ -32,11 +33,11 @@ function blank() {
 // Certificate column: what an operator needs at a glance is whether TLS works and
 // how long it keeps working.
 function certLabel(s) {
-  if (!s.has_tls) return s.acme_enabled ? 'Pending' : 'None'
-  if (!s.cert_expires_at) return s.force_https ? 'Forced' : 'Certificate'
+  if (!s.has_tls) return t(s.acme_enabled ? 'sites.cert.pending' : 'sites.cert.none')
+  if (!s.cert_expires_at) return t(s.force_https ? 'sites.cert.forced' : 'sites.cert.present')
   const days = Math.floor((new Date(s.cert_expires_at) - Date.now()) / 86400000)
-  if (days < 0) return 'Expired'
-  return `${days}d left`
+  if (days < 0) return t('sites.cert.expired')
+  return t('sites.cert.daysLeft', { days })
 }
 
 function certTone(s) {
@@ -52,7 +53,7 @@ async function issueCert(site) {
   issuing.value = site.id
   try {
     await api.post(`/api/sites/${site.id}/certificate`)
-    notify(`Certificate issued for ${site.name}`)
+    notify(t('sites.certIssued', { name: site.name }))
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -61,10 +62,8 @@ async function issueCert(site) {
   }
 }
 
-const MODE_LABELS = {
-  protect: 'Protect',
-  monitor: 'Monitor only',
-  off: 'Off',
+function modeLabel(mode) {
+  return t(`sites.mode.${mode}`)
 }
 
 async function load() {
@@ -107,10 +106,10 @@ async function save() {
   try {
     if (editing.value) {
       await api.put(`/api/sites/${editing.value.id}`, payload)
-      notify('Site updated; the configuration is being pushed to the data plane')
+      notify(t('sites.updated'))
     } else {
       await api.post('/api/sites', payload)
-      notify('Site added. Point the domain\'s DNS at this machine to start filtering.')
+      notify(t('sites.created'))
     }
     showForm.value = false
     await load()
@@ -122,10 +121,10 @@ async function save() {
 }
 
 async function remove(site) {
-  if (!confirm(`Delete site "${site.name}"? Traffic to this domain will no longer pass through MosWAF.`)) return
+  if (!confirm(t('sites.deleteConfirm', { name: site.name }))) return
   try {
     await api.del(`/api/sites/${site.id}`)
-    notify('Site deleted')
+    notify(t('sites.deleted'))
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -139,26 +138,24 @@ onMounted(load)
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Protected sites</div>
-        <div class="card-sub">Each site is a group of domains pointing at one upstream behind it</div>
+        <div class="card-title">{{ t('sites.title') }}</div>
+        <div class="card-sub">{{ t('sites.sub') }}</div>
       </div>
-      <button class="btn btn-primary" @click="openCreate">Add site</button>
+      <button class="btn btn-primary" @click="openCreate">{{ t('sites.addButton') }}</button>
     </div>
 
-    <div v-if="loading" class="empty">Loading...</div>
-    <div v-else-if="!sites.length" class="empty">
-      No sites yet. Click "Add site" to put your first domain behind MosWAF.
-    </div>
+    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
+    <div v-else-if="!sites.length" class="empty">{{ t('sites.empty') }}</div>
 
     <table v-else class="table">
       <thead>
         <tr>
-          <th>Name</th>
-          <th>Domains</th>
-          <th>Upstream</th>
-          <th>Mode</th>
-          <th>Rate limit</th>
-          <th>HTTPS</th>
+          <th>{{ t('sites.col.name') }}</th>
+          <th>{{ t('sites.col.domains') }}</th>
+          <th>{{ t('sites.col.upstream') }}</th>
+          <th>{{ t('sites.col.mode') }}</th>
+          <th>{{ t('sites.col.rate') }}</th>
+          <th>{{ t('sites.col.https') }}</th>
           <th></th>
         </tr>
       </thead>
@@ -169,27 +166,27 @@ onMounted(load)
           <td class="mono">{{ s.upstream_scheme }}://{{ s.upstream_host }}:{{ s.upstream_port }}</td>
           <td>
             <span class="tag" :class="s.mode === 'protect' ? 'tag-ok' : s.mode === 'monitor' ? 'tag-monitor' : 'tag-off'">
-              <span class="dot"></span>{{ MODE_LABELS[s.mode] }}
+              <span class="dot"></span>{{ modeLabel(s.mode) }}
             </span>
           </td>
           <td class="mono">
-            {{ s.rate_rps ? `${s.rate_rps} r/s` : 'default' }}
+            {{ s.rate_rps ? t('sites.rate.rps', { n: s.rate_rps }) : t('sites.rate.default') }}
           </td>
           <td>
             <span class="tag" :class="certTone(s)" :title="s.acme_last_error || ''">
               <span class="dot"></span>{{ certLabel(s) }}
             </span>
-            <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">auto</span>
+            <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">{{ t('sites.cert.auto') }}</span>
           </td>
           <td style="text-align:right; white-space:nowrap">
             <button
               v-if="s.acme_enabled"
               class="btn btn-sm" :disabled="issuing === s.id"
-              title="Ask the certificate authority now instead of waiting for the renewal sweep"
+              :title="t('sites.getCertHint')"
               @click="issueCert(s)"
-            >{{ issuing === s.id ? 'Asking...' : 'Get cert' }}</button>
-            <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">Edit</button>
-            <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">Delete</button>
+            >{{ issuing === s.id ? t('sites.getCertBusy') : t('sites.getCert') }}</button>
+            <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">{{ t('common.edit') }}</button>
+            <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">{{ t('common.delete') }}</button>
           </td>
         </tr>
       </tbody>
@@ -198,71 +195,70 @@ onMounted(load)
 
   <Modal
     v-if="showForm"
-    :title="editing ? `Edit site: ${editing.name}` : 'Add a site'"
+    :title="editing ? t('sites.form.editTitle', { name: editing.name }) : t('sites.form.addTitle')"
     :busy="busy"
     @close="showForm = false"
     @submit="save"
   >
     <div class="field">
-      <label class="label">Display name</label>
-      <input v-model="form.name" class="input" placeholder="Online store" />
+      <label class="label">{{ t('sites.form.name') }}</label>
+      <input v-model="form.name" class="input" :placeholder="t('sites.form.namePlaceholder')" />
     </div>
 
     <div class="field">
-      <label class="label">Domains (comma separated)</label>
+      <label class="label">{{ t('sites.form.domains') }}</label>
       <input v-model="form.domains" class="input mono" placeholder="example.com, www.example.com" />
-      <div class="hint">Point the A record of these domains at the machine running MosWAF.</div>
+      <div class="hint">{{ t('sites.form.domainsHint') }}</div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Upstream scheme</label>
+        <label class="label">{{ t('sites.form.scheme') }}</label>
         <select v-model="form.upstream_scheme" class="select">
           <option value="http">http</option>
           <option value="https">https</option>
         </select>
       </div>
       <div class="field grow">
-        <label class="label">Upstream host</label>
-        <input v-model="form.upstream_host" class="input mono" placeholder="10.0.0.5 or host.docker.internal" />
+        <label class="label">{{ t('sites.form.host') }}</label>
+        <input v-model="form.upstream_host" class="input mono" :placeholder="t('sites.form.hostPlaceholder')" />
       </div>
       <div class="field" style="width:110px">
-        <label class="label">Port</label>
+        <label class="label">{{ t('sites.form.port') }}</label>
         <input v-model="form.upstream_port" type="number" class="input mono" />
       </div>
     </div>
     <div class="hint" style="margin:-8px 0 14px">
-      To reach an app running on this same host, use
-      <code class="mono">host.docker.internal</code>.
+      {{ t('sites.form.hostHint', { code: 'host.docker.internal' }) }}
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Protection mode</label>
+        <label class="label">{{ t('sites.form.mode') }}</label>
         <select v-model="form.mode" class="select">
-          <option value="protect">Protect - actually block</option>
-          <option value="monitor">Monitor only - log, never block</option>
-          <option value="off">Off - let everything through</option>
+          <option value="protect">{{ t('sites.form.modeProtect') }}</option>
+          <option value="monitor">{{ t('sites.form.modeMonitor') }}</option>
+          <option value="off">{{ t('sites.form.modeOff') }}</option>
         </select>
       </div>
       <div class="field grow">
-        <label class="label">JS challenge</label>
+        <label class="label">{{ t('sites.form.challenge') }}</label>
         <select v-model="form.challenge" class="select">
-          <option value="auto">Automatic - only when suspicious</option>
-          <option value="always">Always on - every unknown visitor must solve it</option>
-          <option value="off">Off</option>
+          <option value="auto">{{ t('sites.form.challengeAuto') }}</option>
+          <option value="always">{{ t('sites.form.challengeAlways') }}</option>
+          <option value="off">{{ t('sites.form.challengeOff') }}</option>
         </select>
       </div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Requests per second per IP</label>
+        <label class="label">{{ t('sites.form.rps') }}</label>
         <input v-model="form.rate_rps" type="number" class="input mono" />
-        <div class="hint">0 = use the global value from Settings</div>
+        <div class="hint">{{ t('sites.form.rpsHint') }}</div>
       </div>
       <div class="field grow">
-        <label class="label">Limit over 10 seconds</label>
+        <label class="label">{{ t('sites.form.burst') }}</label>
         <input v-model="form.rate_burst" type="number" class="input mono" />
       </div>
     </div>
@@ -270,42 +266,38 @@ onMounted(load)
     <label class="switch" style="margin-bottom:14px">
       <input v-model="form.acme_enabled" type="checkbox" />
       <span class="track"></span>
-      <span>Get and renew the certificate automatically (Let&apos;s Encrypt)</span>
+      <span>{{ t('sites.form.acme') }}</span>
     </label>
 
     <div v-if="form.acme_enabled" class="field">
-      <label class="label">Contact email for the certificate authority</label>
+      <label class="label">{{ t('sites.form.acmeEmail') }}</label>
       <input v-model="form.acme_email" class="input" placeholder="ops@example.com" />
-      <div class="hint">
-        The domain must already resolve to this server and port 80 must be reachable
-        from the internet - that is how the authority verifies you own it. Renewal
-        happens on its own once there are 30 days left.
-      </div>
+      <div class="hint">{{ t('sites.form.acmeHint') }}</div>
     </div>
 
     <div v-if="editing && editing.acme_last_error" class="hint" style="color:#f0a0a0; margin-bottom:14px">
-      Last attempt failed: {{ editing.acme_last_error }}
+      {{ t('sites.form.acmeLastError', { error: editing.acme_last_error }) }}
     </div>
 
     <div v-show="!form.acme_enabled" class="field">
-      <label class="label">TLS certificate (PEM)</label>
+      <label class="label">{{ t('sites.form.tlsCert') }}</label>
       <textarea
         v-model="form.tls_cert" class="input"
-        :placeholder="editing && editing.has_tls ? 'Leave empty to keep the current certificate' : '-----BEGIN CERTIFICATE-----'"
+        :placeholder="editing && editing.has_tls ? t('sites.form.keepCert') : '-----BEGIN CERTIFICATE-----'"
       ></textarea>
     </div>
     <div v-show="!form.acme_enabled" class="field">
-      <label class="label">Private key (PEM)</label>
+      <label class="label">{{ t('sites.form.tlsKey') }}</label>
       <textarea
         v-model="form.tls_key" class="input"
-        :placeholder="editing && editing.has_tls ? 'Leave empty to keep the current key' : '-----BEGIN PRIVATE KEY-----'"
+        :placeholder="editing && editing.has_tls ? t('sites.form.keepKey') : '-----BEGIN PRIVATE KEY-----'"
       ></textarea>
     </div>
 
     <label class="switch">
       <input v-model="form.force_https" type="checkbox" />
       <span class="track"></span>
-      <span>Redirect all HTTP traffic to HTTPS</span>
+      <span>{{ t('sites.form.forceHttps') }}</span>
     </label>
   </Modal>
 </template>

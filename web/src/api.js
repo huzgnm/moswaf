@@ -1,4 +1,5 @@
 import { reactive } from 'vue'
+import { t, intlTag } from './i18n'
 
 const TOKEN_KEY = 'moswaf.token'
 
@@ -42,18 +43,18 @@ async function request(method, path, body) {
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (e) {
-    throw new Error('Cannot reach the server')
+    throw new Error(t('api.unreachable'))
   }
 
   if (res.status === 401 && !path.endsWith('/auth/login')) {
     logout()
-    throw new Error('Your session has expired')
+    throw new Error(t('api.sessionExpired'))
   }
 
   const text = await res.text()
   const data = text ? JSON.parse(text) : null
 
-  if (!res.ok) throw new Error((data && data.error) || `Error ${res.status}`)
+  if (!res.ok) throw new Error((data && data.error) || t('api.error', { status: res.status }))
   return data
 }
 
@@ -73,26 +74,26 @@ export const api = {
 
 export function fmtNumber(n) {
   if (n === null || n === undefined) return '0'
-  return Number(n).toLocaleString('en-US')
+  return Number(n).toLocaleString(intlTag())
 }
 
 export function fmtTime(ts) {
   if (!ts) return '-'
   const d = new Date(ts)
-  return d.toLocaleString('en-US', {
+  return d.toLocaleString(intlTag(), {
     day: '2-digit', month: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
 }
 
 export function fmtShortTime(ts) {
-  return new Date(ts).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+  return new Date(ts).toLocaleTimeString(intlTag(), { hour: '2-digit', minute: '2-digit' })
 }
 
-export const ACTION_LABELS = {
-  deny: 'Blocked',
-  challenge: 'Challenged',
-  monitor: 'Monitored',
-  log: 'Logged',
-  verify: 'Verified',
+// The action recorded on an event. Unknown values are shown raw rather than
+// swallowed - a new engine action should be visible, not invisible.
+export function actionLabel(action) {
+  const key = `action.${action}`
+  const label = t(key)
+  return label === key ? action : label
 }

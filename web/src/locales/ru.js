@@ -1,0 +1,332 @@
+// Russian.
+//
+// Phrasing avoids putting a number directly in front of a noun wherever the
+// translation can be written another way, because Russian needs three plural
+// forms (1 / 2-4 / 5+) and this module does not carry plural rules. Where a
+// count is unavoidable the noun is left in a form that reads correctly after a
+// colon or in a label.
+
+export default {
+  // ---------------------------------------------------------------- generic
+  'common.save': 'Сохранить',
+  'common.saving': 'Сохранение...',
+  'common.cancel': 'Отмена',
+  'common.close': 'Закрыть',
+  'common.edit': 'Изменить',
+  'common.delete': 'Удалить',
+  'common.add': 'Добавить',
+  'common.remove': 'Убрать',
+  'common.loading': 'Загрузка...',
+  'common.filter': 'Фильтр',
+  'common.previous': 'Назад',
+  'common.next': 'Вперёд',
+  'common.never': 'Никогда',
+  'common.language': 'Язык',
+
+  // ---------------------------------------------------------------- transport
+  'api.unreachable': 'Не удаётся связаться с сервером',
+  'api.sessionExpired': 'Сессия истекла',
+  'api.error': 'Ошибка {status}',
+
+  // ---------------------------------------------------------------- shell
+  'nav.overview': 'Обзор',
+  'nav.sites': 'Сайты',
+  'nav.events': 'Журнал атак',
+  'nav.rules': 'Правила обнаружения',
+  'nav.ips': 'Списки IP',
+  'nav.settings': 'Настройки',
+  'nav.signOut': 'Выйти',
+
+  'app.tagline': 'Файрвол веб-приложений уровня 7 и защита от DDoS',
+  'app.underAttack': 'Режим атаки',
+  'app.underAttackHint': 'Заставить каждого посетителя пройти JS-проверку',
+  'app.underAttackOn': 'Режим атаки включён: каждый неизвестный посетитель должен пройти JS-проверку',
+  'app.underAttackOff': 'Режим атаки выключен',
+
+  // ---------------------------------------------------------------- login
+  'login.title': 'Вход',
+  'login.username': 'Имя пользователя',
+  'login.password': 'Пароль',
+  'login.submit': 'Войти',
+  'login.submitting': 'Вход...',
+
+  // ---------------------------------------------------------------- ranges
+  'range.1h': '1 час',
+  'range.6h': '6 часов',
+  'range.24h': '24 часа',
+  'range.3d': '3 дня',
+  'range.7d': '7 дней',
+
+  // ---------------------------------------------------------------- overview
+  'overview.alert': 'Режим атаки включён. Каждый посетитель без действительной cookie должен пройти JS-проверку, прежде чем попасть на сайт.',
+
+  'overview.tile.requests': 'Обработано запросов',
+  'overview.tile.requestsSub': 'за последние часы: {hours}',
+  'overview.tile.blocked': 'Заблокировано',
+  'overview.tile.blockedSub': '{percent}% всего трафика',
+  'overview.tile.challenged': 'Отправлено на проверку',
+  'overview.tile.challengedSub': 'подозрительные посетители, решавшие PoW',
+  'overview.tile.sites': 'Сайтов под защитой',
+  'overview.tile.sitesSub': 'сайты с включённой фильтрацией',
+
+  'overview.traffic.title': 'Трафик во времени',
+  'overview.traffic.sub': 'Всего запросов, сколько заблокировано и сколько отправлено на проверку',
+
+  'overview.topIPs': 'Самые активные атакующие IP',
+  'overview.manageIPs': 'Управление списками IP',
+  'overview.noIPs': 'IP пока не зафиксированы',
+  'overview.topRules': 'Чаще всего срабатывающие правила',
+  'overview.viewRules': 'Смотреть правила',
+  'overview.noRules': 'Ни одно правило ещё не сработало',
+
+  'overview.system': 'Состояние системы',
+  'overview.configVersion': 'Версия конфигурации: {version}',
+  'overview.dataplane': 'Data plane (OpenResty)',
+  'overview.eventQueue': 'Очередь событий: {count}',
+
+  // ---------------------------------------------------------------- chart
+  'chart.total': 'Всего запросов',
+  'chart.blocked': 'Заблокировано',
+  'chart.challenged': 'Отправлено на проверку',
+  'chart.loading': 'Загрузка данных...',
+  'chart.empty': 'Через MosWAF ещё не прошло ни одного запроса',
+  'chart.latestMinute': 'Последняя минута: запросов {total}, заблокировано {blocked}, отправлено на проверку {challenged}',
+
+  // ---------------------------------------------------------------- sites
+  'sites.title': 'Защищённые сайты',
+  'sites.sub': 'Каждый сайт - это группа доменов, указывающих на один upstream за ним',
+  'sites.addButton': 'Добавить сайт',
+  'sites.empty': 'Сайтов пока нет. Нажмите «Добавить сайт», чтобы поставить первый домен за MosWAF.',
+
+  'sites.col.name': 'Название',
+  'sites.col.domains': 'Домены',
+  'sites.col.upstream': 'Upstream',
+  'sites.col.mode': 'Режим',
+  'sites.col.rate': 'Ограничение частоты',
+  'sites.col.https': 'HTTPS',
+
+  'sites.mode.protect': 'Защита',
+  'sites.mode.monitor': 'Только наблюдение',
+  'sites.mode.off': 'Выключено',
+
+  'sites.rate.default': 'по умолчанию',
+  'sites.rate.rps': '{n} зап/с',
+
+  'sites.cert.pending': 'Ожидается',
+  'sites.cert.none': 'Нет',
+  'sites.cert.forced': 'Принудительно',
+  'sites.cert.present': 'Сертификат',
+  'sites.cert.expired': 'Истёк',
+  'sites.cert.daysLeft': 'осталось дней: {days}',
+  'sites.cert.auto': 'авто',
+
+  'sites.getCert': 'Получить сертификат',
+  'sites.getCertBusy': 'Запрос...',
+  'sites.getCertHint': 'Запросить удостоверяющий центр сейчас, не дожидаясь планового обновления',
+  'sites.certIssued': 'Сертификат выпущен для {name}',
+
+  'sites.updated': 'Сайт обновлён; конфигурация отправляется в data plane',
+  'sites.created': 'Сайт добавлен. Направьте DNS домена на эту машину, чтобы началась фильтрация.',
+  'sites.deleted': 'Сайт удалён',
+  'sites.deleteConfirm': 'Удалить сайт «{name}»? Трафик к этому домену больше не будет проходить через MosWAF.',
+
+  'sites.form.addTitle': 'Добавить сайт',
+  'sites.form.editTitle': 'Изменить сайт: {name}',
+  'sites.form.name': 'Отображаемое название',
+  'sites.form.namePlaceholder': 'Интернет-магазин',
+  'sites.form.domains': 'Домены (через запятую)',
+  'sites.form.domainsHint': 'Направьте A-записи этих доменов на машину с MosWAF.',
+  'sites.form.scheme': 'Схема upstream',
+  'sites.form.host': 'Хост upstream',
+  'sites.form.hostPlaceholder': '10.0.0.5 или host.docker.internal',
+  'sites.form.port': 'Порт',
+  'sites.form.hostHint': 'Чтобы обратиться к приложению на этой же машине, используйте {code}.',
+  'sites.form.mode': 'Режим защиты',
+  'sites.form.modeProtect': 'Защита - действительно блокировать',
+  'sites.form.modeMonitor': 'Только наблюдение - писать в журнал, не блокировать',
+  'sites.form.modeOff': 'Выключено - пропускать всё',
+  'sites.form.challenge': 'JS-проверка',
+  'sites.form.challengeAuto': 'Автоматически - только при подозрении',
+  'sites.form.challengeAlways': 'Всегда - каждый неизвестный посетитель должен её пройти',
+  'sites.form.challengeOff': 'Выключена',
+  'sites.form.rps': 'Запросов в секунду с одного IP',
+  'sites.form.rpsHint': '0 = использовать общее значение из Настроек',
+  'sites.form.burst': 'Ограничение за 10 секунд',
+  'sites.form.acme': 'Получать и обновлять сертификат автоматически (Let\'s Encrypt)',
+  'sites.form.acmeEmail': 'Контактный e-mail для удостоверяющего центра',
+  'sites.form.acmeHint': 'Домен уже должен указывать на этот сервер, а порт 80 должен быть доступен из интернета - именно так центр проверяет, что домен ваш. Обновление происходит само, когда остаётся 30 дней.',
+  'sites.form.acmeLastError': 'Последняя попытка не удалась: {error}',
+  'sites.form.tlsCert': 'TLS-сертификат (PEM)',
+  'sites.form.tlsKey': 'Закрытый ключ (PEM)',
+  'sites.form.keepCert': 'Оставьте пустым, чтобы сохранить текущий сертификат',
+  'sites.form.keepKey': 'Оставьте пустым, чтобы сохранить текущий ключ',
+  'sites.form.forceHttps': 'Перенаправлять весь HTTP-трафик на HTTPS',
+
+  // ---------------------------------------------------------------- rules
+  'rules.title': 'Правила обнаружения',
+  'rules.sub': 'Встроенные правила поставляются с MosWAF. Собственные правила проверяются вместе с ними, в порядке таблицы.',
+  'rules.addButton': 'Добавить правило',
+  'rules.search': 'Поиск по названию, id или шаблону',
+  'rules.allCategories': 'Все категории',
+
+  'rules.col.on': 'Вкл',
+  'rules.col.name': 'Название',
+  'rules.col.category': 'Категория',
+  'rules.col.scans': 'Проверяет',
+  'rules.col.action': 'Действие',
+  'rules.col.severity': 'Уровень',
+
+  'rules.action.deny': 'Блокировать',
+  'rules.action.challenge': 'Проверка',
+  'rules.action.ban': 'Забанить IP',
+  'rules.action.log': 'Только журнал',
+
+  'rules.target.any': 'Весь запрос',
+  'rules.target.uri': 'Путь',
+  'rules.target.args': 'Строка запроса',
+  'rules.target.body': 'Тело POST',
+  'rules.target.ua': 'User-Agent',
+  'rules.target.header': 'Заголовки',
+  'rules.target.cookie': 'Cookie',
+
+  'rules.enabled': 'Правило «{name}» включено',
+  'rules.disabled': 'Правило «{name}» выключено',
+  'rules.updated': 'Правило обновлено',
+  'rules.created': 'Правило добавлено',
+  'rules.deleted': 'Правило удалено',
+  'rules.deleteConfirm': 'Удалить правило «{name}»?',
+
+  'rules.form.addTitle': 'Добавить правило',
+  'rules.form.editTitle': 'Изменить правило: {name}',
+  'rules.form.name': 'Название правила',
+  'rules.form.namePlaceholder': 'Блокировать внешний доступ к /admin',
+  'rules.form.category': 'Категория',
+  'rules.form.target': 'Где проверять',
+  'rules.form.pattern': 'Регулярное выражение (PCRE)',
+  'rules.form.patternHint': 'Добавьте {code} в начало, чтобы не различать регистр. Избегайте lookahead и обратных ссылок, чтобы шаблон оставался быстрым в data plane.',
+  'rules.form.action': 'Действие при совпадении',
+  'rules.form.severity': 'Уровень',
+
+  // ---------------------------------------------------------------- severity
+  'severity.low': 'Низкий',
+  'severity.medium': 'Средний',
+  'severity.high': 'Высокий',
+  'severity.critical': 'Критический',
+
+  // ---------------------------------------------------------------- events
+  'events.title': 'Журнал атак',
+  'events.sub': 'Записываются только запросы, которые были заблокированы, отправлены на проверку или совпали с правилом - обычный трафик не сохраняется',
+  'events.autoRefresh': 'Автообновление',
+  'events.search': 'Поиск по пути, User-Agent или названию правила',
+  'events.anyAction': 'Любое действие',
+  'events.anySeverity': 'Любой уровень',
+  'events.empty': 'Нет событий, подходящих под эти фильтры',
+  'events.total': 'Всего событий: {count}',
+  'events.page': 'Страница {n}',
+  'events.blockIP': 'Заблокировать IP',
+  'events.blockConfirm': 'Заблокировать IP {ip} навсегда?',
+  'events.blockReason': 'Заблокирован из журнала атак',
+  'events.blocked': '{ip} добавлен в список блокировки',
+
+  'events.col.time': 'Время',
+  'events.col.ip': 'IP',
+  'events.col.action': 'Действие',
+  'events.col.request': 'Запрос',
+  'events.col.rule': 'Правило / причина',
+
+  'events.detail.id': 'Идентификатор события',
+  'events.detail.host': 'Хост',
+  'events.detail.path': 'Полный путь',
+  'events.detail.ua': 'User-Agent',
+  'events.detail.referer': 'Referer',
+  'events.detail.reason': 'Причина',
+  'events.detail.ruleId': 'Идентификатор правила',
+  'events.detail.severity': 'Уровень',
+  'events.detail.status': 'Код ответа',
+  'events.detail.emptyUA': '(пусто)',
+
+  'action.deny': 'Заблокирован',
+  'action.challenge': 'Отправлен на проверку',
+  'action.monitor': 'Под наблюдением',
+  'action.log': 'Записан',
+  'action.verify': 'Проверен',
+
+  // ---------------------------------------------------------------- IP lists
+  'ips.title': 'Списки IP',
+  'ips.sub': 'Список разрешённых проверяется первым и пропускает все остальные фильтры. Список блокировки отклоняет сразу, до того как процессор потратится на проверку правил.',
+  'ips.blocklist': 'Список блокировки',
+  'ips.allowlist': 'Список разрешённых',
+  'ips.bans': 'Временные баны',
+
+  'ips.cidrPlaceholder': '1.2.3.4 или 10.0.0.0/8',
+  'ips.reasonPlaceholder': 'Причина (необязательно)',
+  'ips.minutesPlaceholder': 'Минуты',
+  'ips.minutesHint': 'Оставьте {code} для постоянной записи. Укажите число, чтобы запись истекла сама.',
+
+  'ips.bansNote': 'Эти IP забанены движком автоматически после многократного превышения порога. Они находятся в памяти data plane и истекают сами; в базе данных ничего не хранится.',
+  'ips.liftAll': 'Снять все',
+  'ips.liftBan': 'Снять бан',
+  'ips.noBans': 'Сейчас ни один IP не находится под временным баном',
+  'ips.allLifted': 'Все временные баны сняты',
+  'ips.lifted': 'Бан для {ip} снят',
+
+  'ips.emptyBlock': 'Список блокировки пуст',
+  'ips.emptyAllow': 'Список разрешённых пуст',
+  'ips.addedBlock': 'Добавлено в список блокировки',
+  'ips.addedAllow': 'Добавлено в список разрешённых',
+  'ips.removed': 'Удалено',
+
+  'ips.col.ip': 'IP-адрес',
+  'ips.col.address': 'Адрес',
+  'ips.col.reason': 'Причина',
+  'ips.col.timeLeft': 'Осталось',
+  'ips.col.expires': 'Истекает',
+  'ips.col.added': 'Добавлено',
+
+  'ips.ttl.expiring': 'истекает',
+  'ips.ttl.minutes': 'осталось {m} мин {s} с',
+  'ips.ttl.seconds': 'осталось {s} с',
+
+  // ---------------------------------------------------------------- settings
+  'settings.loading': 'Загрузка настроек...',
+  'settings.policy': 'Общая политика',
+  'settings.policySub': 'Применяется к каждому сайту, который не задал собственные значения',
+  'settings.saveButton': 'Сохранить изменения',
+  'settings.saved': 'Сохранено и отправлено в data plane',
+
+  'settings.defaultMode': 'Режим по умолчанию',
+  'settings.blockStatus': 'Код ответа при блокировке',
+  'settings.blockStatusHint': '403 - значение по умолчанию. Используйте 444, чтобы разорвать соединение без ответа.',
+  'settings.rps': 'Запросов в секунду с одного IP',
+  'settings.burst': 'Ограничение за окно в 10 секунд',
+  'settings.burstHint': 'Ловит атакующих, которые намеренно держатся ниже посекундного порога.',
+  'settings.banSeconds': 'Длительность временного бана (секунды)',
+  'settings.banSecondsHint': 'Применяется после трёх превышений порога в течение одной минуты.',
+  'settings.difficulty': 'Сложность JS-проверки (биты)',
+  'settings.difficultyHint': '16 бит - это примерно 0,1-0,3 с на машине посетителя, и каждый следующий бит удваивает работу. Поднимайте до 18-20 только во время сильного потока.',
+  'settings.challengeTTL': 'Срок жизни cookie проверки (секунды)',
+  'settings.maxBodyScan': 'Максимальный размер проверяемого тела (байты)',
+
+  'settings.realIPHeader': 'Заголовок с настоящим IP клиента',
+  'settings.realIPNone': 'Нет - использовать IP прямого соединения',
+  'settings.realIPHint': 'Включайте только если перед MosWAF действительно стоит CDN или прокси - иначе атакующий просто подделает заголовок и подменит любой IP.',
+  'settings.trustedProxies': 'Доверенные прокси (через запятую)',
+  'settings.trustedProxiesHint': 'Пусто означает, что доверяют любому источнику - безопасно только если MosWAF не выставлен в интернет.',
+
+  'settings.retainDays': 'Хранить журнал атак (дней)',
+  'settings.scanBody': 'Проверять тело POST-запросов',
+  'settings.logAllowed': 'Записывать и обычные запросы (занимает много места на диске)',
+
+  'settings.password': 'Смена пароля администратора',
+  'settings.currentPassword': 'Текущий пароль',
+  'settings.newPassword': 'Новый пароль',
+  'settings.repeatPassword': 'Повторите новый пароль',
+  'settings.changePassword': 'Сменить пароль',
+  'settings.passwordMismatch': 'Два поля нового пароля не совпадают',
+  'settings.passwordChanged': 'Пароль изменён',
+
+  'settings.maintenance': 'Обслуживание',
+  'settings.maintenanceSub': 'Отправить всю конфигурацию в OpenResty заново, если есть подозрение, что data plane разошёлся',
+  'settings.resync': 'Пересинхронизировать data plane',
+  'settings.resynced': 'Вся конфигурация отправлена заново (версия {version})',
+}

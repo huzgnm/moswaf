@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
-import { api, notify, fmtTime, fmtNumber, ACTION_LABELS } from '../api'
+import { api, notify, fmtTime, fmtNumber, actionLabel } from '../api'
+import { t } from '../i18n'
 
 const items = ref([])
 const total = ref(0)
@@ -40,10 +41,10 @@ function applyFilters() {
 }
 
 async function banIP(ip) {
-  if (!confirm(`Permanently block IP ${ip}?`)) return
+  if (!confirm(t('events.blockConfirm', { ip }))) return
   try {
-    await api.post('/api/ips', { cidr: ip, kind: 'black', reason: 'Blocked from the attack log' })
-    notify(`${ip} added to the blocklist`)
+    await api.post('/api/ips', { cidr: ip, kind: 'black', reason: t('events.blockReason') })
+    notify(t('events.blocked', { ip }))
   } catch (e) {
     notify(e.message, true)
   }
@@ -60,55 +61,53 @@ onUnmounted(() => clearInterval(timer))
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Attack log</div>
-        <div class="card-sub">
-          Only requests that were blocked, challenged or matched a rule - normal traffic is not recorded
-        </div>
+        <div class="card-title">{{ t('events.title') }}</div>
+        <div class="card-sub">{{ t('events.sub') }}</div>
       </div>
       <label class="switch">
         <input v-model="auto" type="checkbox" />
         <span class="track"></span>
-        <span class="card-sub">Auto refresh</span>
+        <span class="card-sub">{{ t('events.autoRefresh') }}</span>
       </label>
     </div>
 
     <div class="row" style="margin-bottom:14px">
-      <input v-model="filters.q" class="input grow" placeholder="Search path, User-Agent or rule name" @keyup.enter="applyFilters" />
-      <input v-model="filters.ip" class="input mono" style="width:150px" placeholder="IP" @keyup.enter="applyFilters" />
+      <input v-model="filters.q" class="input grow" :placeholder="t('events.search')" @keyup.enter="applyFilters" />
+      <input v-model="filters.ip" class="input mono" style="width:150px" :placeholder="t('events.col.ip')" @keyup.enter="applyFilters" />
       <select v-model="filters.action" class="select" style="width:140px">
-        <option value="">Any action</option>
-        <option value="deny">Blocked</option>
-        <option value="challenge">Challenge</option>
-        <option value="monitor">Monitored</option>
-        <option value="log">Logged</option>
+        <option value="">{{ t('events.anyAction') }}</option>
+        <option value="deny">{{ t('action.deny') }}</option>
+        <option value="challenge">{{ t('action.challenge') }}</option>
+        <option value="monitor">{{ t('action.monitor') }}</option>
+        <option value="log">{{ t('action.log') }}</option>
       </select>
       <select v-model="filters.severity" class="select" style="width:140px">
-        <option value="">Any severity</option>
-        <option value="critical">Critical</option>
-        <option value="high">High</option>
-        <option value="medium">Medium</option>
-        <option value="low">Low</option>
+        <option value="">{{ t('events.anySeverity') }}</option>
+        <option value="critical">{{ t('severity.critical') }}</option>
+        <option value="high">{{ t('severity.high') }}</option>
+        <option value="medium">{{ t('severity.medium') }}</option>
+        <option value="low">{{ t('severity.low') }}</option>
       </select>
       <select v-model="filters.hours" class="select" style="width:130px">
-        <option :value="1">1 hour</option>
-        <option :value="24">24 hours</option>
-        <option :value="72">3 days</option>
-        <option :value="168">7 days</option>
+        <option :value="1">{{ t('range.1h') }}</option>
+        <option :value="24">{{ t('range.24h') }}</option>
+        <option :value="72">{{ t('range.3d') }}</option>
+        <option :value="168">{{ t('range.7d') }}</option>
       </select>
-      <button class="btn btn-primary" @click="applyFilters">Filter</button>
+      <button class="btn btn-primary" @click="applyFilters">{{ t('common.filter') }}</button>
     </div>
 
-    <div v-if="loading" class="empty">Loading...</div>
-    <div v-else-if="!items.length" class="empty">No events match these filters</div>
+    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
+    <div v-else-if="!items.length" class="empty">{{ t('events.empty') }}</div>
 
     <table v-else class="table">
       <thead>
         <tr>
-          <th style="width:150px">Time</th>
-          <th style="width:130px">IP</th>
-          <th style="width:110px">Action</th>
-          <th>Request</th>
-          <th>Rule / reason</th>
+          <th style="width:150px">{{ t('events.col.time') }}</th>
+          <th style="width:130px">{{ t('events.col.ip') }}</th>
+          <th style="width:110px">{{ t('events.col.action') }}</th>
+          <th>{{ t('events.col.request') }}</th>
+          <th>{{ t('events.col.rule') }}</th>
           <th></th>
         </tr>
       </thead>
@@ -119,27 +118,27 @@ onUnmounted(() => clearInterval(timer))
             <td class="mono">{{ e.ip }}</td>
             <td>
               <span class="tag" :class="`tag-${e.action}`">
-                <span class="dot"></span>{{ ACTION_LABELS[e.action] || e.action }}
+                <span class="dot"></span>{{ actionLabel(e.action) }}
               </span>
             </td>
             <td class="mono truncate">{{ e.method }} {{ e.uri }}</td>
             <td class="truncate">{{ e.rule_name || e.reason }}</td>
             <td style="text-align:right">
-              <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">Block IP</button>
+              <button class="btn btn-sm btn-danger" @click.stop="banIP(e.ip)">{{ t('events.blockIP') }}</button>
             </td>
           </tr>
           <tr v-if="expanded === e.id">
             <td colspan="6" style="background:var(--surface-2)">
               <div class="detail">
-                <div><span>Event id</span><b class="mono">{{ e.ray || '-' }}</b></div>
-                <div><span>Host</span><b class="mono">{{ e.host }}</b></div>
-                <div><span>Full path</span><b class="mono">{{ e.uri }}</b></div>
-                <div><span>User-Agent</span><b class="mono">{{ e.ua || '(empty)' }}</b></div>
-                <div><span>Referer</span><b class="mono">{{ e.referer || '-' }}</b></div>
-                <div><span>Reason</span><b>{{ e.reason || '-' }}</b></div>
-                <div><span>Rule id</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
-                <div><span>Severity</span><b>{{ e.severity || '-' }}</b></div>
-                <div><span>Status code</span><b class="mono">{{ e.status }}</b></div>
+                <div><span>{{ t('events.detail.id') }}</span><b class="mono">{{ e.ray || '-' }}</b></div>
+                <div><span>{{ t('events.detail.host') }}</span><b class="mono">{{ e.host }}</b></div>
+                <div><span>{{ t('events.detail.path') }}</span><b class="mono">{{ e.uri }}</b></div>
+                <div><span>{{ t('events.detail.ua') }}</span><b class="mono">{{ e.ua || t('events.detail.emptyUA') }}</b></div>
+                <div><span>{{ t('events.detail.referer') }}</span><b class="mono">{{ e.referer || '-' }}</b></div>
+                <div><span>{{ t('events.detail.reason') }}</span><b>{{ e.reason || '-' }}</b></div>
+                <div><span>{{ t('events.detail.ruleId') }}</span><b class="mono">{{ e.rule_id || '-' }}</b></div>
+                <div><span>{{ t('events.detail.severity') }}</span><b>{{ e.severity ? t(`severity.${e.severity}`) : '-' }}</b></div>
+                <div><span>{{ t('events.detail.status') }}</span><b class="mono">{{ e.status }}</b></div>
               </div>
             </td>
           </tr>
@@ -148,11 +147,11 @@ onUnmounted(() => clearInterval(timer))
     </table>
 
     <div class="row" style="margin-top:14px">
-      <span class="card-sub">{{ fmtNumber(total) }} events in total</span>
+      <span class="card-sub">{{ t('events.total', { count: fmtNumber(total) }) }}</span>
       <div class="spacer"></div>
-      <button class="btn btn-sm" :disabled="page === 0" @click="page--; load(true)">Previous</button>
-      <span class="card-sub">Page {{ page + 1 }}</span>
-      <button class="btn btn-sm" :disabled="(page + 1) * 50 >= total" @click="page++; load(true)">Next</button>
+      <button class="btn btn-sm" :disabled="page === 0" @click="page--; load(true)">{{ t('common.previous') }}</button>
+      <span class="card-sub">{{ t('events.page', { n: page + 1 }) }}</span>
+      <button class="btn btn-sm" :disabled="(page + 1) * 50 >= total" @click="page++; load(true)">{{ t('common.next') }}</button>
     </div>
   </div>
 </template>
