@@ -21,12 +21,24 @@ const messages = { en, vi, ru, zh }
 
 // label is written in its own language on purpose: someone who has landed on a
 // dashboard in a language they cannot read still has to find their way out.
+// english is the secondary line, for the same reason in the other direction.
 export const LOCALES = [
-  { code: 'en', label: 'English' },
-  { code: 'vi', label: 'Tiếng Việt' },
-  { code: 'ru', label: 'Русский' },
-  { code: 'zh', label: '中文' },
+  { code: 'en', label: 'English',     english: 'English' },
+  { code: 'vi', label: 'Tiếng Việt',  english: 'Vietnamese' },
+  { code: 'ru', label: 'Русский',     english: 'Russian' },
+  { code: 'zh', label: '中文',         english: 'Chinese' },
 ]
+
+// The language a dashboard opens in when nobody has chosen one yet.
+//
+// Deliberately fixed rather than read from navigator.language. The browser's
+// language is a property of whoever is sitting at the machine, not of the
+// installation: an operator in Hanoi opening a colleague's server would see a
+// different dashboard than the colleague does, screenshots and documentation
+// would not match what anyone sees, and support questions start with "which
+// language is yours in". A fixed default means one dashboard that everybody
+// describes the same way, and one click to change it.
+export const DEFAULT_LOCALE = 'en'
 
 // Intl tags for dates and numbers. Separate from the locale code because the two
 // do not always match, and Intl wants a full tag.
@@ -43,16 +55,14 @@ function known(table, key) {
   return typeof key === 'string' && Object.hasOwn(table, key)
 }
 
-function detect() {
+// A language the operator picked before, or the fixed default. Nothing is
+// guessed from the browser - see DEFAULT_LOCALE.
+function initialLocale() {
   const saved = localStorage.getItem(STORAGE_KEY)
-  if (known(messages, saved)) return saved
-
-  // navigator.language is a full tag ("vi-VN", "zh-Hans-CN"); match the prefix.
-  const prefix = String(navigator.language || 'en').toLowerCase().split('-')[0]
-  return known(messages, prefix) ? prefix : 'en'
+  return known(messages, saved) ? saved : DEFAULT_LOCALE
 }
 
-export const i18n = reactive({ locale: detect() })
+export const i18n = reactive({ locale: initialLocale() })
 
 export function setLocale(code) {
   if (!known(messages, code)) return
