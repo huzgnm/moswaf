@@ -28,6 +28,19 @@ type luaSite struct {
 	RateBurst int      `json:"rate_burst"`
 	FloodRPS  int      `json:"flood_rps"`
 	RulesOff  []string `json:"rules_off"`
+
+	// The login gate. AuthUsers maps account id to its current session generation,
+	// and it is the whole of what the data plane needs to check a session: the
+	// account being absent refuses its cookies, and the number not matching refuses
+	// the ones issued before it changed.
+	//
+	// Carried in the configuration rather than looked up because it is consulted on
+	// every request to a gated site. A database round trip there would put the
+	// control plane in the path of ordinary traffic - the one place this design
+	// keeps it out of.
+	AuthEnabled bool            `json:"auth_enabled"`
+	AuthPaths   []string        `json:"auth_paths"`
+	AuthUsers   map[int64]int64 `json:"auth_users"`
 }
 
 type luaRule struct {
@@ -157,6 +170,10 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading the allowlist: %w", err)
 	}
+	generations, err := p.db.SiteGenerations(ctx)
+	if err != nil {
+		return fmt.Errorf("reading the site accounts: %w", err)
+	}
 
 	cfg := luaConfig{
 		Version:       time.Now().UnixMilli(),
@@ -173,10 +190,30 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		if !s.Enabled {
 			continue
 		}
+		users := generations[s.ID]
+
+		// The gate is published as on only when somebody can actually get through
+		// it. An enabled gate with no accounts refuses every request to the site
+		// with no way to satisfy it - a site taken off the air by a setting that
+		// reads as a security improvement. It can be reached by deleting the last
+		// account rather than by asking for it, which is why the check is here, at
+		// the point of publication, and not only where the operator typed.
+		enabled := s.AuthEnabled && len(users) > 0
+		if s.AuthEnabled && len(users) == 0 {
+			log.Printf("moswaf: the login gate on %s has no accounts, so it is not being "+
+				"applied; add one or switch it off", s.Name)
+		}
+
 		cfg.Sites[s.ID] = luaSite{
 			ID: s.ID, Name: s.Name, Mode: s.Mode, Challenge: s.Challenge,
 			RateRPS: s.RateRPS, RateBurst: s.RateBurst, FloodRPS: s.FloodRPS,
 			RulesOff: s.RulesOff,
+			// Only ever carries account ids and counters - never a hash, and never a
+			// name. Whoever can read this key can already rewrite the configuration,
+			// but there is no reason to widen what a leak of it costs.
+			AuthEnabled: enabled,
+			AuthPaths:   store.NormaliseAuthPaths(s.AuthPaths),
+			AuthUsers:   users,
 		}
 	}
 	for _, r := range rules {
@@ -204,9 +241,10 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	}
 
 	if err := WriteSiteConfigs(sites, p.cfg.SitesDir, SiteRender{
-		CertsDir:  p.cfg.CertsDir,
-		HTTPPort:  p.cfg.SiteHTTPPort,
-		HTTPSPort: p.cfg.SiteHTTPSPort,
+		CertsDir:        p.cfg.CertsDir,
+		HTTPPort:        p.cfg.SiteHTTPPort,
+		HTTPSPort:       p.cfg.SiteHTTPSPort,
+		ControlInternal: p.cfg.ControlInternal,
 	}); err != nil {
 		return fmt.Errorf("writing the nginx config: %w", err)
 	}

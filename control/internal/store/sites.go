@@ -15,15 +15,17 @@ import (
 const siteCols = `id, name, domains, upstream_scheme, upstream_host, upstream_port,
 	mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key, force_https,
 	enabled, rules_off, created_at, updated_at,
-	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try`
+	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try,
+	auth_enabled, auth_paths`
 
 func scanSite(row pgx.Row) (*Site, error) {
 	var s Site
-	var domains, rulesOff []byte
+	var domains, rulesOff, authPaths []byte
 	err := row.Scan(&s.ID, &s.Name, &domains, &s.UpstreamScheme, &s.UpstreamHost, &s.UpstreamPort,
 		&s.Mode, &s.Challenge, &s.RateRPS, &s.RateBurst, &s.FloodRPS, &s.TLSCert, &s.TLSKey, &s.ForceHTTPS,
 		&s.Enabled, &rulesOff, &s.CreatedAt, &s.UpdatedAt,
-		&s.AcmeEnabled, &s.AcmeEmail, &s.CertExpiresAt, &s.AcmeLastError, &s.AcmeLastTry)
+		&s.AcmeEnabled, &s.AcmeEmail, &s.CertExpiresAt, &s.AcmeLastError, &s.AcmeLastTry,
+		&s.AuthEnabled, &authPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -35,6 +37,8 @@ func scanSite(row pgx.Row) (*Site, error) {
 	if s.RulesOff == nil {
 		s.RulesOff = []string{}
 	}
+	_ = json.Unmarshal(authPaths, &s.AuthPaths)
+	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
 	s.HasTLS = s.TLSCert != "" && s.TLSKey != ""
 	return &s, nil
 }
@@ -152,6 +156,19 @@ func ValidateSite(s *Site) error {
 	if s.RulesOff == nil {
 		s.RulesOff = []string{}
 	}
+
+	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
+	// A login gate over plain HTTP hands the password and then the session cookie
+	// to everybody between the visitor and the server. The gate would appear to
+	// work, which is the worst version of not working: an operator would put their
+	// admin panel behind it believing it was now private.
+	//
+	// ACME counts, because the certificate arrives on its own within the minute and
+	// the alternative is telling somebody to set the gate up twice.
+	if s.AuthEnabled && s.TLSCert == "" && !s.AcmeEnabled {
+		return fmt.Errorf("the login gate needs HTTPS: add a certificate or switch on " +
+			"automatic certificates first")
+	}
 	return nil
 }
 
@@ -215,14 +232,15 @@ func ManualIssueCooldown(s *Site, now time.Time) time.Duration {
 func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 	domains, _ := json.Marshal(site.Domains)
 	rulesOff, _ := json.Marshal(site.RulesOff)
+	authPaths, _ := json.Marshal(NormaliseAuthPaths(site.AuthPaths))
 	site.UpdatedAt = time.Now()
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO sites (id, name, domains, upstream_scheme, upstream_host, upstream_port,
 		                   mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key,
 		                   force_https, enabled, rules_off, acme_enabled, acme_email,
-		                   cert_expires_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, now())
+		                   cert_expires_at, auth_enabled, auth_paths, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, now())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			domains = EXCLUDED.domains,
@@ -242,11 +260,13 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 			acme_enabled = EXCLUDED.acme_enabled,
 			acme_email = EXCLUDED.acme_email,
 			cert_expires_at = EXCLUDED.cert_expires_at,
+			auth_enabled = EXCLUDED.auth_enabled,
+			auth_paths = EXCLUDED.auth_paths,
 			updated_at = now()`,
 		site.ID, site.Name, domains, site.UpstreamScheme, site.UpstreamHost, site.UpstreamPort,
 		site.Mode, site.Challenge, site.RateRPS, site.RateBurst, site.FloodRPS, site.TLSCert,
 		site.TLSKey, site.ForceHTTPS, site.Enabled, rulesOff, site.AcmeEnabled, site.AcmeEmail,
-		site.CertExpiresAt)
+		site.CertExpiresAt, site.AuthEnabled, authPaths)
 	return err
 }
 

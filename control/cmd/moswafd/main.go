@@ -166,11 +166,41 @@ func run(cfg *config.Config) error {
 		}
 	}()
 
+	// --- the data plane's own listener ---
+	//
+	// Carries the site login endpoint and nothing else, on the container network
+	// only. Deliberately a second server rather than another route on the one
+	// above: a route is one mistake away from being reachable from the internet,
+	// and a listener that is not published cannot be.
+	var internal *http.Server
+	if cfg.InternalListen != "" {
+		internal = &http.Server{
+			Addr:              cfg.InternalListen,
+			Handler:           apiServer.InternalHandler(),
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			ErrorLog:          log.New(os.Stderr, "[moswaf-internal] ", log.LstdFlags),
+		}
+		go func() {
+			log.Printf("internal endpoint listening on %s (container network only)", cfg.InternalListen)
+			if err := internal.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				// Not fatal. Losing this means nobody can sign in to a gated site;
+				// it does not mean the dashboard or the firewall should stop.
+				log.Printf("moswaf: the internal endpoint stopped: %v", err)
+			}
+		}()
+	}
+
 	<-ctx.Done()
 	log.Println("shutdown signal received, stopping...")
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if internal != nil {
+		_ = internal.Shutdown(shutdownCtx)
+	}
 	return srv.Shutdown(shutdownCtx)
 }
 

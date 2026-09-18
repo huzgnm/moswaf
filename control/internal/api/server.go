@@ -27,10 +27,19 @@ type Server struct {
 	pub       *engine.Publisher
 	certifier *engine.Certifier
 	login     *loginGuard
+	// Separate from the dashboard's guard. They count different things - one
+	// protects the administrator account, the other protects a visitor account on
+	// one site - and sharing a counter would let failures against a site lock an
+	// operator out of the dashboard they need in order to deal with it.
+	siteLogin *loginGuard
 }
 
 func New(cfg *config.Config, db *store.Store, rdb *redis.Client, pub *engine.Publisher, certifier *engine.Certifier) *Server {
-	return &Server{cfg: cfg, db: db, rdb: rdb, pub: pub, certifier: certifier, login: newLoginGuard()}
+	return &Server{
+		cfg: cfg, db: db, rdb: rdb, pub: pub, certifier: certifier,
+		login:     newLoginGuard(),
+		siteLogin: newLoginGuard(),
+	}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -51,6 +60,15 @@ func (s *Server) Handler() http.Handler {
 	auth.HandleFunc("PUT /api/sites/{id}", s.handleUpdateSite)
 	auth.HandleFunc("DELETE /api/sites/{id}", s.handleDeleteSite)
 	auth.HandleFunc("POST /api/sites/{id}/certificate", s.handleIssueCertificate)
+
+	// The accounts behind a site's login gate. Separate from /api/users, which is
+	// who may operate MosWAF - one table for both would mean an account created so
+	// a colleague could see a staging server could also switch the firewall off.
+	auth.HandleFunc("GET /api/sites/{id}/users", s.handleListSiteUsers)
+	auth.HandleFunc("POST /api/sites/{id}/users", s.handleCreateSiteUser)
+	auth.HandleFunc("PUT /api/sites/{id}/users/{uid}/password", s.handleSetSiteUserPassword)
+	auth.HandleFunc("POST /api/sites/{id}/users/{uid}/revoke", s.handleRevokeSiteUser)
+	auth.HandleFunc("DELETE /api/sites/{id}/users/{uid}", s.handleDeleteSiteUser)
 
 	auth.HandleFunc("GET /api/rules", s.handleListRules)
 	auth.HandleFunc("POST /api/rules", s.handleCreateRule)

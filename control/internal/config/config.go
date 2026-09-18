@@ -16,6 +16,25 @@ import (
 type Config struct {
 	Listen string // admin dashboard listen address, e.g. ":9443"
 
+	// Where the data plane reaches us, on plain HTTP and on the container network
+	// only - it has no entry in the compose file's ports list, so nothing outside
+	// that network can open it. It carries the site login endpoint and nothing
+	// else; the dashboard, the admin API and the cookie that operates them stay on
+	// Listen above, behind TLS.
+	//
+	// Plain HTTP because the alternative is the data plane trusting a self-signed
+	// certificate it has no way to verify, which is a weaker claim dressed as a
+	// stronger one. This is the same network and the same trust boundary that
+	// already carries the Redis password and the whole published configuration in
+	// the clear. What authenticates the caller is the internal token, not the
+	// transport.
+	InternalListen string
+
+	// How the data plane addresses that listener - the compose service name and the
+	// same port. Written into every generated site config, so it is configurable
+	// for anyone running the two halves somewhere other than this compose file.
+	ControlInternal string
+
 	DBDSN         string
 	RedisAddr     string
 	RedisPassword string
@@ -161,6 +180,8 @@ func Load() *Config {
 
 	return &Config{
 		Listen:          env("MOSWAF_LISTEN", ":9443"),
+		InternalListen:  env("MOSWAF_INTERNAL_LISTEN", ":9444"),
+		ControlInternal: env("MOSWAF_CONTROL_INTERNAL", "mgmt:9444"),
 		DBDSN:           env("MOSWAF_DB_DSN", "postgres://moswaf:moswaf@127.0.0.1:5432/moswaf?sslmode=disable"),
 		RedisAddr:       env("MOSWAF_REDIS_ADDR", "127.0.0.1:6379"),
 		RedisPassword:   env("MOSWAF_REDIS_PASSWORD", ""),
