@@ -42,8 +42,11 @@ RUN chmod +x /entrypoint.sh
 
 EXPOSE 9443
 
-# Runs as the moswaf user, so the healthcheck exercises the same identity the
-# service does rather than a more privileged one.
+# Runs as root, like anything else docker starts in this image: there is no USER
+# directive, because the entrypoint needs root to take ownership of the volumes
+# before it drops. The drop happens at runtime, to PID 1 only. So `docker exec
+# ... id` reports root while the service itself is uid 10001 - read
+# /proc/1/status to see what the control plane is actually running as.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/moswafd", "-healthcheck"]
 
