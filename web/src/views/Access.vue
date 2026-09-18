@@ -41,10 +41,13 @@ function setTab(value) {
     <!-- Where this page sits in the sequence. Without it, a rule that never
          fires looks broken rather than out-ranked: the lists above it already
          answered, and nothing on the rule's own row can say so. -->
-    <p class="order-note">
+    <div class="order-note">
       <Icon name="info" />
-      <span>{{ t('access.pipeline') }}</span>
-    </p>
+      <div>
+        <p>{{ t('access.pipeline') }}</p>
+        <p class="allow-note">{{ t('access.pipelineAllow') }}</p>
+      </div>
+    </div>
   </div>
 
   <AccessRules v-if="tab === 'rules'" />
@@ -67,5 +70,7 @@ function setTab(value) {
   display: flex; align-items: flex-start; gap: 8px; margin: 0;
   font-size: 12px; color: var(--ink-3); line-height: 1.55; max-width: 78ch;
 }
+.order-note p { margin: 0; }
+.order-note .allow-note { margin-top: 4px; color: var(--ink-2); }
 .order-note .ico { width: 14px; height: 14px; margin-top: 2px; color: var(--line-3); }
 </style>

@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { api, notify, fmtNumber, fmtShortTime } from '../api'
-import { t } from '../i18n'
+import { t, intlTag } from '../i18n'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
 
@@ -49,6 +49,41 @@ async function load() {
 
 async function loadSites() {
   try { sites.value = await api.list('/api/sites') } catch (e) { sites.value = [] }
+}
+
+// The country codes the data plane can actually decide against.
+//
+// This is the only layer that catches a code like "UK". It is two letters, so
+// the control plane accepts it - it validates the shape, not the membership -
+// and the dataset has no such country, so the condition matches nobody. On a
+// deny rule that is a rule which blocks nothing and says nothing about it: a
+// protection that was never on, with no symptom to notice.
+const countries = ref(null)      // null = could not be loaded, so cannot check
+const countryNames = computed(() => {
+  try { return new Intl.DisplayNames([intlTag()], { type: 'region' }) } catch { return null }
+})
+
+async function loadCountries() {
+  try {
+    const res = await api.get('/api/geo/countries')
+    countries.value = res.ready ? new Set((res.countries || []).map((c) => c.code)) : null
+  } catch (e) {
+    countries.value = null
+  }
+}
+
+function countryLabel(code) {
+  try { return countryNames.value?.of(code) || code } catch { return code }
+}
+
+// Codes in this condition that the dataset does not contain
+function unknownCodes(c) {
+  if (c.field !== 'country' || !countries.value) return []
+  return valuesOf(c).map((v) => v.toUpperCase()).filter((v) => !countries.value.has(v))
+}
+function knownCodes(c) {
+  if (c.field !== 'country' || !countries.value) return []
+  return valuesOf(c).map((v) => v.toUpperCase()).filter((v) => countries.value.has(v))
 }
 
 function siteName(id) {
@@ -184,6 +219,8 @@ const formProblem = computed(() => {
   for (const c of f.conditions) {
     const values = valuesOf(c)
     if (!values.length) return t('access.errEmptyValues', { field: t(`access.field.${c.field}`) })
+    const unknown = unknownCodes(c)
+    if (unknown.length) return t('access.errUnknownCountry', { codes: unknown.join(', ') })
     if (values.length > MAX_VALUES) return t('access.errTooManyValues', { max: MAX_VALUES })
     if (values.some((v) => v.length > MAX_VALUE_LEN)) return t('access.errValueTooLong', { max: MAX_VALUE_LEN })
   }
@@ -287,7 +324,7 @@ function summarise(rule) {
     .join(t('access.andJoin'))
 }
 
-onMounted(() => { load(); loadSites() })
+onMounted(() => { load(); loadSites(); loadCountries() })
 </script>
 
 <template>
@@ -517,7 +554,15 @@ onMounted(() => { load(); loadSites() })
           :aria-label="t('access.form.removeCondition')" @click="dropCondition(i)"
         ><Icon name="x" /></button>
       </div>
-      <div v-if="!FIELDS[c.field].boolean" class="hint">{{ t('access.form.valuesHint') }}</div>
+      <div v-if="c.field === 'country'" class="hint">
+        <template v-if="!countries">{{ t('access.countryUnchecked') }}</template>
+        <template v-else>
+          <span v-if="knownCodes(c).length">{{ knownCodes(c).map(countryLabel).join(' · ') }}</span>
+          <span v-if="unknownCodes(c).length" class="bad-codes">{{ t('access.countryUnknownInline', { codes: unknownCodes(c).join(', ') }) }}</span>
+          <span v-if="!valuesOf(c).length">{{ t('access.form.valuesHint') }}</span>
+        </template>
+      </div>
+      <div v-else-if="!FIELDS[c.field].boolean" class="hint">{{ t('access.form.valuesHint') }}</div>
     </div>
 
     <button
@@ -566,4 +611,6 @@ tr.is-shadowed td { opacity: .45; }
 .cond-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .cond-row .grow { flex: 1; min-width: 160px; }
 .cond .hint { margin-top: 6px; }
+/* Its own line: run together with the resolved names it reads as one sentence */
+.bad-codes { color: var(--critical); display: block; margin-top: 2px; }
 </style>
