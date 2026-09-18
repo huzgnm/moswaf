@@ -20,14 +20,15 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-The first four rounds raised **18 findings, all fixed and re-verified** (the WAF core,
-the control plane, deployment, and the deep-evasion sweep in round 4). Round 5 then
-reviewed a newer feature — **automatic certificates over ACME HTTP-01** — and opened
-**5 more (1 medium, 4 low)**, all on that feature. The medium is the notable one: the
-ACME challenge path is meant to sit outside every WAF check so a site can always renew,
-but it does not — `access_by_lua` is inherited into its location, so under-attack mode
-(and a ban or rate-limit) blocks the CA and breaks renewal. Details in the round-5
-section.
+Across six rounds, **25 findings were raised and all 25 fixed and re-verified**. Rounds
+1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
+findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
+the notable one being that the ACME challenge path was *not* exempt from the WAF
+(`access_by_lua` is inherited into its location), so under-attack mode blocked the CA
+and broke renewal. Round 6 stood up a **real Linux VM and ran `install.sh` end to end**,
+confirming the Docker Compose deployment works and turning up 2 installer findings that
+only a live run exposes (a leftover `.env` copied into production, and a `REPAIR` that
+broke the database while reporting success); the Vue dashboard review found no XSS.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -50,11 +51,13 @@ section.
 | 16 | Low | Zero-padded IPv4 octets evade a ban (`01.2.3.4` ≠ `1.2.3.4` as a key) | `normalize_ip: zero-padded octets collapse` (Lua) | **Fixed ✓ (PR #5)** |
 | 17 | Low | `SeedRules` freezes rule name/category on first run (`ON CONFLICT DO NOTHING`) | — | **Fixed ✓ (PR #5)** |
 | 18 | Low | `normalize_ip` does not canonicalise IPv6 → `::1` ≠ `0:0:0:0:0:0:0:1` as a key | `normalize_ip: IPv6 forms collapse` (Lua) | **Fixed ✓ (PR #7)** |
-| 19 | Medium | ACME challenge path is not exempt from the WAF → under-attack / ban / rate-limit blocks the CA and breaks renewal | black-box (ban + under-attack) | **Open (round 5)** |
-| 20 | Low | `cert_expires_at` is settable via `PUT /api/sites` → renewal can be frozen | — | **Open (round 5)** |
-| 21 | Low | Wildcard domain accepted for HTTP-01 ACME → renewal fails forever | `TestValidateSiteACMERejectsWildcard` (skipped) | **Open (round 5)** |
-| 22 | Low | Trailing-dot IP `1.2.3.4.` slips the IP guard for ACME | `TestValidateSiteACMERejectsTrailingDotIP` (skipped) | **Open (round 5)** |
-| 23 | Low | Manual `POST /api/sites/{id}/certificate` has no rate-limit / ignores backoff → can burn CA limits | — | **Open (round 5)** |
+| 19 | Medium | ACME challenge path is not exempt from the WAF → under-attack / ban / rate-limit blocks the CA and breaks renewal | black-box (ban + under-attack) | **Fixed ✓ (PR #4)** |
+| 20 | Low | `cert_expires_at` is settable via `PUT /api/sites` → renewal can be frozen | — | **Fixed ✓ (PR #4)** |
+| 21 | Low | Wildcard domain accepted for HTTP-01 ACME → renewal fails forever | `TestValidateSiteACMERejectsWildcard` | **Fixed ✓ (PR #4/#5)** |
+| 22 | Low | Trailing-dot IP `1.2.3.4.` slips the IP guard for ACME | `TestValidateSiteACMERejectsTrailingDotIP` | **Fixed ✓ (PR #4/#5)** |
+| 23 | Low | Manual `POST /api/sites/{id}/certificate` has no rate-limit / ignores backoff → can burn CA limits | black-box (429 cooldown) | **Fixed ✓ (PR #4)** |
+| 24 | Medium | `install.sh` copies a leftover source `.env` into production → dev secrets/ports instead of fresh | live VM install | **Fixed ✓ (PR #10)** |
+| 25 | Medium | `REPAIR` regenerates `POSTGRES_PASSWORD`, breaking the DB, and reports success anyway | live VM `--repair` | **Fixed ✓ (PR #10)** |
 
 ---
 
@@ -442,6 +445,69 @@ deploy via `install.sh` on a VPS, add a site with a real domain and
 `MOSWAF_ACME_DIRECTORY` pointed at Let's Encrypt **staging**, confirm the order, then
 switch to production (starting on production risks a week-long lockout after a few
 failures).
+
+---
+
+## Round 6 — the installer and the dashboard, on a real Linux VM
+
+A fresh Ubuntu VM (lima + Docker) ran `install.sh --install` end to end. **The Docker
+Compose deployment works** — all four services build and come up healthy, the dashboard
+answers on its own port, and login succeeds. That path had never been run before this
+round. Two installer findings turned up that only a live run exposes; both are fixed
+(PR #10) and re-verified on the VM.
+
+### 24. `install.sh` copied a leftover `.env` from the source into production — MEDIUM
+
+`fetch_source` tars the source directory into `/opt/moswaf`, excluding `.git`, `data`,
+`.local` and `node_modules` — but not `.env`. Installing from a checkout that has a
+leftover `.env` (a developer who ran `make .env`, or `cp .env.example .env`, or tested
+locally) copied that file into the install, after which `write_env` saw an existing
+`.env` and skipped generating fresh secrets. In the live run the install printed the
+*developer's* admin password and came up on ports **8080/8443 instead of 80/443** — so
+production would have run with dev secrets (dev and prod sharing one JWT secret and DB
+password) and, worse, the WAF would not have been on the standard ports at all, leaving
+real traffic on 80/443 unprotected while the operator believed it was covered. A
+`changeme` `.env` is the safer case: the control plane's placeholder-secret boot guard
+(finding #2) rejects it, so the install fails loudly instead of running insecure.
+
+**Fix (verified):** `--exclude='.env'` in the tar. Re-run from a checkout carrying a
+distinctive dev `.env` — the install now generates a **fresh** admin password and uses
+the default ports **80/443**, ignoring the planted file. The same copy also used to
+overwrite the production `.env` on `UPDATE`; that is closed too.
+
+### 25. `REPAIR` regenerated `POSTGRES_PASSWORD` and broke the database — MEDIUM
+
+`do_repair` regenerates any secret missing from `.env`. For `POSTGRES_PASSWORD` that is
+wrong: the official Postgres image only honours the variable when it *initialises* the
+data directory, so a fresh password on an already-initialised database does not match,
+and the control plane fails with `FATAL: password authentication failed for user
+"moswaf" (SQLSTATE 28P01)`. Worse, `REPAIR` then printed **"Fixed N problem(s) and
+restarted the stack"** while the control plane was in fact down — `wait_healthy || true`
+swallowed the failure.
+
+Reproduced live: removing `POSTGRES_PASSWORD` and running `--repair` left `mgmt`
+crash-looping on the SASL auth error, yet the script reported success.
+
+**Fix (verified):** when the database is already initialised, `REPAIR` now resets the
+role's password *in the database* (`ALTER USER` over the trusted local socket) and only
+writes the new value to `.env` after that succeeds; and it no longer claims success
+unless the control plane actually became healthy. Re-run live: after removing
+`POSTGRES_PASSWORD`, `--repair` brought `mgmt` back to `healthy`, login returned `200`,
+and the log showed no auth error.
+
+### The dashboard (Vue) — no XSS, no injection
+
+Reviewed the SPA for the vector most likely to bite a WAF console: an attacker sends a
+request with a payload in a header or the URL, it is stored in the attack log, and an
+admin opens it. There is **no `v-html`, `innerHTML`, `eval`, dynamic `:href` or other
+raw-HTML sink** anywhere. Every attacker-controlled field — IP, method, URI, host,
+User-Agent, referer, reason — is rendered through Vue's `{{ }}` text interpolation,
+which HTML-escapes by default; `:style` and `:class` bindings use only constants and
+validated enums, so there is no CSS or class injection either. The token is held in
+`localStorage` and sent as an `Authorization: Bearer` header, so there is no CSRF
+surface. Live, the built dashboard serves and login works. (The in-app browser would
+not load the self-signed admin TLS certificate, so the visual render was not captured —
+a tooling limit, not a finding.)
 
 ---
 
