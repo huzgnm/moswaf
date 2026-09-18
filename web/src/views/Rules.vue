@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { api, notify } from '../api'
 import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
+import Icon from '../components/Icon.vue'
 
 const rules = ref([])
 const loading = ref(true)
@@ -35,6 +36,7 @@ const severityLabel = (sev) => t(`severity.${sev}`)
 const targetLabel = (target) => t(`rules.target.${target}`)
 
 const categories = computed(() => [...new Set(rules.value.map((r) => r.category))].sort())
+const enabledCount = computed(() => rules.value.filter((r) => r.enabled).length)
 
 const shown = computed(() => rules.value.filter((r) => {
   if (category.value && r.category !== category.value) return false
@@ -111,24 +113,34 @@ onMounted(load)
 </script>
 
 <template>
+  <div class="page-head">
+    <div>
+      <h2>{{ t('rules.title') }}</h2>
+      <p class="page-sub">{{ t('rules.sub') }}</p>
+    </div>
+    <div class="page-actions">
+      <span v-if="!loading" class="sub">{{ t('rules.count', { on: enabledCount, total: rules.length }) }}</span>
+      <button type="button" class="btn btn-primary" @click="openCreate"><Icon name="plus" />{{ t('rules.addButton') }}</button>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <div class="grow search">
+      <Icon name="search" />
+      <input v-model="filter" class="input" :placeholder="t('rules.search')" />
+    </div>
+    <select v-model="category" class="select" style="width:200px" :aria-label="t('rules.col.category')">
+      <option value="">{{ t('rules.allCategories') }}</option>
+      <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
+    </select>
+  </div>
+
   <div class="card">
-    <div class="card-head">
-      <div>
-        <div class="card-title">{{ t('rules.title') }}</div>
-        <div class="card-sub">{{ t('rules.sub') }}</div>
-      </div>
-      <button class="btn btn-primary" @click="openCreate">{{ t('rules.addButton') }}</button>
+    <div v-if="loading" class="skel-rows"><div v-for="i in 8" :key="i" class="skel skel-line"></div></div>
+    <div v-else-if="!shown.length" class="empty">
+      <Icon name="rules" />
+      <b>{{ t('rules.noMatch') }}</b>
     </div>
-
-    <div class="row" style="margin-bottom:14px">
-      <input v-model="filter" class="input grow" :placeholder="t('rules.search')" />
-      <select v-model="category" class="select" style="width:180px">
-        <option value="">{{ t('rules.allCategories') }}</option>
-        <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
-      </select>
-    </div>
-
-    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
     <div v-else class="table-wrap">
       <table class="table">
         <thead>
@@ -143,30 +155,29 @@ onMounted(load)
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in shown" :key="r.id">
+          <tr v-for="r in shown" :key="r.id" :class="{ 'is-off': !r.enabled }">
             <td>
               <label class="switch">
                 <input type="checkbox" :checked="r.enabled" @change="toggle(r)" />
                 <span class="track"></span>
+                <span class="sr-only">{{ r.name }}</span>
               </label>
             </td>
             <td>
               <div>{{ r.name }}</div>
-              <div class="mono" style="color:var(--text-muted); font-size:11.5px">{{ r.id }}</div>
+              <div class="mono dim" style="font-size:11.5px">{{ r.id }}<span v-if="r.builtin"> · {{ t('rules.builtin') }}</span></div>
             </td>
             <td><span class="tag">{{ r.category }}</span></td>
-            <td class="card-sub">{{ targetLabel(r.target) }}</td>
+            <td class="sub">{{ targetLabel(r.target) }}</td>
             <td>
-              <span class="tag" :class="`tag-${r.action === 'ban' ? 'deny' : r.action}`">
+              <span class="tag" :class="`tag-${r.action}`">
                 <span class="dot"></span>{{ actionLabel(r.action) }}
               </span>
             </td>
-            <td class="card-sub">{{ severityLabel(r.severity) }}</td>
-            <td style="text-align:right; white-space:nowrap">
-              <button class="btn btn-sm" @click="openEdit(r)">{{ t('common.edit') }}</button>
-              <button v-if="!r.builtin" class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(r)">
-                {{ t('common.delete') }}
-              </button>
+            <td><span class="tag" :class="`tag-${r.severity}`">{{ severityLabel(r.severity) }}</span></td>
+            <td class="actions">
+              <button type="button" class="btn btn-sm" @click="openEdit(r)">{{ t('common.edit') }}</button>
+              <button v-if="!r.builtin" type="button" class="btn btn-sm btn-danger" @click="remove(r)">{{ t('common.delete') }}</button>
             </td>
           </tr>
         </tbody>
@@ -221,3 +232,11 @@ onMounted(load)
     </div>
   </Modal>
 </template>
+
+<style scoped>
+.search { position: relative; }
+.search .ico { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--ink-3); pointer-events: none; }
+.search .input { padding-left: 32px; }
+.skel-rows { display: flex; flex-direction: column; gap: 14px; padding: 8px 0; }
+tr.is-off td:not(:first-child) { opacity: .55; }
+</style>

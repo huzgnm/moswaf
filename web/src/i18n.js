@@ -23,8 +23,8 @@ const messages = { en, vi, ru, zh }
 // dashboard in a language they cannot read still has to find their way out.
 // english is the secondary line, for the same reason in the other direction.
 export const LOCALES = [
-  { code: 'en', label: 'English',     english: 'English' },
   { code: 'vi', label: 'Tiếng Việt',  english: 'Vietnamese' },
+  { code: 'en', label: 'English',     english: 'English' },
   { code: 'ru', label: 'Русский',     english: 'Russian' },
   { code: 'zh', label: '中文',         english: 'Chinese' },
 ]
@@ -38,7 +38,7 @@ export const LOCALES = [
 // would not match what anyone sees, and support questions start with "which
 // language is yours in". A fixed default means one dashboard that everybody
 // describes the same way, and one click to change it.
-export const DEFAULT_LOCALE = 'en'
+export const DEFAULT_LOCALE = 'vi'
 
 // Intl tags for dates and numbers. Separate from the locale code because the two
 // do not always match, and Intl wants a full tag.
