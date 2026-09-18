@@ -18,8 +18,18 @@
 --   the signature binds the salt to the address it was issued to, so a solution
 --   is worthless anywhere else;
 --
---   and a salt is spent when it is redeemed, so it cannot be replayed even from
---   the address that earned it - which is what a farm behind one NAT would do.
+--   and a salt is spent when it is redeemed, so one solution buys one cookie
+--   even when the address presenting it is under the attacker's control - which
+--   is the case the binding cannot cover, because the binding is to whatever
+--   address the request appears to come from. Where a forwarded header is
+--   trusted wrongly, an attacker chooses that address per request and the
+--   binding follows them; spending the salt caps them at one.
+--
+-- What neither closes: several clients genuinely sharing one address and one
+-- User-Agent can share the resulting cookie, because that is all the cookie is
+-- bound to. A farm behind one NAT does not need to replay anything - it can pass
+-- the cookie around. Fixing that means per-client state the challenge
+-- deliberately does not keep, and the cost is bounded by the cookie's lifetime.
 --
 -- Flow:
 --   1. No valid cookie      -> serve the challenge page (status 503, never cached)
