@@ -70,3 +70,40 @@ func TestAHeaderWithNoTrustedListIsRefused(t *testing.T) {
 		t.Error("a real-IP header with no trusted proxies was accepted")
 	}
 }
+
+// The line is public versus private, not width.
+//
+// A /8 is enormous and 10.0.0.0/8 is an ordinary internal network behind an
+// ordinary internal load balancer. Refusing it - or even nagging about it - would
+// be objecting to a real deployment to prevent nothing, because an attacker
+// cannot be inside a private range from outside. A public /8 is the opposite:
+// nobody operates a sixteenth of the internet as their load balancer, and
+// whoever is in it can set their own address.
+func TestOnlyWidePUBLICProxyRangesAreWorthMentioning(t *testing.T) {
+	worthSaying := []string{"1.0.0.0/8", "203.0.0.0/8", "2001:db8::/32"}
+	for _, c := range worthSaying {
+		if !WidePublicProxyRange(c) {
+			t.Errorf("%q is a large public range and was not flagged; anybody inside "+
+				"it can set their own address", c)
+		}
+	}
+
+	quiet := []string{
+		"10.0.0.0/8",      // RFC1918, and a perfectly normal internal LB
+		"172.16.0.0/12",   //
+		"192.168.0.0/16",  //
+		"127.0.0.0/8",     // loopback
+		"fd00::/8",        // unique local
+		"fe80::/10",       // link local
+		"198.51.100.0/24", // a real, narrow, public proxy range
+		"2001:db8::/48",   // a real, narrow, public IPv6 range
+		"0.0.0.0/0",       // refused outright elsewhere, not merely mentioned
+		"not a prefix",
+	}
+	for _, c := range quiet {
+		if WidePublicProxyRange(c) {
+			t.Errorf("%q was flagged; objecting to it would be objecting to a real "+
+				"deployment to prevent nothing", c)
+		}
+	}
+}

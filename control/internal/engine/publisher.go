@@ -240,6 +240,15 @@ func (p *Publisher) Publish(ctx context.Context) error {
 					"its own address through %s - bans, the blocklist and allow rules "+
 					"are all keyed on that value. List your proxy's real ranges.",
 					p, settings.RealIPHeader)
+			} else if store.WidePublicProxyRange(p) {
+				// Not refused: unlike an all-covering entry this has plausible narrow
+				// uses, and being wrong about somebody's network is worse than being
+				// noisy about it. But anybody inside that range can set their own
+				// address, and the range is public - so somebody is inside it.
+				log.Printf("moswaf: trusted_proxies contains %s, a large range of public "+
+					"addresses. Every client in it can set its own address through %s; "+
+					"if that is wider than your proxy really is, narrow it.",
+					p, settings.RealIPHeader)
 			}
 		}
 	}

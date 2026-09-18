@@ -155,3 +155,34 @@ func prefixBits(cidr string) (int, error) {
 	}
 	return p.Bits(), nil
 }
+
+// WidePublicProxyRange reports a trusted-proxy entry that covers a large amount
+// of address space somebody else is using.
+//
+// Refusing these outright would be wrong, and the line is not "how wide". A /8 is
+// enormous and 10.0.0.0/8 is an ordinary internal network behind an ordinary
+// internal load balancer - refusing it would break real deployments to prevent
+// nothing, because an attacker cannot reach a private address from outside.
+//
+// The line is public versus private, which is not arbitrary: it is whether the
+// space being trusted is space an attacker can be in. A public /8 is almost never
+// a real proxy - nobody operates a sixteenth of the internet as their load
+// balancer - and any attacker inside it can set their own address. So it is worth
+// saying, and not worth blocking: unlike 0.0.0.0/0 it has plausible narrow uses,
+// and being wrong about somebody's network is worse than being noisy about it.
+func WidePublicProxyRange(cidr string) bool {
+	p, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return false
+	}
+	a := p.Addr()
+	// Space no outsider can occupy. Trusting all of it is a local decision about a
+	// local network, and none of our business.
+	if a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsUnspecified() {
+		return false
+	}
+	if a.Is4() {
+		return p.Bits() > 0 && p.Bits() <= 8
+	}
+	return p.Bits() > 0 && p.Bits() <= 32
+}
