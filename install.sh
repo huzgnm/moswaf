@@ -126,8 +126,13 @@ fetch_source() {
     if [[ "$here" != "$INSTALL_DIR" ]]; then
       info "Copying the source from $here to $INSTALL_DIR"
       mkdir -p "$INSTALL_DIR"
+      # .env is deliberately excluded. Copying it in would install the source
+      # checkout's secrets, admin password and ports into production - write_env
+      # then sees a file and generates nothing - and on an UPDATE it would
+      # overwrite the live configuration with whatever the checkout happened to
+      # carry. .env.example is not matched by this pattern and still ships.
       tar -C "$here" --exclude='.git' --exclude='data' --exclude='.local' \
-          --exclude='node_modules' -cf - . | tar -C "$INSTALL_DIR" -xf -
+          --exclude='node_modules' --exclude='.env' -cf - . | tar -C "$INSTALL_DIR" -xf -
     fi
   elif [[ -d "$INSTALL_DIR/.git" ]]; then
     info "Updating the existing checkout in $INSTALL_DIR"
@@ -262,6 +267,34 @@ do_update() {
 # REPAIR is for the usual breakages: a container stuck in a restart loop, a
 # .env that lost a key, missing data directories, or an image that no longer
 # matches the source. It never touches the database.
+# Generate a new POSTGRES_PASSWORD and make the database agree with it. On a
+# database that has never been initialised the value in .env is all there is, so
+# writing it is enough. On an existing one the password lives in the database and
+# has to be changed there with ALTER USER - the official image trusts connections
+# over the local unix socket, which is what makes that possible without knowing
+# the old password. .env is only written once the change has actually landed, so
+# a failure here leaves a working installation alone.
+repair_db_password() {
+  local pw user data i
+  pw="$(rand 32)"
+  user="$(env_get POSTGRES_USER)"; user="${user:-moswaf}"
+  data="$(env_get MOSWAF_DATA_DIR)"; data="${data:-$INSTALL_DIR/data}"
+
+  if [[ -f "$data/postgres/PG_VERSION" ]]; then
+    info "The database already exists; changing its password to the new value"
+    compose up -d postgres >/dev/null 2>&1 || return 1
+    for i in $(seq 1 30); do
+      compose exec -T postgres pg_isready -U "$user" >/dev/null 2>&1 && break
+      sleep 2
+    done
+    compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$user" -d postgres \
+        -c "ALTER USER \"$user\" WITH PASSWORD '$pw';" >/dev/null 2>&1 || return 1
+    ok "The database accepted the new password"
+  fi
+
+  echo "POSTGRES_PASSWORD=$pw" >> "$INSTALL_DIR/.env"
+}
+
 do_repair() {
   need_root
   installed || die "MosWAF is not installed in $INSTALL_DIR. Run INSTALL first."
@@ -277,9 +310,10 @@ do_repair() {
     ok "Docker is available"
   fi
 
-  # Any secret missing from .env leaves a service unable to start
+  # Any secret missing from .env leaves a service unable to start. Every one of
+  # these is read fresh on each boot, so writing a new value is enough.
   local key missing=0
-  for key in POSTGRES_PASSWORD REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET \
+  for key in REDIS_PASSWORD MOSWAF_JWT_SECRET MOSWAF_CHALLENGE_SECRET \
              MOSWAF_INTERNAL_TOKEN; do
     if [[ -z "$(env_get "$key")" ]]; then
       warn "$key is missing from .env, generating a new value"
@@ -287,6 +321,18 @@ do_repair() {
       missing=$((missing+1))
     fi
   done
+
+  # POSTGRES_PASSWORD is the exception: postgres reads it only while it
+  # initialises its data directory and ignores it on every boot after that.
+  # Writing a fresh value into .env therefore authenticates against nothing -
+  # the control plane dies with "password authentication failed (28P01)" - so
+  # the database has to be changed to match.
+  if [[ -z "$(env_get POSTGRES_PASSWORD)" ]]; then
+    warn "POSTGRES_PASSWORD is missing from .env, generating a new value"
+    repair_db_password \
+      || die "Could not reset the database password. The database is still up with its old password; restore POSTGRES_PASSWORD in $INSTALL_DIR/.env from a backup, or read: docker compose logs postgres"
+    missing=$((missing+1))
+  fi
   if [[ "$missing" == "0" ]]; then
     ok ".env has every required secret"
   else
@@ -311,7 +357,8 @@ do_repair() {
   info "Rebuilding images and recreating containers (the database is untouched)..."
   compose build --pull
   compose up -d --force-recreate
-  wait_healthy || true
+  local healthy=0
+  wait_healthy && healthy=1
 
   echo
   info "Resyncing the configuration to the data plane..."
@@ -324,6 +371,17 @@ do_repair() {
   echo
   compose ps
   echo
+
+  # Reporting success while the control plane is down is worse than reporting
+  # nothing: the operator walks away from a broken install. Whatever was fixed
+  # along the way, a repair has only succeeded if mgmt actually answers.
+  if [[ "$healthy" != "1" ]]; then
+    warn "$problems problem(s) were addressed, but the control plane is still not healthy."
+    echo "  ${DIM}Read its log:  docker compose --env-file $INSTALL_DIR/.env -f $INSTALL_DIR/docker-compose.yml logs mgmt${NC}"
+    echo
+    die "REPAIR did not restore a working installation."
+  fi
+
   if [[ "$problems" == "0" ]]; then
     ok "No configuration problems found; everything was rebuilt and restarted."
   else
