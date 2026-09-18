@@ -52,12 +52,36 @@ end
 
 -- --------------------------------------------------------------- responses
 
+-- Substitute one placeholder.
+--
+-- The replacement is a function rather than a string because gsub reads "%1"
+-- and friends in a replacement string as captures - a value containing a per
+-- cent sign would be rewritten, or would raise "invalid use of '%'" and turn a
+-- block page into a 500.
+--
+-- Escaped as well, even though every value put through it today is already
+-- constrained - the ray is hex, the address has been through normalize_ip, the
+-- time comes from nginx. That is the state of the callers now, not a property
+-- of the function, and this is the last point before the bytes are a page.
+local function fill(html, key, value)
+    value = value or ""
+    value = value:gsub("[&<>\"']", {
+        ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;",
+        ['"'] = "&quot;", ["'"] = "&#39;",
+    })
+    return (html:gsub(key, function() return value end))
+end
+
 local function render_block(ctx, status)
+    -- No reason is rendered. The rule that fired is in the attack log against
+    -- this ray, which is where the operator reads it; on the page it would tell
+    -- whoever is probing the site which signature caught them - and a rule name
+    -- is operator-written text, so it is also the one value here that could
+    -- carry markup.
     local html = config.block_html
-        :gsub("{{RAY}}", ctx.ray or "-")
-        :gsub("{{IP}}", ctx.ip or "-")
-        :gsub("{{REASON}}", ctx.rule_name or ctx.reason or "-")
-        :gsub("{{TIME}}", ngx.localtime())
+    html = fill(html, "{{RAY}}", ctx.ray)
+    html = fill(html, "{{IP}}", ctx.ip)
+    html = fill(html, "{{TIME}}", ngx.localtime())
 
     ngx.status = status
     ngx.header["Content-Type"]  = "text/html; charset=utf-8"

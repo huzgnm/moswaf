@@ -170,13 +170,25 @@ function _M.serve(ip, ua, reason)
     local sig  = salt_sig(salt, ip)
     local ret  = util.b64url(ngx.var.request_uri or "/")
 
+    -- Function replacements, not strings: gsub reads "%1" in a replacement
+    -- string as a capture, so a value carrying a per cent sign is either
+    -- rewritten or raises "invalid use of '%'" and returns a 500 instead of a
+    -- challenge. Every value below is generated here and none contains one
+    -- today; the substitution should not depend on that staying true.
+    local function put(html, key, value)
+        return (html:gsub(key, function() return value end))
+    end
+
+    -- The reason is deliberately not passed to the page. A visitor being asked
+    -- to wait has no use for "flood:rate_rps", and it describes the threshold
+    -- that engaged - which is the one thing worth knowing to a client tuning a
+    -- flood to sit under it.
     local html = config.challenge_html
-        :gsub("{{SALT}}", salt)
-        :gsub("{{SIG}}", sig)
-        :gsub("{{BITS}}", tostring(bits))
-        :gsub("{{RET}}", ret)
-        :gsub("{{VERIFY}}", VERIFY_URI)
-        :gsub("{{REASON}}", reason or "")
+    html = put(html, "{{SALT}}", salt)
+    html = put(html, "{{SIG}}", sig)
+    html = put(html, "{{BITS}}", tostring(bits))
+    html = put(html, "{{RET}}", ret)
+    html = put(html, "{{VERIFY}}", VERIFY_URI)
 
     ngx.status = 503
     ngx.header["Content-Type"]  = "text/html; charset=utf-8"
