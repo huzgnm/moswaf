@@ -69,6 +69,7 @@ jobs:
         run: |
           luajit dataplane/test/run.lua
           luajit dataplane/test/ratelimit.lua
+          luajit dataplane/test/ipv6.lua
           luajit dataplane/test/flood_attack.lua
           luajit dataplane/test/flood.lua
       - name: Check shell syntax

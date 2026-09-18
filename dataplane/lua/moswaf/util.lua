@@ -78,17 +78,65 @@ function _M.parse_cidr(cidr)
     return from, from + size - 1
 end
 
+-- Does an IPv6 address fall inside a prefix?
+--
+-- Compared group by group rather than as one number: an IPv6 address is 128 bits
+-- and Lua numbers are doubles, so anything that turns the whole address into a
+-- single value loses the low half silently - and losing the low half is exactly
+-- what makes two different hosts look like the same one.
+function _M.ipv6_in_prefix(ip, prefix, bits)
+    local a = _M.ipv6_groups(ip)
+    local b = _M.ipv6_groups(prefix)
+    if not a or not b then return false end
+    if bits < 0 or bits > 128 then return false end
+
+    local full = math.floor(bits / 16)
+    for i = 1, full do
+        if a[i] ~= b[i] then return false end
+    end
+
+    local rest = bits % 16
+    if rest > 0 then
+        local shift = 2 ^ (16 - rest)
+        if math.floor(a[full + 1] / shift) ~= math.floor(b[full + 1] / shift) then
+            return false
+        end
+    end
+    return true
+end
+
 -- list: an array of CIDR/IP strings, already normalised by the control plane
+--
+-- IPv6 entries used to be compared as strings, so a prefix in the list matched
+-- nothing at all: adding 2001:db8::/32 to the blocklist blocked one address that
+-- was literally spelled "2001:db8::/32", which is no address. An operator who
+-- blocked a /64 got silence rather than an error, and believed the range was
+-- blocked.
 function _M.ip_in_list(ip, list)
     if not list or #list == 0 then return false end
+
     local n = _M.ipv4_to_int(ip)
+    local v6 = (not n) and _M.ipv6_groups(ip) or nil
+
     for i = 1, #list do
         local item = list[i]
+
         if n then
             local from, to = _M.parse_cidr(item)
             if from and n >= from and n <= to then return true, item end
+        elseif v6 then
+            local prefix, bits = item:match("^(.+)/(%d+)$")
+            if prefix then
+                if _M.ipv6_in_prefix(ip, prefix, tonumber(bits)) then return true, item end
+            elseif _M.normalize_ip(item) == _M.normalize_ip(ip) then
+                -- Compared in canonical form: 2001:db8::1 and 2001:0db8:0:0:0:0:0:1
+                -- are one host, and a blocklist that disagrees is a blocklist that
+                -- can be stepped around by writing the address differently.
+                return true, item
+            end
         end
-        if item == ip then return true, item end   -- IPv6 or an exact match
+
+        if item == ip then return true, item end
     end
     return false
 end
@@ -114,7 +162,14 @@ end
 -- "::1" and "0:0:0:0:0:0:0:1" are the same host written two ways. Returned verbatim
 -- they are two different ban and counter keys, which is the same one-host-many-
 -- identities problem as a zero-padded IPv4 octet, one layer down.
-local function normalize_ipv6(v)
+-- Parse an IPv6 address into its eight 16-bit groups, or nil when it is not one.
+--
+-- Exposed because prefix matching needs the groups, and because a second parser
+-- written next to this one would be a second parser to keep in agreement with
+-- it: a blocklist and a canonical form that disagree about what an address is
+-- are a way around the blocklist.
+function _M.ipv6_groups(v)
+    if type(v) ~= "string" then return nil end
     v = v:lower():gsub("%%.*$", "")   -- drop a zone index such as %eth0
 
     -- An embedded IPv4 tail (::ffff:1.2.3.4) becomes two hex groups
@@ -161,6 +216,12 @@ local function normalize_ipv6(v)
     for i = 1, 8 do
         if groups[i] > 0xffff then return nil end
     end
+    return groups
+end
+
+local function normalize_ipv6(v)
+    local groups = _M.ipv6_groups(v)
+    if not groups then return nil end
 
     -- Longest run of zero groups, at least two long, leftmost on a tie
     local best_start, best_len, run_start, run_len = nil, 0, nil, 0
