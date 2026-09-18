@@ -86,13 +86,53 @@ func NewCertifier(db *store.Store, rdb *redis.Client, directory string, insecure
 //
 // Deliberately free of I/O so the decision is testable on its own: it is what
 // decides whether a live site keeps serving TLS or starts showing browser warnings.
-func NeedsCertificate(s *store.Site, now time.Time) (bool, string) {
-	if !s.Enabled || !s.AcmeEnabled {
-		return false, ""
+// domainsNotCovered lists the site's domains the stored certificate does not
+// name.
+//
+// A certificate is issued for the domains a site had at the time. Add one
+// afterwards and the stored certificate is still valid, still weeks from expiry,
+// and simply does not cover the new name - so without this check nothing ever
+// asks for a new one, and the added domain is served the wrong certificate until
+// the old one approaches expiry. That can be two months of browser warnings on a
+// domain the operator added and reasonably assumed was handled.
+func domainsNotCovered(s *store.Site) []string {
+	if s.TLSCert == "" || len(s.Domains) == 0 {
+		return nil
 	}
-	// Back off after a failure so a broken DNS record cannot hammer the CA
-	if s.AcmeLastTry != nil && s.AcmeLastError != "" &&
-		now.Sub(*s.AcmeLastTry) < retryAfterFailure {
+	block, _ := pem.Decode([]byte(s.TLSCert))
+	if block == nil {
+		return nil // unreadable: expiry and the rest of the checks still apply
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+
+	covered := make(map[string]bool, len(leaf.DNSNames))
+	for _, n := range leaf.DNSNames {
+		covered[strings.ToLower(n)] = true
+	}
+
+	var missing []string
+	for _, d := range s.Domains {
+		if !covered[strings.ToLower(strings.TrimSuffix(d, "."))] {
+			missing = append(missing, d)
+		}
+	}
+	return missing
+}
+
+// CertificateWanted reports whether a site needs a certificate at all, ignoring
+// any back-off after a failure.
+//
+// Separate from NeedsCertificate because the two questions have different
+// answers and different callers. The renewal sweep must respect the back-off -
+// that is what stops a broken DNS record from hammering the authority. The
+// dashboard's button exists precisely to retry immediately after fixing DNS, so
+// it must not be refused by that back-off; what it must be refused by is having
+// nothing to do, which is this.
+func CertificateWanted(s *store.Site, now time.Time) (bool, string) {
+	if !s.Enabled || !s.AcmeEnabled {
 		return false, ""
 	}
 	if s.TLSCert == "" || s.CertExpiresAt == nil {
@@ -101,7 +141,23 @@ func NeedsCertificate(s *store.Site, now time.Time) (bool, string) {
 	if now.Add(renewBefore).After(*s.CertExpiresAt) {
 		return true, "expires " + s.CertExpiresAt.Format(time.RFC3339)
 	}
+	if missing := domainsNotCovered(s); len(missing) > 0 {
+		return true, "the certificate does not cover " + strings.Join(missing, ", ")
+	}
 	return false, ""
+}
+
+func NeedsCertificate(s *store.Site, now time.Time) (bool, string) {
+	want, reason := CertificateWanted(s, now)
+	if !want {
+		return false, ""
+	}
+	// Back off after a failure so a broken DNS record cannot hammer the CA
+	if s.AcmeLastTry != nil && s.AcmeLastError != "" &&
+		now.Sub(*s.AcmeLastTry) < retryAfterFailure {
+		return false, ""
+	}
+	return true, reason
 }
 
 // Run checks every site on a slow loop. ACME work is rare, so the loop is cheap;

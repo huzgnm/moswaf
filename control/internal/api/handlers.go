@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mosvpn/moswaf/control/internal/engine"
 	"github.com/mosvpn/moswaf/control/internal/store"
 )
 
@@ -188,6 +189,26 @@ func (s *Server) handleIssueCertificate(w http.ResponseWriter, r *http.Request) 
 	}
 	if !site.AcmeEnabled {
 		writeErr(w, http.StatusBadRequest, "automatic certificates are not enabled for this site")
+		return
+	}
+	// Refuse when there is nothing to get.
+	//
+	// Every order counts against the authority's duplicate-certificate limit -
+	// five a week for the same set of domains - and that limit is not the hourly
+	// kind that forgives itself by lunchtime. Re-issuing a healthy certificate
+	// five times, whether by a hand on the button or a script calling this
+	// endpoint to "make sure", locks the domain out for a week. Nothing breaks at
+	// the time: it surfaces when the certificate genuinely needs renewing and the
+	// authority says no.
+	//
+	// Deliberately checked with CertificateWanted and not NeedsCertificate: the
+	// latter also refuses during the back-off after a failure, and retrying
+	// immediately after fixing DNS is exactly what this button is for.
+	if want, _ := engine.CertificateWanted(site, time.Now()); !want {
+		writeErr(w, http.StatusConflict,
+			"this site already has a certificate that covers its domains and is not "+
+				"near expiry; ordering another would count against the authority's "+
+				"duplicate-certificate limit of five a week")
 		return
 	}
 	// Each call is a real order at the authority, whose rate limits are strict and

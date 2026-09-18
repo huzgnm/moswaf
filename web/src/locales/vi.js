@@ -135,6 +135,7 @@ export default {
   'sites.getCertBusy': 'Đang xin...',
   'sites.getCertHint': 'Xin nhà cung cấp chứng chỉ ngay, không đợi tới đợt gia hạn tự động',
   'sites.certIssued': 'Đã cấp chứng chỉ cho {name}',
+  'sites.certNotNeeded': 'Website này đã có chứng chỉ phủ đủ các tên miền và chưa gần hết hạn. Xin thêm một cái nữa sẽ tính vào hạn mức 5 lần mỗi tuần cho cùng bộ tên miền.',
 
   'sites.updated': 'Đã cập nhật website; cấu hình đang được đẩy xuống data plane',
   'sites.created': 'Đã thêm website. Trỏ DNS của tên miền về máy này để bắt đầu lọc.',

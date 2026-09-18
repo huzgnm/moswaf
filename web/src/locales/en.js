@@ -132,6 +132,7 @@ export default {
   'sites.getCertBusy': 'Asking...',
   'sites.getCertHint': 'Ask the certificate authority now instead of waiting for the renewal sweep',
   'sites.certIssued': 'Certificate issued for {name}',
+  'sites.certNotNeeded': "This site already has a certificate covering its domains, and it is not near expiry. Ordering another would count against the authority's limit of five per week for the same domains.",
 
   'sites.updated': 'Site updated; the configuration is being pushed to the data plane',
   'sites.created': 'Site added. Point the domain\'s DNS at this machine to start filtering.',

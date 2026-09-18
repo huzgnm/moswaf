@@ -135,6 +135,7 @@ export default {
   'sites.getCertBusy': '申请中...',
   'sites.getCertHint': '立即向证书颁发机构申请，不必等待自动续期',
   'sites.certIssued': '已为 {name} 签发证书',
+  'sites.certNotNeeded': '本站点已有覆盖其全部域名的证书，且距到期还早。再次申请会计入颁发机构的限额：同一组域名每周五次。',
 
   'sites.updated': '站点已更新；配置正在下发到数据平面',
   'sites.created': '站点已添加。把该域名的 DNS 指向这台机器即可开始过滤。',
