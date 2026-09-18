@@ -40,6 +40,20 @@ Run without arguments and the installer shows a menu:
 secrets, builds the images, starts the stack and prints the dashboard URL together
 with the admin password.
 
+**UPDATE** is the same one-line command, run again:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | sudo bash
+```
+
+There is nothing else to remember. On a machine that already has MosWAF the
+installer updates it — pressing Enter at the menu picks UPDATE, and with no
+terminal at all (a provisioning script, CI) it updates without asking. Your `.env`,
+database, certificates and attack log are kept; only the code is replaced.
+
+The installer updates itself along with everything else, so a fix to `install.sh`
+takes effect in the same run that fetches it.
+
 **REPAIR** is for the usual breakages: a container stuck in a restart loop, a `.env`
 that lost a secret, missing data directories, or an image that no longer matches the
 source. It regenerates what is missing, rebuilds, recreates the containers and forces

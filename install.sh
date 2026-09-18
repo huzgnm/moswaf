@@ -2,16 +2,21 @@
 #
 #  MosWAF installer
 #
-#    curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/huzgnm/moswaf/main/install.sh | sudo bash
 #  or, from a source checkout:
 #    sudo bash install.sh
 #
-#  Run without arguments for the menu:
+#  The same command updates an existing installation - there is nothing else to
+#  remember. Run without arguments for the menu:
 #
 #    1) INSTALL     fresh install
 #    2) UPDATE      pull the latest code, rebuild, keep all data
 #    3) REPAIR      diagnose and fix a broken install
 #    4) UNINSTALL   remove MosWAF
+#
+#  Enter picks UPDATE when MosWAF is already installed, INSTALL when it is not.
+#  With no terminal at all - a provisioning script, CI - the same rule decides
+#  the action without asking.
 #
 #  Non-interactive flags (for scripts and CI):
 #    --install | --update | --repair | --uninstall
@@ -29,6 +34,10 @@ MOSWAF_REPO="${MOSWAF_REPO:-https://github.com/huzgnm/moswaf.git}"
 MOSWAF_BRANCH="${MOSWAF_BRANCH:-main}"
 INSTALL_DIR="${MOSWAF_DIR:-/opt/moswaf}"
 
+# The one command that installs, updates, repairs and removes. Printed after an
+# install so nobody has to go looking for it when an update is due.
+ONE_LINER="https://raw.githubusercontent.com/huzgnm/moswaf/${MOSWAF_BRANCH}/install.sh"
+
 ADMIN_PORT="9443"
 ADMIN_BIND="0.0.0.0"
 HTTP_PORT="80"
@@ -43,6 +52,34 @@ ok()   { echo "${GRN}[+]${NC} $*"; }
 warn() { echo "${YLW}[!]${NC} $*"; }
 die()  { echo "${RED}[x]${NC} $*" >&2; exit 1; }
 
+# ------------------------------------------------------------------ self copy
+#
+# UPDATE rewrites install.sh in place - fetch_source runs `git reset --hard`, and
+# on an install made from a git clone that file is this one. bash does not read a
+# script into memory up front; it reads it in chunks as it goes, so replacing the
+# file underneath a running shell makes it resume at a byte offset inside
+# different contents. Run from a private copy instead, which also gives UPDATE a
+# fixed thing to compare the newly fetched installer against.
+#
+# Skipped when there is no file to copy, which is the `curl | bash` case - there
+# the script is already the newest one and nothing can overwrite it.
+#
+# MOSWAF_SELF_ORIG carries the path the operator actually invoked. The copy lives
+# in a temporary directory, so without it fetch_source would look for the source
+# tree next to the copy and never find it - installing from a checkout would
+# silently turn into cloning from GitHub instead.
+if [[ -z "${MOSWAF_SELF_COPY:-}" && -f "$0" ]]; then
+  _self="$(mktemp "${TMPDIR:-/tmp}/moswaf-install.XXXXXX")" || die "Cannot create a temporary file"
+  cat "$0" >"$_self"
+  MOSWAF_SELF_COPY="$_self" MOSWAF_SELF_ORIG="$0" bash "$_self" "$@"
+  _rc=$?
+  rm -f "$_self"
+  exit "$_rc"
+fi
+
+# Where the operator ran this from, whatever shell is executing it now.
+SELF_PATH="${MOSWAF_SELF_ORIG:-$0}"
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --install)     ACTION="install"; shift ;;
@@ -55,7 +92,9 @@ while [[ $# -gt 0 ]]; do
     --https-port)  HTTPS_PORT="$2"; shift 2 ;;
     --dir)         INSTALL_DIR="$2"; shift 2 ;;
     --yes|-y)      ASSUME_YES=1; shift ;;
-    -h|--help)     sed -n '2,28p' "$0"; exit 0 ;;
+    # Print the header block itself rather than a fixed line range, which silently
+    # started truncating the moment the header grew a line.
+    -h|--help)     awk 'NR > 1 { if ($0 !~ /^#/) exit; print }' "$0"; exit 0 ;;
     *) die "Unknown argument: $1" ;;
   esac
 done
@@ -76,7 +115,7 @@ BANNER
 
 # ------------------------------------------------------------------ helpers
 
-need_root() { [[ "$(id -u)" == "0" ]] || die "Must run as root. Try: sudo bash $0"; }
+need_root() { [[ "$(id -u)" == "0" ]] || die "Must run as root. Try: sudo bash $SELF_PATH"; }
 rand() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c "${1:-32}"; }
 installed() { [[ -f "$INSTALL_DIR/.env" && -f "$INSTALL_DIR/docker-compose.yml" ]]; }
 compose() { docker compose --env-file "$INSTALL_DIR/.env" -f "$INSTALL_DIR/docker-compose.yml" "$@"; }
@@ -84,8 +123,27 @@ compose() { docker compose --env-file "$INSTALL_DIR/.env" -f "$INSTALL_DIR/docke
 # Read a value out of .env without sourcing the file
 env_get() { grep -E "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-; }
 
+# Whether a question can actually be asked.
+#
+# `[[ -r /dev/tty ]]` is not enough. The device node can exist and test as
+# readable while opening it fails - "Device not configured" - which is what
+# happens when the script is piped in with no controlling terminal. The menu
+# then printed itself, could not read a choice, and the whole run ended with
+# "Nothing to do": the operator pasted the command, watched it print something,
+# and nothing was installed or updated. Open the device to find out.
+#
+# The open runs in a subshell so that both the failure message and the file
+# descriptor stay inside it: `exec 3</dev/tty 2>/dev/null` in this shell applies
+# its redirections left to right, so the open fails - and prints - before the
+# error is silenced.
+has_tty() { (exec 3</dev/tty) 2>/dev/null; }
+
 confirm() {
   [[ "$ASSUME_YES" == "1" ]] && return 0
+  if ! has_tty; then
+    warn "No terminal to ask on, so taking this as no. Pass --yes to answer in advance."
+    return 1
+  fi
   local answer
   read -r -p "$1 [y/N] " answer </dev/tty || return 1
   [[ "$answer" =~ ^[Yy]$ ]]
@@ -121,7 +179,7 @@ check_ports() {
 }
 
 fetch_source() {
-  local here; here="$(cd "$(dirname "$0")" && pwd)"
+  local here; here="$(cd "$(dirname "$SELF_PATH")" && pwd)"
 
   # The order of these branches matters. Running the installer from inside the
   # install directory - `cd /opt/moswaf && bash install.sh --update`, the obvious
@@ -245,6 +303,9 @@ print_result() {
   echo "  ${YLW}Change the password right after your first sign-in.${NC}"
   echo "  ${YLW}Open the firewall for port ${port}, or use an SSH tunnel:${NC}"
   echo "    ssh -L ${port}:127.0.0.1:${port} root@${ip}"
+  echo
+  echo "  ${DIM}To update later, run the same one-line command again:${NC}"
+  echo "    curl -fsSL ${ONE_LINER} | sudo bash"
   echo "${GRN}${BLD}============================================================${NC}"
   echo
 }
@@ -274,7 +335,7 @@ do_install() {
   else
     print_result
     warn "The control plane did not become healthy, so the dashboard above is not"
-    warn "answering yet. Check the log, then run: bash $0 --repair"
+    warn "answering yet. Check the log, then run: bash $SELF_PATH --repair"
     echo "  ${DIM}docker compose --env-file $INSTALL_DIR/.env -f $INSTALL_DIR/docker-compose.yml logs mgmt${NC}"
     echo
     exit 1
@@ -285,6 +346,23 @@ do_update() {
   need_root
   installed || die "MosWAF is not installed in $INSTALL_DIR. Run INSTALL first."
   fetch_source
+
+  # The installer updates itself along with everything else. Without this a fix
+  # to install.sh would only take effect the *next* time somebody updated, and a
+  # bug that stops UPDATE from working - there has been one - could never repair
+  # itself from the machine it is installed on.
+  #
+  # Only when this run started from a file we copied, so there is something real
+  # to compare; piped from curl the running script is already the newest.
+  local fresh="$INSTALL_DIR/install.sh"
+  if [[ -z "${MOSWAF_UPDATED_SELF:-}" && -n "${MOSWAF_SELF_COPY:-}" && -f "$fresh" ]] \
+     && ! cmp -s "$fresh" "$MOSWAF_SELF_COPY"; then
+    ok "The installer itself was updated; continuing with the new one"
+    local args=(--update --dir "$INSTALL_DIR")
+    [[ "$ASSUME_YES" == "1" ]] && args+=(--yes)
+    MOSWAF_UPDATED_SELF=1 exec bash "$fresh" "${args[@]}"
+  fi
+
   info "Rebuilding images..."
   compose build --pull
   info "Recreating containers..."
@@ -299,7 +377,7 @@ do_update() {
   if [[ "$healthy" != "1" ]]; then
     warn "The rebuild finished but the control plane is not healthy."
     echo "  ${DIM}Read its log:  docker compose --env-file $INSTALL_DIR/.env -f $INSTALL_DIR/docker-compose.yml logs mgmt${NC}"
-    echo "  ${DIM}Then try:      bash $0 --repair${NC}"
+    echo "  ${DIM}Then try:      bash $SELF_PATH --repair${NC}"
     echo
     die "UPDATE did not finish cleanly."
   fi
@@ -474,8 +552,12 @@ menu() {
   echo "  ${BLD}0)${NC} Exit"
   echo
 
-  local choice
-  read -r -p "  Choose [0-4]: " choice </dev/tty || choice=0
+  # Enter picks the action that run is almost certainly for: UPDATE on a machine
+  # that already has MosWAF, INSTALL on one that does not.
+  local choice fallback
+  if installed; then fallback=2; else fallback=1; fi
+  read -r -p "  Choose [0-4] (Enter = $fallback): " choice </dev/tty || choice=""
+  choice="${choice:-$fallback}"
   echo
   case "$choice" in
     1) do_install ;;
@@ -488,8 +570,14 @@ menu() {
 }
 
 # A flag was given -> run that action. Otherwise show the menu when a terminal
-# is attached. Piped through `curl | bash` there is no terminal to read from,
-# so fall back to a plain install.
+# is attached.
+#
+# With no terminal - piped into a provisioning script, or a CI job - there is
+# nothing to read a choice from, so the action is decided by what is on the
+# machine: an existing installation is updated, a bare machine is installed. It
+# used to always install, which on an existing installation stopped at a
+# "Reinstall over it?" prompt that had no terminal to answer it, so the run did
+# nothing at all and said so in a way that looked like success.
 if [[ -n "$ACTION" ]]; then
   case "$ACTION" in
     install)   do_install ;;
@@ -497,8 +585,14 @@ if [[ -n "$ACTION" ]]; then
     repair)    do_repair ;;
     uninstall) do_uninstall ;;
   esac
-elif [[ -r /dev/tty ]]; then
+elif has_tty; then
   menu
+elif installed; then
+  banner
+  info "No terminal attached and MosWAF is already installed in $INSTALL_DIR."
+  info "Updating. Pass --install, --repair or --uninstall to do something else."
+  echo
+  do_update
 else
   banner
   info "No terminal attached, running a plain install. Use --update, --repair or"
