@@ -21,7 +21,7 @@ const NAV = [
   { section: 'nav.sectionProtect' },
   { path: '/sites',     label: 'nav.sites',     icon: 'sites' },
   { path: '/rules',     label: 'nav.rules',     icon: 'rules' },
-  { path: '/ips',       label: 'nav.ips',       icon: 'ips' },
+  { path: '/access',    label: 'nav.access',    icon: 'ips' },
   { path: '/ratelimit', label: 'nav.ratelimit', icon: 'ratelimit' },
   { section: 'nav.sectionSystem' },
   { path: '/settings',  label: 'nav.settings',  icon: 'settings' },

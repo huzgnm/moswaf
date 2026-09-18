@@ -9,9 +9,13 @@ import Icon from './Icon.vue'
 // one Save at the end. Showing a Save button there would suggest the changes are
 // not real until it is pressed, when in fact they already are.
 // danger paints the affirmative button red for actions that cannot be undone.
+// disabled is separate from busy on purpose: busy means "working, wait", and
+// says so on the button, while disabled means "this cannot be submitted yet" -
+// a button that is lit but silently does nothing is worse than either.
 const props = defineProps({
   title: String,
   busy: Boolean,
+  disabled: Boolean,
   okLabel: String,
   hideSubmit: Boolean,
   danger: Boolean,
@@ -76,7 +80,7 @@ onBeforeUnmount(() => {
         <button
           v-if="!hideSubmit" type="button"
           class="btn" :class="danger ? 'btn-danger solid' : 'btn-primary'"
-          :disabled="busy" @click="emit('submit')"
+          :disabled="busy || disabled" @click="emit('submit')"
         >
           {{ busy ? t('common.saving') : (okLabel || t('common.save')) }}
         </button>

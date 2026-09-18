@@ -140,6 +140,25 @@ function account(username = 'admin') {
   }
 }
 
+// Ordered access rules. The mock keeps them in one array and reorders that
+// array, because the order IS the thing being tested.
+let ACCESS_RULES = [
+  { id: 'ra1b2c3d4e', name: 'Cho văn phòng Hà Nội qua', action: 'allow', enabled: true, site_id: '',
+    conditions: [{ field: 'ip', op: 'in_cidr', values: ['14.161.0.0/16'] }], hits_today: 2140 },
+  { id: 'rb2c3d4e5f', name: 'Chặn scanner', action: 'deny', enabled: true, site_id: '',
+    conditions: [{ field: 'ua', op: 'contains', values: ['sqlmap', 'nikto', 'nmap'] }], hits_today: 88774 },
+  { id: 'rc3d4e5f6a', name: 'Bắt /admin giải thử thách', action: 'challenge', enabled: true, site_id: 's6e7f8a9b0',
+    conditions: [{ field: 'path', op: 'prefix', values: ['/admin'] }, { field: 'crawler', op: 'is', values: ['false'] }], hits_today: 316 },
+  { id: 'rd4e5f6a7b', name: 'Ghi log POST từ nước ngoài', action: 'log', enabled: false, site_id: '',
+    conditions: [{ field: 'method', op: 'in', values: ['POST', 'PUT'] }, { field: 'country', op: 'in', values: ['CN', 'RU'] }], hits_today: 0 },
+]
+
+// Midnight UTC, which is the boundary the real counters turn over on
+function hitsSince() {
+  const d = new Date()
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())).toISOString()
+}
+
 function body(req) {
   return new Promise((resolve) => {
     let raw = ''
@@ -223,6 +242,59 @@ export function mockApi() {
             items = items.filter((e) => (e.uri + e.ua + e.rule_name).toLowerCase().includes(needle))
           }
           return send({ items: items.slice(offset, offset + limit), total: items.length, limit, offset })
+        }
+
+        if (p === '/api/access-rules' && req.method === 'POST') {
+          const b = await body(req)
+          ACCESS_RULES.push({ ...b, id: 'r' + Math.random().toString(16).slice(2, 11), enabled: b.enabled !== false, hits_today: 0 })
+          return send(ACCESS_RULES[ACCESS_RULES.length - 1])
+        }
+        if (p === '/api/access-rules/reorder') {
+          const b = await body(req)
+          const byId = new Map(ACCESS_RULES.map((r) => [r.id, r]))
+          ACCESS_RULES = (b.ids || []).map((id) => byId.get(id)).filter(Boolean)
+          return send({ ok: true })
+        }
+        if (p === '/api/access-rules/test') {
+          const q = await body(req)
+          // The same first-match-wins walk the engine does, over the enabled rules
+          const hit = ACCESS_RULES.filter((r) => r.enabled)
+            .filter((r) => !r.site_id || !q.site_id || r.site_id === q.site_id)
+            .find((r) => r.conditions.every((c) => {
+              const v = c.values.map((x) => String(x).toLowerCase())
+              const has = (s) => v.some((x) => String(s || '').toLowerCase().includes(x))
+              switch (c.field) {
+                case 'ip': return v.some((x) => String(q.ip || '').startsWith(x.split('/')[0].split('.').slice(0, 2).join('.')))
+                case 'crawler': return v.includes(String(!!q.crawler))
+                case 'country': return false
+                case 'path': return c.op === 'prefix' ? v.some((x) => String(q.path || '').toLowerCase().startsWith(x)) : has(q.path)
+                case 'host': return c.op === 'suffix' ? v.some((x) => String(q.host || '').toLowerCase().endsWith(x)) : v.includes(String(q.host || '').toLowerCase())
+                case 'ua': return has(q.ua)
+                case 'method': return v.includes(String(q.method || '').toLowerCase())
+                default: return false
+              }
+            }))
+          return hit
+            ? send({ matched: true, id: hit.id, name: hit.name, action: hit.action, site: hit.site_id })
+            : send({ matched: false })
+        }
+        if (p === '/api/access-rules') {
+          const site = url.searchParams.get('site')
+          const since = hitsSince()
+          return send(ACCESS_RULES
+            .filter((r) => !site || r.site_id === site || !r.site_id)
+            .map((r) => ({ ...r, hits_since: since, created_at: new Date(now() - 864e5).toISOString(), updated_at: new Date().toISOString() })))
+        }
+        if (p.startsWith('/api/access-rules/') && req.method === 'PUT') {
+          const b = await body(req)
+          const id = p.split('/')[3]
+          const i = ACCESS_RULES.findIndex((r) => r.id === id)
+          if (i >= 0) ACCESS_RULES[i] = { ...ACCESS_RULES[i], ...b }
+          return send(ACCESS_RULES[i] || {})
+        }
+        if (p.startsWith('/api/access-rules/') && req.method === 'DELETE') {
+          ACCESS_RULES = ACCESS_RULES.filter((r) => r.id !== p.split('/')[3])
+          return send({ ok: true })
         }
 
         if (p === '/api/sites' && req.method === 'POST') {

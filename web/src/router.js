@@ -6,7 +6,7 @@ import Overview  from './views/Overview.vue'
 import Sites     from './views/Sites.vue'
 import Rules     from './views/Rules.vue'
 import Events    from './views/Events.vue'
-import IPLists   from './views/IPLists.vue'
+import Access    from './views/Access.vue'
 import RateLimit from './views/RateLimit.vue'
 import Settings  from './views/Settings.vue'
 
@@ -20,7 +20,10 @@ const router = createRouter({
     { path: '/sites',     component: Sites,     meta: { title: 'nav.sites' } },
     { path: '/rules',     component: Rules,     meta: { title: 'nav.rules' } },
     { path: '/events',    component: Events,    meta: { title: 'nav.events' } },
-    { path: '/ips',       component: IPLists,   meta: { title: 'nav.ips' } },
+    { path: '/access',    component: Access,    meta: { title: 'nav.access' } },
+    // Kept so links and bookmarks from before the two pages were merged land
+    // somewhere correct instead of on the overview.
+    { path: '/ips',       redirect: '/access' },
     { path: '/ratelimit', component: RateLimit, meta: { title: 'nav.ratelimit' } },
     { path: '/settings',  component: Settings,  meta: { title: 'nav.settings' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },

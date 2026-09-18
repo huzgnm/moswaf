@@ -307,7 +307,7 @@ function severityClass(sev) {
       <div class="hero-actions">
         <router-link class="btn btn-sm" to="/events"><Icon name="events" />{{ t('overview.hero.openLog') }}</router-link>
         <router-link v-if="overview && !overview.sites_total" class="btn btn-sm btn-primary" to="/sites"><Icon name="plus" />{{ t('overview.hero.addSite') }}</router-link>
-        <router-link v-else class="btn btn-sm" to="/ips"><Icon name="ban" />{{ t('overview.hero.openIPs') }}</router-link>
+        <router-link v-else class="btn btn-sm" to="/access"><Icon name="ban" />{{ t('overview.hero.openIPs') }}</router-link>
       </div>
     </div>
 
@@ -416,7 +416,7 @@ function severityClass(sev) {
           <div class="card-title">{{ t('overview.topIPs') }}</div>
           <div class="card-sub">{{ t('overview.topIPsSub') }}</div>
         </div>
-        <router-link class="btn-link" to="/ips">{{ t('overview.manageIPs') }}<Icon name="arrowR" /></router-link>
+        <router-link class="btn-link" to="/access">{{ t('overview.manageIPs') }}<Icon name="arrowR" /></router-link>
       </div>
       <div v-if="loading" class="skel-list"><div v-for="i in 4" :key="i" class="skel skel-line"></div></div>
       <div v-else-if="!overview?.top_attackers?.length" class="empty compact"><Icon name="ban" />{{ t('overview.noIPs') }}</div>
