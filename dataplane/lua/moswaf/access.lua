@@ -19,6 +19,7 @@ local ipset     = require "moswaf.ipset"
 local ratelimit = require "moswaf.ratelimit"
 local rules     = require "moswaf.rules"
 local flood     = require "moswaf.flood"
+local crawler   = require "moswaf.crawler"
 local challenge = require "moswaf.challenge"
 
 local _M = {}
@@ -143,6 +144,28 @@ function _M.run()
         return block(ctx, mode, "blacklist", nil, 403)
     end
 
+    -- 3b. a verified search engine
+    --
+    -- Deliberately after the ban and the blocklist. An operator who blocked an
+    -- address meant to block it, and a list fetched from a third party must never
+    -- overrule that - if a crawler range ever overlapped an address somebody had
+    -- banned, the ban wins.
+    --
+    -- Verification exempts from the JS challenge and nothing else. A crawler
+    -- cannot run JavaScript, so challenging one is the same as blocking it, and
+    -- losing search engines during an attack is its own kind of damage. Rules,
+    -- rate limiting and the flood defence all still apply below.
+    local verified, faked = crawler.verify(ip, ua)
+    if verified then
+        ctx.crawler = verified
+    elseif faked then
+        -- Claimed a crawler the address does not back up. Recorded rather than
+        -- blocked: the claim alone is not an attack, and blocking on it would be
+        -- a way to get a competitor's monitoring cut off. The request carries on
+        -- through every check as an ordinary visitor.
+        ctx.fake_crawler = true
+    end
+
     -- 4. a visitor coming back from the challenge
     --
     -- This sits after the ban and blocklist checks and before rate limiting, on
@@ -206,7 +229,8 @@ function _M.run()
         end
     end
 
-    if st.under_attack or site.challenge == "always" or ctx.auto_flood then
+    if (st.under_attack or site.challenge == "always" or ctx.auto_flood)
+       and not ctx.crawler then
         if not challenge.has_valid_cookie(ip, ua) then
             local why = "site_challenge"
             if st.under_attack then

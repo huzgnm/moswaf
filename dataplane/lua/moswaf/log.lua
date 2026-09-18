@@ -17,6 +17,11 @@ local QUEUE_KEY   = "moswaf:events"
 local QUEUE_MAX   = 200000       -- keeps the queue from growing without bound if the control plane dies
 local BUF_MAX     = 2000
 local FLUSH_EVERY = 1            -- seconds
+
+-- How many "claimed to be a crawler and was not" events are recorded per minute.
+-- Enough to see that it is happening and who from; far short of what it costs an
+-- attacker to cause.
+local FAKE_CRAWLER_PER_MINUTE = 60
 local STATS_EVERY = 10           -- seconds
 
 local buf, buf_n = {}, 0
@@ -145,6 +150,20 @@ function _M.run()
     -- every response is making a decision about the site owner's visitors that
     -- the site owner did not ask for. The approximation is the honest trade.
     remember_unique(ctx.ip, ctx.ua)
+
+    -- A request claiming to be a crawler from an address that operator does not
+    -- own. Worth recording - nobody sends that header by accident - but sampled,
+    -- because it is free to send: an attacker spraying a Googlebot User-Agent
+    -- would otherwise fill the disk with the record of it, which is a cheaper
+    -- attack than the one being recorded.
+    if ctx.fake_crawler then
+        local slot = "fake:" .. minute
+        local n = stats:incr(slot, 1, 0, 300) or 0
+        if n <= FAKE_CRAWLER_PER_MINUTE then
+            ctx.reason = ctx.reason or "fake_crawler"
+            ctx.action = (ctx.action == "allow") and "log" or ctx.action
+        end
+    end
 
     -- only keep details for requests worth looking at
     local st = config.get().settings
