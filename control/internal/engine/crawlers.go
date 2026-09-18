@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 )
@@ -67,9 +68,29 @@ type publishedRanges struct {
 }
 
 // Crawlers holds the current lists and refreshes them in the background.
+// SourceStatus is where one crawler's ranges came from and when.
+//
+// Worth reporting, because the two origins are not equally good and nothing else
+// distinguishes them. An installation with no route to the internet runs on the
+// snapshot compiled into the binary forever, quite correctly, and the operator
+// has no way to tell - the ranges are there, the crawlers verify, and the list
+// is silently as old as the release. "Bundled, never refreshed" is a different
+// state from "fetched twenty minutes ago" and should read differently.
+type SourceStatus struct {
+	Name   string `json:"name"`
+	Origin string `json:"origin"` // "bundled" or "fetched"
+	Ranges int    `json:"ranges"`
+	// A pointer, because `omitempty` does not omit a zero struct: a list that has
+	// never been fetched was reporting fetched_at as the year 1, which reads like
+	// a bug in the clock rather than "this has never been fetched".
+	FetchedAt *time.Time `json:"fetched_at,omitempty"`
+	LastError string     `json:"last_error,omitempty"`
+}
+
 type Crawlers struct {
 	mu      sync.RWMutex
 	current map[string][]string // crawler name -> validated prefixes
+	status  map[string]*SourceStatus
 	client  *http.Client
 	sources []CrawlerSource
 }
@@ -77,6 +98,7 @@ type Crawlers struct {
 func NewCrawlers() *Crawlers {
 	c := &Crawlers{
 		current: map[string][]string{},
+		status:  map[string]*SourceStatus{},
 		sources: defaultCrawlerSources,
 		client: &http.Client{
 			Timeout: crawlerFetchTimeout,
@@ -115,7 +137,20 @@ func (c *Crawlers) loadBundled() {
 			log.Printf("moswaf: bundled %s: %s", name, r)
 		}
 		c.current[name] = good
+		c.status[name] = &SourceStatus{Name: name, Origin: "bundled", Ranges: len(good)}
 	}
+}
+
+// Status reports where each list came from, newest information first.
+func (c *Crawlers) Status() []SourceStatus {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]SourceStatus, 0, len(c.status))
+	for _, st := range c.status {
+		out = append(out, *st)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Ranges returns a copy of the current lists.
@@ -204,11 +239,22 @@ func (c *Crawlers) Refresh(ctx context.Context) {
 		good, err := c.fetchOne(ctx, src)
 		if err != nil {
 			log.Printf("moswaf: keeping the previous ranges for %s: %v", src.Name, err)
+			c.mu.Lock()
+			if st := c.status[src.Name]; st != nil {
+				st.LastError = err.Error()
+			} else {
+				c.status[src.Name] = &SourceStatus{Name: src.Name, Origin: "none", LastError: err.Error()}
+			}
+			c.mu.Unlock()
 			continue
 		}
 		c.mu.Lock()
 		before := len(c.current[src.Name])
 		c.current[src.Name] = good
+		now := time.Now().UTC()
+		c.status[src.Name] = &SourceStatus{
+			Name: src.Name, Origin: "fetched", Ranges: len(good), FetchedAt: &now,
+		}
 		c.mu.Unlock()
 		if before != len(good) {
 			log.Printf("moswaf: %s now publishes %d ranges (was %d)", src.Name, len(good), before)

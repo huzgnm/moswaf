@@ -428,7 +428,7 @@ func (s *Server) uniqueCounts(ctx context.Context, hours int) (ips, visitors int
 	ipKeys := make([]string, 0, hours+1)
 	uvKeys := make([]string, 0, hours+1)
 	for h := 0; h <= hours; h++ {
-		hour := (now-int64(h)*3600) / 3600 * 3600
+		hour := (now - int64(h)*3600) / 3600 * 3600
 		ipKeys = append(ipKeys, fmt.Sprintf("moswaf:uip:%d", hour))
 		uvKeys = append(uvKeys, fmt.Sprintf("moswaf:uv:%d", hour))
 	}
@@ -654,6 +654,14 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if n, err := s.rdb.LLen(ctx, "moswaf:events").Result(); err == nil {
 		out["event_queue"] = n
+	}
+	// Where the crawler ranges came from. An installation with no route to the
+	// internet runs on the snapshot compiled into the binary - correctly, and
+	// silently. Reporting the origin is what lets an operator tell "bundled, never
+	// refreshed" from "fetched this morning", which are different situations that
+	// otherwise look identical from the outside.
+	if st := s.pub.CrawlerStatus(); len(st) > 0 {
+		out["crawlers"] = st
 	}
 
 	// ask the data plane directly
