@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `cd37c4b` (all 34 findings across 11 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–11 PRs #12/#13/#15/#16/#17/#20/#24)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `5bdce40` (all 35 findings across 12 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–12 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across eleven rounds, **34 findings were raised and all 34 fixed and re-verified**. Rounds
+Across twelve rounds, **35 findings were raised and all 35 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -42,6 +42,10 @@ indefinitely. Round 11 attacked the **SafeLine-style metrics** and found a singl
 `?hours=0` blanking the entire overview (a division by zero the encoder cannot
 represent), an unclamped `hours` reaching into Redis allocation and an `int64`
 overflow, and a multi-host counter path that silently under-reported by half.
+Round 12 hardened the IP-list matching ahead of the coming Anti-Bot feature and
+found that an **IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) was a second identity**
+that neither matched nor was matched by any IPv4 entry — a block/allowlist and
+crawler-range walk-around, closed before the feature could be built on it.
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -80,6 +84,7 @@ overflow, and a multi-host counter path that silently under-reported by half.
 | 32 | **High** | `GET /api/overview?hours=0` → `qps` divides by zero → `+Inf`/`NaN` → `encoding/json` fails the whole response → overview blanks | `stats_test.go` (via encoder) | **Fixed ✓ (PR #24)** |
 | 33 | Medium | `hours` never clamped → `?hours=3e6` allocates millions of Redis keys and overflows `time.Duration(hours)*time.Hour` past ~2.5M h | `clampHours` `[1,168]` | **Fixed ✓ (PR #24)** |
 | 34 | Medium | Per-minute counters shipped under one key per minute as absolute values → a two-host deploy overwrote itself and under-reported by ~half, silently | `engine/stats_test.go` (per-host sum) | **Fixed ✓ (PR #24)** |
+| 35 | Medium | IPv4-mapped IPv6 (`::ffff:1.2.3.4`) not folded → a second identity that neither matches nor is matched by any IPv4 CIDR/entry (block/allowlist + crawler-range walk-around) | `dataplane/test/ipv6.lua` (mapped both ways) | **Fixed ✓ (PR #27)** |
 
 ---
 
@@ -673,6 +678,49 @@ that two-hour compatibility window, an in-place `nginx -s reload` — as opposed
 container restart MosWAF's own update path performs — would double-count the single minute
 spanning the reload, since the lingering host-less key and the new per-host key reflect the
 same preserved shared-dict counter. Container restart clears the dict and is unaffected.)*
+
+### Round 12 — IP-list matching, ahead of the Anti-Bot feature
+
+The next feature (Anti-Bot) verifies real crawlers by matching the client IP
+against published Google/Bing IP ranges — which ship as both IPv4 and IPv6 CIDRs.
+Before it was built, the IP-list matcher itself was attacked, because a trust
+decision is only as sound as the address comparison under it.
+
+**35. An IPv4-mapped IPv6 address was a second identity — MEDIUM.** `::ffff:1.2.3.4`
+is how the kernel hands nginx an IPv4 client `1.2.3.4` on a dual-stack listener, and
+how anyone can write that client in a forwarded header. `ip_in_list` treated it as a
+pure IPv6 address: `ipv4_to_int` rejects the colon-bearing string, so the address was
+only ever compared group-by-group against IPv6 prefixes, and an IPv4 CIDR entry does
+not parse as IPv6 groups — so the two representations of one host never met. Confirmed
+with a reproduction against the real module (6/6 failing before the fix):
+`normalize_ip("::ffff:1.2.3.4")` returned `::ffff:102:304`, and `ip_in_list` let the
+mapped form walk straight past a `1.2.3.4/32`, a `1.2.3.0/24` and a bare `1.2.3.4`
+block; the allowlist direction mismatched too, and `is_private_ip` was blind to a
+mapped private address. The same "one host, two identities" class as the zero-padded
+IPv4 (#16) and the IPv6 canonical form (#18), one layer further down. On the shipped
+IPv4-only listener the block evasion is not reachable by a direct connection today, but
+it is reachable through the forwarded-header path and — the reason it mattered now — it
+would have silently broken Anti-Bot's range matching the moment the feature (and its
+IPv6 crawler ranges) put a dual-stack listener in front of it: a real IPv4 crawler
+arriving mapped would not match its own IPv4 range, and an attacker could dodge an
+IPv4-based decision by arriving mapped.
+
+**Fixed (PR #27):** the mapped range `::ffff:0:0/96` is folded to its IPv4 form in one
+place — `normalize_ip` — so bans, the rate-limit counters and both lists all key on the
+same string; `ip_in_list` folds both the address under test and every entry, including a
+mapped *prefix* (`::ffff:1.2.3.0/120` = `1.2.3.0/24`, the `bits - 96` handled); and
+`is_private_ip` sees through it. Re-verified: 6/6 reproduction checks pass and the
+project's `ipv6.lua` suite is 49/49.
+
+A design decision was reviewed and confirmed sound rather than taken on trust: only the
+IPv4-*mapped* range is folded, not the deprecated IPv4-*compatible* form (`::1.2.3.4`).
+Folding `::/96` would corrupt real IPv6 — `::0.0.0.1` is `::1`, the loopback, and
+`::1234` is an address in use — turning them into nonsense IPv4. The compatible form is
+not a bypass either: it can only arrive via a forged forwarded header, where any value
+mints a fresh identity regardless, so the defence is `trusted_proxies` and the
+right-to-left hop walk (#6b), not address folding; and it fails *closed* — `::1.2.3.4`
+becomes `::102:304`, which matches no IPv4 allowlist entry, so it can never impersonate a
+trusted address. Empirically confirmed both ways.
 
 ---
 
