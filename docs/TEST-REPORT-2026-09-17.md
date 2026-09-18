@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `c1ceb35` (all 37 findings across 13 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–13 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29)
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `98530dd` (all 39 findings across 14 rounds; rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–14 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32)
 
 ---
 
@@ -20,7 +20,7 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across thirteen rounds, **37 findings were raised and all 37 fixed and re-verified**. Rounds
+Across fourteen rounds, **39 findings were raised and all 39 fixed and re-verified**. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -52,7 +52,14 @@ containers ran as **root** (fixed — workers drop to `nobody`, the control plan
 unprivileged user) and that the internal API failed *open* before its first config
 sync (fixed — it fails closed now); and it put on record the half that was already
 sound, because a public reader deciding whether to trust this needs the passing checks
-as much as the failing ones.
+as much as the failing ones. Round 14 attacked the new **verified-crawler** feature —
+which recognises a search engine by whether its address is in a published range rather
+than by the User-Agent it claims — and found that the guard protecting that trust was
+tight for IPv4 but let broad **IPv6** ranges through (fixed); the round also exercised
+the live fetch-and-refresh path end to end (the one part the fixer's machine could not
+run), and, from a limitation in *that test*, surfaced a matching limitation in the
+*product* — an install with no route to the internet ran on the bundled snapshot forever
+with nothing to say so (fixed: the origin of every list is now reported).
 
 | # | Severity | Finding | Reproduction | Status |
 |---|----------|---------|--------------|--------|
@@ -94,6 +101,8 @@ as much as the failing ones.
 | 35 | Medium | IPv4-mapped IPv6 (`::ffff:1.2.3.4`) not folded → a second identity that neither matches nor is matched by any IPv4 CIDR/entry (block/allowlist + crawler-range walk-around) | `dataplane/test/ipv6.lua` (mapped both ways) | **Fixed ✓ (PR #27)** |
 | 36 | Medium | nginx workers and both containers ran as **root** (no `USER`, `user root;`) → a worker/app bug is container-root, and Docker does not remap userns by default | live: `ps`/`/proc/1/status` (workers `nobody`, PID 1 uid 10001) | **Fixed ✓ (PR #29)** |
 | 37 | Low | Internal API failed **open** before its first config sync when no token was set (allow list is a network boundary, not an identity) | source review (`api.lua` → 503) | **Fixed ✓ (PR #29)** |
+| 38 | Medium | Crawler-range over-broad guard was IPv4-only in aggregate: no whole-list IPv6 ceiling and a loose `/32` per entry, so a compromised source could get broad IPv6 space trusted; mapped `::ffff:0:0/33..95` also slipped past | `go test` (validator, mapped + `2000::/32`) | **Fixed ✓ (PR #31)** |
+| 39 | Low | No way to tell a **bundled** crawler list from a **fetched** one — an install with no egress ran on the shipped snapshot forever, silently (surfaced from a test-caveat) | live (`/api/system/status`, egress blocked) | **Fixed ✓ (PR #32)** |
 
 ---
 
@@ -819,6 +828,76 @@ before trusting a WAF with their traffic, and here the answers are good:
 - **It fails loud, not open.** A bare `docker compose up` without an `.env` does not
   quietly run with blank secrets: Postgres refuses to start without a password, so the
   stack stops rather than coming up unprotected.
+
+### Round 14 — verified crawlers, and the fetch path nothing had exercised
+
+The feature: a search engine is recognised by whether its address falls inside a range
+the operator publishes (Google, Bing, Apple), not by the `User-Agent` it sends — because
+a User-Agent is a string anyone can type, and "Googlebot" costs an attacker nothing. What
+recognition grants is deliberately narrow: exemption from the JS challenge (a crawler
+cannot run JavaScript, so challenging one is the same as blocking it), and nothing else —
+rules, rate limits and the flood defence all still apply. The prize for defeating it is
+"not challenged", never "through the WAF", which is the right size for a trust that comes
+from a document fetched off the internet.
+
+That framing held up, and the attacks that follow all bounced off it: a User-Agent
+crafted to claim all four crawler lists at once still has to arrive from an address one
+of them actually publishes; the check sits after the ban and the blocklist, so an
+operator's block always wins; a fetched list is bounded to 4 MB and a 20-second timeout,
+and a fetch that fails keeps the previous list rather than falling back to an empty one.
+The findings were in the two places that decide what gets trusted in the first place: the
+guard on the ranges, and the question of where the ranges came from.
+
+**38. The over-broad guard was tight for IPv4 and loose for IPv6 — MEDIUM.** These ranges
+are the one place in MosWAF where a document fetched from a third party grants a
+privilege, so the guard against a compromised or intercepted source is the whole defence:
+it refuses a range too broad to be a real crawler's. For IPv4 it was strict — no prefix
+broader than a `/12`, and a whole-list ceiling of four million addresses so that many
+narrow prefixes cannot add up to the internet. For IPv6 it was neither: the aggregate
+ceiling counted only IPv4 (a helper returned zero for every IPv6 prefix), and the
+per-entry limit was `/32` where a real crawler range is a `/64`. Confirmed with `go test`
+against the real validator: `2000::/32` — 2⁹⁶ addresses of real global-unicast space —
+was accepted, sixty-four of them were accepted with no aggregate objection, and a mapped
+`::ffff:0:0/33` through `/95` slipped through as a broad IPv6 prefix because the fold to
+IPv4 only ran at `/96` and longer. A comment claimed the IPv6 width guard would refuse
+those; it would not. **Fixed (PR #31):** a `/48` per-entry limit and a second aggregate
+ceiling counted in `/64` subnets (kept separate from the IPv4 one, because a single `/64`
+dwarfs the entire IPv4 internet and merging them would drown the IPv4 count); and any
+mapped prefix shorter than `/96` is refused outright, deciding it is mapped *before*
+masking, since masking a `/95` erases the `ffff` marker and hides what it is. Re-verified:
+every mapped variant from `/96` down to `/33` refused, `2000::/32` and thirty-two `/48`s
+refused, and all 641 ranges in the real bundled snapshot still accepted — the tightening
+cost no legitimate range.
+
+**39. Nothing distinguished a bundled list from a fetched one — LOW.** This one came out
+of a limit in the testing rather than a line of code. Verifying the fetch path live (see
+below), the crawler counts matched the bundled snapshot exactly, so the count alone could
+not tell whether the list had just been fetched or was still the one shipped in the
+binary. That is not only a testing problem: an installation with no route to the internet
+runs on the bundled snapshot **forever**, entirely by design and completely silently —
+the ranges are present, crawlers verify, everything works, and the list is as old as the
+release, with nothing to say so. If it cannot be told apart with container access and the
+logs, an operator has no chance. **Fixed (PR #32):** `GET /api/system/status` now reports,
+per source, whether the list is `bundled` or `fetched`, how many ranges it holds, when it
+was last fetched, and the last error if a fetch is failing — so a source that has been
+failing all week says so instead of looking identical to one refreshed a minute ago.
+
+**The live fetch-and-refresh path, end to end.** The control plane fetching real lists
+from Google, Bing and Apple inside a container is the one part the fixer's machine —
+which has no Docker — could not run, so it was exercised here on the VM:
+
+  - the container reaches the real endpoints and the published JSON parses;
+  - the control plane comes up healthy and serves — confirming that a reentrant-mutex
+    deadlock the fixer had found and fixed in a native build was in fact gone under Docker
+    too, which is not the same test;
+  - after the refresh timer fires, `/api/system/status` flips every source from `bundled`
+    to `fetched` with a real per-source timestamp, and `moswaf:config` in Redis carries
+    all four lists and their 641 ranges down to the data plane — fetch → validate →
+    publish → match, whole;
+  - and with the container's egress dropped and `mgmt` restarted, status stays `bundled`,
+    keeps serving the ranges (so crawlers still verify offline, which is the entire point
+    of shipping a snapshot), and surfaces `last_error: context deadline exceeded` against
+    the source it could not reach.
 
 ---
 
