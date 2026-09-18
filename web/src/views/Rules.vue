@@ -129,47 +129,49 @@ onMounted(load)
     </div>
 
     <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
-    <table v-else class="table">
-      <thead>
-        <tr>
-          <th style="width:52px">{{ t('rules.col.on') }}</th>
-          <th>{{ t('rules.col.name') }}</th>
-          <th>{{ t('rules.col.category') }}</th>
-          <th>{{ t('rules.col.scans') }}</th>
-          <th>{{ t('rules.col.action') }}</th>
-          <th>{{ t('rules.col.severity') }}</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="r in shown" :key="r.id">
-          <td>
-            <label class="switch">
-              <input type="checkbox" :checked="r.enabled" @change="toggle(r)" />
-              <span class="track"></span>
-            </label>
-          </td>
-          <td>
-            <div>{{ r.name }}</div>
-            <div class="mono" style="color:var(--text-muted); font-size:11.5px">{{ r.id }}</div>
-          </td>
-          <td><span class="tag">{{ r.category }}</span></td>
-          <td class="card-sub">{{ targetLabel(r.target) }}</td>
-          <td>
-            <span class="tag" :class="`tag-${r.action === 'ban' ? 'deny' : r.action}`">
-              <span class="dot"></span>{{ actionLabel(r.action) }}
-            </span>
-          </td>
-          <td class="card-sub">{{ severityLabel(r.severity) }}</td>
-          <td style="text-align:right; white-space:nowrap">
-            <button class="btn btn-sm" @click="openEdit(r)">{{ t('common.edit') }}</button>
-            <button v-if="!r.builtin" class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(r)">
-              {{ t('common.delete') }}
-            </button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th style="width:52px">{{ t('rules.col.on') }}</th>
+            <th>{{ t('rules.col.name') }}</th>
+            <th>{{ t('rules.col.category') }}</th>
+            <th>{{ t('rules.col.scans') }}</th>
+            <th>{{ t('rules.col.action') }}</th>
+            <th>{{ t('rules.col.severity') }}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="r in shown" :key="r.id">
+            <td>
+              <label class="switch">
+                <input type="checkbox" :checked="r.enabled" @change="toggle(r)" />
+                <span class="track"></span>
+              </label>
+            </td>
+            <td>
+              <div>{{ r.name }}</div>
+              <div class="mono" style="color:var(--text-muted); font-size:11.5px">{{ r.id }}</div>
+            </td>
+            <td><span class="tag">{{ r.category }}</span></td>
+            <td class="card-sub">{{ targetLabel(r.target) }}</td>
+            <td>
+              <span class="tag" :class="`tag-${r.action === 'ban' ? 'deny' : r.action}`">
+                <span class="dot"></span>{{ actionLabel(r.action) }}
+              </span>
+            </td>
+            <td class="card-sub">{{ severityLabel(r.severity) }}</td>
+            <td style="text-align:right; white-space:nowrap">
+              <button class="btn btn-sm" @click="openEdit(r)">{{ t('common.edit') }}</button>
+              <button v-if="!r.builtin" class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(r)">
+                {{ t('common.delete') }}
+              </button>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <Modal

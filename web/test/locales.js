@@ -12,7 +12,10 @@
 //   2. exactly the same {placeholders} in each value - a translation that drops
 //      {days} renders "left" with no number, and one that invents {day} renders
 //      the literal braces on screen;
-//   3. no empty strings, which is how a missing translation usually arrives.
+//   3. no empty strings, which is how a missing translation usually arrives;
+//   4. balanced braces, since an interpolation typo like "{days}}" survives the
+//      placeholder check - the extra brace is not part of any {name} match - and
+//      then renders as a stray brace on screen.
 //
 //   node test/locales.js
 
@@ -28,27 +31,39 @@ function placeholders(value) {
   return [...value.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort()
 }
 
+function unbalancedBraces(value) {
+  const open = (value.match(/\{/g) || []).length
+  const close = (value.match(/\}/g) || []).length
+  return open === close ? null : `${open} '{' vs ${close} '}'`
+}
+
 const enKeys = Object.keys(en).sort()
 
 // English is the reference, so check it for the one thing it can still get wrong.
 for (const [key, value] of Object.entries(en)) {
   if (typeof value !== 'string' || value.trim() === '') {
     problems.push(`en: ${key} is empty`)
+    continue
   }
+  const braces = unbalancedBraces(value)
+  if (braces) problems.push(`en: ${key} has unbalanced braces (${braces})`)
 }
 
 for (const [code, table] of Object.entries(locales)) {
   const keys = Object.keys(table).sort()
 
+  // Object.hasOwn, not `in`: `in` walks the prototype chain, so a locale that was
+  // missing a key named like an Object.prototype member - "constructor",
+  // "toString" - would read as present and never be reported.
   for (const key of enKeys) {
-    if (!(key in table)) problems.push(`${code}: missing key ${key}`)
+    if (!Object.hasOwn(table, key)) problems.push(`${code}: missing key ${key}`)
   }
   for (const key of keys) {
-    if (!(key in en)) problems.push(`${code}: stale key ${key} (not in en)`)
+    if (!Object.hasOwn(en, key)) problems.push(`${code}: stale key ${key} (not in en)`)
   }
 
   for (const key of enKeys) {
-    if (!(key in table)) continue
+    if (!Object.hasOwn(table, key)) continue
 
     const value = table[key]
     if (typeof value !== 'string' || value.trim() === '') {
@@ -63,6 +78,9 @@ for (const [code, table] of Object.entries(locales)) {
         `${code}: ${key} placeholders differ - en has {${want}}, ${code} has {${got}}`
       )
     }
+
+    const braces = unbalancedBraces(value)
+    if (braces) problems.push(`${code}: ${key} has unbalanced braces (${braces})`)
   }
 }
 

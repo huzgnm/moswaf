@@ -12,10 +12,10 @@
 
 import { reactive } from 'vue'
 
-import en from './locales/en'
-import vi from './locales/vi'
-import ru from './locales/ru'
-import zh from './locales/zh'
+import en from './locales/en.js'
+import vi from './locales/vi.js'
+import ru from './locales/ru.js'
+import zh from './locales/zh.js'
 
 const messages = { en, vi, ru, zh }
 
@@ -34,19 +34,28 @@ const INTL_TAGS = { en: 'en-US', vi: 'vi-VN', ru: 'ru-RU', zh: 'zh-CN' }
 
 const STORAGE_KEY = 'moswaf.locale'
 
+// Object.hasOwn, not a truthy lookup: every value inherits "constructor",
+// "toString" and friends from Object.prototype, so a truthy check accepts
+// localStorage.setItem('moswaf.locale', 'constructor') as a real language. The
+// consequences are mild - t() falls back to English and Intl ignores the tag -
+// but an accepted value that is not a language should never be stored.
+function known(table, key) {
+  return typeof key === 'string' && Object.hasOwn(table, key)
+}
+
 function detect() {
   const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved && messages[saved]) return saved
+  if (known(messages, saved)) return saved
 
   // navigator.language is a full tag ("vi-VN", "zh-Hans-CN"); match the prefix.
   const prefix = String(navigator.language || 'en').toLowerCase().split('-')[0]
-  return messages[prefix] ? prefix : 'en'
+  return known(messages, prefix) ? prefix : 'en'
 }
 
 export const i18n = reactive({ locale: detect() })
 
 export function setLocale(code) {
-  if (!messages[code]) return
+  if (!known(messages, code)) return
   i18n.locale = code
   localStorage.setItem(STORAGE_KEY, code)
   document.documentElement.lang = code
@@ -64,14 +73,14 @@ document.documentElement.lang = i18n.locale
  * on screen by design - a silent empty string would hide the mistake.
  */
 export function t(key, vars) {
-  const table = messages[i18n.locale] || messages.en
-  let s = table[key]
-  if (s === undefined) s = messages.en[key]
+  const table = known(messages, i18n.locale) ? messages[i18n.locale] : messages.en
+  let s = Object.hasOwn(table, key) ? table[key] : undefined
+  if (s === undefined && Object.hasOwn(messages.en, key)) s = messages.en[key]
   if (s === undefined) return key
   if (vars) s = s.replace(/\{(\w+)\}/g, (m, name) => (vars[name] !== undefined ? vars[name] : m))
   return s
 }
 
 export function intlTag() {
-  return INTL_TAGS[i18n.locale] || 'en-US'
+  return known(INTL_TAGS, i18n.locale) ? INTL_TAGS[i18n.locale] : 'en-US'
 }

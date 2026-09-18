@@ -156,6 +156,13 @@ textarea.input { min-height: 90px; resize: vertical; font-family: ui-monospace, 
 .table td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
 .table tr:last-child td { border-bottom: none; }
 .table tr:hover td { background: var(--surface-2); }
+
+/* A table wider than its card has to scroll, not be clipped.
+   The card sets no overflow of its own, so the right-hand columns - including the
+   row's Edit and Delete buttons - simply vanished on a narrow window with no way
+   to reach them. Russian runs about 20% wider than English, which turned that
+   from a rare case into an ordinary-laptop one. */
+.table-wrap { overflow-x: auto; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
 .truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
