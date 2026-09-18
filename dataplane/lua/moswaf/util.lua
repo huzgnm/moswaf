@@ -225,13 +225,26 @@ function _M.ipv6_groups(v)
     local left, right = v:match("^(.-)::(.*)$")
     local groups = {}
 
+    -- Split one half on ":" WITHOUT skipping empty pieces.
+    --
+    -- gmatch("[^:]+") was here, and it silently swallowed them: a second "::"
+    -- inside a half, a leading ":" or a trailing one simply vanished, so "::ffff:"
+    -- parsed as "::ffff" and "1::2::3" - neither of which is an address - each came
+    -- back as a perfectly ordinary set of eight groups. A parser that invents an
+    -- address out of a string that is not one is the dangerous kind of lenient:
+    -- every decision downstream, the blocklist included, is then made about an
+    -- address nobody sent.
     local function push(part)
-        if part == "" then return true end
-        for g in part:gmatch("[^:]+") do
-            if #g > 4 or not g:match("^%x+$") then return false end
+        if part == "" then return true end   -- an empty half either side of "::"
+        local start = 1
+        while true do
+            local sep = part:find(":", start, true)
+            local g = sep and part:sub(start, sep - 1) or part:sub(start)
+            if g == "" or #g > 4 or not g:match("^%x+$") then return false end
             groups[#groups + 1] = tonumber(g, 16)
+            if not sep then return true end
+            start = sep + 1
         end
-        return true
     end
 
     if left then

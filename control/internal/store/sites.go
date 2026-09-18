@@ -16,16 +16,16 @@ const siteCols = `id, name, domains, upstream_scheme, upstream_host, upstream_po
 	mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key, force_https,
 	enabled, rules_off, created_at, updated_at,
 	acme_enabled, acme_email, cert_expires_at, acme_last_error, acme_last_try,
-	auth_enabled, auth_paths`
+	auth_enabled, auth_paths, geo_mode, geo_countries`
 
 func scanSite(row pgx.Row) (*Site, error) {
 	var s Site
-	var domains, rulesOff, authPaths []byte
+	var domains, rulesOff, authPaths, geoCountries []byte
 	err := row.Scan(&s.ID, &s.Name, &domains, &s.UpstreamScheme, &s.UpstreamHost, &s.UpstreamPort,
 		&s.Mode, &s.Challenge, &s.RateRPS, &s.RateBurst, &s.FloodRPS, &s.TLSCert, &s.TLSKey, &s.ForceHTTPS,
 		&s.Enabled, &rulesOff, &s.CreatedAt, &s.UpdatedAt,
 		&s.AcmeEnabled, &s.AcmeEmail, &s.CertExpiresAt, &s.AcmeLastError, &s.AcmeLastTry,
-		&s.AuthEnabled, &authPaths)
+		&s.AuthEnabled, &authPaths, &s.GeoMode, &geoCountries)
 	if err != nil {
 		return nil, err
 	}
@@ -39,6 +39,13 @@ func scanSite(row pgx.Row) (*Site, error) {
 	}
 	_ = json.Unmarshal(authPaths, &s.AuthPaths)
 	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
+	_ = json.Unmarshal(geoCountries, &s.GeoCountries)
+	if s.GeoMode != "" {
+		s.GeoMode, s.GeoCountries = NormaliseGeo(s.GeoMode, s.GeoCountries)
+	}
+	if s.GeoCountries == nil {
+		s.GeoCountries = []string{}
+	}
 	s.HasTLS = s.TLSCert != "" && s.TLSKey != ""
 	return &s, nil
 }
@@ -158,6 +165,17 @@ func ValidateSite(s *Site) error {
 	}
 
 	s.AuthPaths = NormaliseAuthPaths(s.AuthPaths)
+
+	// "" means "follow the global rule" and is left exactly as it is. Anything else
+	// is normalised, which is also what turns "allow, listing nothing" - a rule
+	// that reads as allow and means refuse everybody - back into off.
+	if s.GeoMode != "" {
+		s.GeoMode, s.GeoCountries = NormaliseGeo(s.GeoMode, s.GeoCountries)
+	}
+	if s.GeoCountries == nil {
+		s.GeoCountries = []string{}
+	}
+
 	// A login gate over plain HTTP hands the password and then the session cookie
 	// to everybody between the visitor and the server. The gate would appear to
 	// work, which is the worst version of not working: an operator would put their
@@ -233,14 +251,16 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 	domains, _ := json.Marshal(site.Domains)
 	rulesOff, _ := json.Marshal(site.RulesOff)
 	authPaths, _ := json.Marshal(NormaliseAuthPaths(site.AuthPaths))
+	geoCountries, _ := json.Marshal(site.GeoCountries)
 	site.UpdatedAt = time.Now()
 
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO sites (id, name, domains, upstream_scheme, upstream_host, upstream_port,
 		                   mode, challenge, rate_rps, rate_burst, flood_rps, tls_cert, tls_key,
 		                   force_https, enabled, rules_off, acme_enabled, acme_email,
-		                   cert_expires_at, auth_enabled, auth_paths, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21, now())
+		                   cert_expires_at, auth_enabled, auth_paths,
+		                   geo_mode, geo_countries, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23, now())
 		ON CONFLICT (id) DO UPDATE SET
 			name = EXCLUDED.name,
 			domains = EXCLUDED.domains,
@@ -262,11 +282,13 @@ func (s *Store) UpsertSite(ctx context.Context, site *Site) error {
 			cert_expires_at = EXCLUDED.cert_expires_at,
 			auth_enabled = EXCLUDED.auth_enabled,
 			auth_paths = EXCLUDED.auth_paths,
+			geo_mode = EXCLUDED.geo_mode,
+			geo_countries = EXCLUDED.geo_countries,
 			updated_at = now()`,
 		site.ID, site.Name, domains, site.UpstreamScheme, site.UpstreamHost, site.UpstreamPort,
 		site.Mode, site.Challenge, site.RateRPS, site.RateBurst, site.FloodRPS, site.TLSCert,
 		site.TLSKey, site.ForceHTTPS, site.Enabled, rulesOff, site.AcmeEnabled, site.AcmeEmail,
-		site.CertExpiresAt, site.AuthEnabled, authPaths)
+		site.CertExpiresAt, site.AuthEnabled, authPaths, site.GeoMode, geoCountries)
 	return err
 }
 

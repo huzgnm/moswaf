@@ -41,6 +41,13 @@ type luaSite struct {
 	AuthEnabled bool            `json:"auth_enabled"`
 	AuthPaths   []string        `json:"auth_paths"`
 	AuthUsers   map[int64]int64 `json:"auth_users"`
+
+	// The country rule in force here, already resolved: a site that follows the
+	// global rule is published carrying the global rule, not a marker saying to go
+	// and look it up. The data plane reads one field and decides; working out which
+	// rule applies is done once per publish rather than once per request.
+	GeoMode string `json:"geo_mode"`
+	GeoSet  string `json:"geo_set"`
 }
 
 type luaRule struct {
@@ -70,6 +77,11 @@ type luaConfig struct {
 	// against these instead of resolving DNS per request, which keeps the answer
 	// out of the request path entirely.
 	Crawlers map[string]luaCrawler `json:"crawlers"`
+
+	// Address ranges for the country rules in use, keyed by the sorted country
+	// list. Only the countries somebody is actually deciding on appear here - a
+	// rule blocking two countries ships those two, not the whole world.
+	GeoSets map[string]GeoSet `json:"geo_sets"`
 }
 
 type luaCrawler struct {
@@ -93,12 +105,32 @@ type Publisher struct {
 	crawlersMu sync.RWMutex
 	crawlers   *Crawlers
 
+	// The geolocation dataset, for building country rules. Optional and guarded the
+	// same way as the crawler ranges, and for the same reason: Publish holds mu for
+	// its whole body and reads this from inside it.
+	geoMu sync.RWMutex
+	geo   *GeoIP
+
 	mu      sync.Mutex
 	version int64
 }
 
 func NewPublisher(db *store.Store, rdb *redis.Client, cfg *config.Config) *Publisher {
 	return &Publisher{db: db, rdb: rdb, cfg: cfg}
+}
+
+// SetGeoIP attaches the geolocation dataset. Without one, every country rule is
+// published as off - the direction that keeps sites serving.
+func (p *Publisher) SetGeoIP(g *GeoIP) {
+	p.geoMu.Lock()
+	defer p.geoMu.Unlock()
+	p.geo = g
+}
+
+func (p *Publisher) geoIP() *GeoIP {
+	p.geoMu.RLock()
+	defer p.geoMu.RUnlock()
+	return p.geo
 }
 
 func (p *Publisher) SetCrawlers(c *Crawlers) {
@@ -175,6 +207,11 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		return fmt.Errorf("reading the site accounts: %w", err)
 	}
 
+	// The country rules in force, and the ranges each needs. Built before the sites
+	// loop because a rule that cannot be built has to be published as "off" rather
+	// than as itself - see geoResolver.
+	geo := p.resolveGeo(settings, sites)
+
 	cfg := luaConfig{
 		Version:       time.Now().UnixMilli(),
 		InternalToken: p.cfg.InternalToken,
@@ -184,6 +221,7 @@ func (p *Publisher) Publish(ctx context.Context) error {
 		Blacklist:     make([]string, 0, len(blacks)),
 		Whitelist:     make([]string, 0, len(whites)),
 		Crawlers:      p.crawlerConfig(),
+		GeoSets:       geo.sets,
 	}
 
 	for _, s := range sites {
@@ -204,6 +242,8 @@ func (p *Publisher) Publish(ctx context.Context) error {
 				"applied; add one or switch it off", s.Name)
 		}
 
+		geoMode, geoSet := geo.forSite(s)
+
 		cfg.Sites[s.ID] = luaSite{
 			ID: s.ID, Name: s.Name, Mode: s.Mode, Challenge: s.Challenge,
 			RateRPS: s.RateRPS, RateBurst: s.RateBurst, FloodRPS: s.FloodRPS,
@@ -214,6 +254,8 @@ func (p *Publisher) Publish(ctx context.Context) error {
 			AuthEnabled: enabled,
 			AuthPaths:   store.NormaliseAuthPaths(s.AuthPaths),
 			AuthUsers:   users,
+			GeoMode:     geoMode,
+			GeoSet:      geoSet,
 		}
 	}
 	for _, r := range rules {

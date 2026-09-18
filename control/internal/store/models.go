@@ -1,29 +1,40 @@
 package store
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // Site is one domain, or a group of domains, protected by MosWAF.
 type Site struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Domains        []string  `json:"domains"`
-	UpstreamScheme string    `json:"upstream_scheme"` // http | https
-	UpstreamHost   string    `json:"upstream_host"`
-	UpstreamPort   int       `json:"upstream_port"`
-	Mode           string    `json:"mode"`      // protect | monitor | off
-	Challenge      string    `json:"challenge"` // auto | always | off
-	RateRPS        int       `json:"rate_rps"`  // 0 means use the global value
-	RateBurst      int       `json:"rate_burst"`
-	FloodRPS       int       `json:"flood_rps"` // site-wide flood threshold, 0 means use the global value
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Domains        []string `json:"domains"`
+	UpstreamScheme string   `json:"upstream_scheme"` // http | https
+	UpstreamHost   string   `json:"upstream_host"`
+	UpstreamPort   int      `json:"upstream_port"`
+	Mode           string   `json:"mode"`      // protect | monitor | off
+	Challenge      string   `json:"challenge"` // auto | always | off
+	RateRPS        int      `json:"rate_rps"`  // 0 means use the global value
+	RateBurst      int      `json:"rate_burst"`
+	FloodRPS       int      `json:"flood_rps"` // site-wide flood threshold, 0 means use the global value
 
 	// A login gate in front of the site. Nobody reaches the upstream without a
 	// session; AuthPaths limits which prefixes are behind it.
 	AuthEnabled bool     `json:"auth_enabled"`
 	AuthPaths   []string `json:"auth_paths"`
-	TLSCert        string    `json:"tls_cert,omitempty"`
-	TLSKey         string    `json:"tls_key,omitempty"`
-	HasTLS         bool      `json:"has_tls"`
-	ForceHTTPS     bool      `json:"force_https"`
+
+	// This site's own country rule. An empty GeoMode means "use the global one",
+	// which is different from "off": "off" is a site deliberately opting out of a
+	// rule everything else follows, and an operator who set it should not have it
+	// silently undone the next time the global rule changes.
+	GeoMode      string   `json:"geo_mode"`
+	GeoCountries []string `json:"geo_countries"`
+	TLSCert      string   `json:"tls_cert,omitempty"`
+	TLSKey       string   `json:"tls_key,omitempty"`
+	HasTLS       bool     `json:"has_tls"`
+	ForceHTTPS   bool     `json:"force_https"`
 
 	// Automatic certificates. When AcmeEnabled is set the control plane obtains a
 	// certificate over ACME HTTP-01 and renews it before CertExpiresAt, filling in
@@ -33,10 +44,10 @@ type Site struct {
 	CertExpiresAt *time.Time `json:"cert_expires_at,omitempty"`
 	AcmeLastError string     `json:"acme_last_error,omitempty"`
 	AcmeLastTry   *time.Time `json:"acme_last_try,omitempty"`
-	Enabled        bool      `json:"enabled"`
-	RulesOff       []string  `json:"rules_off"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	Enabled       bool       `json:"enabled"`
+	RulesOff      []string   `json:"rules_off"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 // Rule is a single attack detection signature.
@@ -112,6 +123,64 @@ type Settings struct {
 	FloodRPS       int `json:"flood_rps"`        // site-wide requests/second, 0 = off
 	FloodErrorRate int `json:"flood_error_rate"` // origin 5xx percentage, 0 = off
 	FloodHold      int `json:"flood_hold"`       // seconds to stay engaged after the last trigger
+
+	// Blocking by country.
+	//
+	// "off", "block" (refuse the listed countries) or "allow" (refuse everything
+	// except the listed countries). A site can override both, so the usual setup -
+	// one rule everywhere, one site different - does not need the rule written out
+	// per site.
+	GeoMode      string   `json:"geo_mode"`
+	GeoCountries []string `json:"geo_countries"`
+}
+
+// GeoPolicy is the country rule in effect for one request: a site's own if it
+// sets one, otherwise the global one.
+type GeoPolicy struct {
+	Mode      string   `json:"mode"`
+	Countries []string `json:"countries"`
+}
+
+// NormaliseGeo puts a country rule into one shape and refuses the states that
+// would take a site off the air.
+//
+// The dangerous one is "allow" with nothing listed, which reads as "allow" and
+// means "refuse everybody". It is reachable by removing the last country from the
+// list rather than by asking for it, which is exactly why it is caught here
+// instead of being left to whoever is watching the traffic graph.
+func NormaliseGeo(mode string, countries []string) (string, []string) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(countries))
+	for _, c := range countries {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if len(c) != 2 {
+			continue
+		}
+		if c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' {
+			continue
+		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+		if len(out) >= 250 { // there are fewer countries than this
+			break
+		}
+	}
+	sort.Strings(out)
+
+	switch mode {
+	case "block", "allow":
+	default:
+		return "off", out
+	}
+	// A rule naming no countries does nothing in one direction and everything in
+	// the other. Neither is what an empty list was meant to say, so it means off.
+	if len(out) == 0 {
+		return "off", out
+	}
+	return mode, out
 }
 
 func DefaultSettings() Settings {
@@ -139,6 +208,13 @@ func DefaultSettings() Settings {
 		FloodRPS:       1000,
 		FloodErrorRate: 50,
 		FloodHold:      120,
+
+		// Off by default and deliberately so. Every other default here is a limit a
+		// legitimate visitor never reaches; this one turns whole countries away,
+		// which is a business decision rather than a security default, and nobody
+		// should find MosWAF made it on their behalf.
+		GeoMode:      "off",
+		GeoCountries: []string{},
 	}
 }
 

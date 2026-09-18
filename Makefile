@@ -84,6 +84,7 @@ lua-test: ## Run the data plane test suites (needs luajit)
 	@luajit dataplane/test/flood.lua
 	@luajit dataplane/test/flood_attack.lua
 	@luajit dataplane/test/auth.lua
+	@luajit dataplane/test/geo.lua
 	@bash dataplane/test/entrypoint.sh
 
 .PHONY: help up down destroy restart logs logs-proxy logs-mgmt ps shell-proxy nginx-test reload web-dev web-build go-build go-test fmt lua-check lua-test

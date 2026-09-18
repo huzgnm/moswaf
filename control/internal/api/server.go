@@ -85,6 +85,10 @@ func (s *Server) Handler() http.Handler {
 
 	auth.HandleFunc("GET /api/events", s.handleListEvents)
 
+	// The country picker reads the loaded dataset, so it can never offer a country
+	// that would produce no ranges - which in allow mode refuses every visitor.
+	auth.HandleFunc("GET /api/geo/countries", s.handleListCountries)
+
 	auth.HandleFunc("GET /api/stats/overview", s.handleOverview)
 	auth.HandleFunc("GET /api/stats/timeseries", s.handleTimeseries)
 
