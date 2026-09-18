@@ -228,6 +228,22 @@ func (p *Publisher) Publish(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reading the allowlist: %w", err)
 	}
+	// An existing install can already hold a trusted list that covers everything -
+	// validation runs when settings are saved, and nobody saves settings on
+	// upgrade. Said out loud on every publish rather than left to be discovered,
+	// because while it holds, every address the firewall decides on is a value the
+	// client chose for itself.
+	if settings.RealIPHeader != "" {
+		for _, p := range settings.TrustedProxies {
+			if p == "0.0.0.0/0" || p == "::/0" {
+				log.Printf("moswaf: trusted_proxies contains %s, so any client can set "+
+					"its own address through %s - bans, the blocklist and allow rules "+
+					"are all keyed on that value. List your proxy's real ranges.",
+					p, settings.RealIPHeader)
+			}
+		}
+	}
+
 	generations, err := p.db.SiteGenerations(ctx)
 	if err != nil {
 		return fmt.Errorf("reading the site accounts: %w", err)

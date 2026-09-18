@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -92,6 +93,26 @@ func ValidateSettings(st *Settings) error {
 		if err != nil {
 			return fmt.Errorf("invalid trusted proxy: %v", err)
 		}
+		// A trusted list covering every address is the same as no list at all, but
+		// it reads like a configured one.
+		//
+		// The header is believed only when the peer is one of our proxies. Trust
+		// everybody and every peer qualifies, so the client's own forwarded-for
+		// value becomes its address: it picks what the bans, the blocklist, the
+		// rate-limit counters and - since the access rules - the allow rules are
+		// keyed on. An allow rule naming an address stops being "who the request is
+		// from" and becomes "what the request says", which is the one thing that
+		// must never decide whether the firewall runs.
+		//
+		// It is a plausible thing to type. Somebody behind a CDN who does not know
+		// its address ranges writes this to make the header work, and it does work -
+		// for the attacker too.
+		if bits, err := prefixBits(norm); err == nil && bits == 0 {
+			return fmt.Errorf(
+				"%q trusts every address, which means any client can set its own "+
+					"address through %s - list your proxy's real ranges instead",
+				p, st.RealIPHeader)
+		}
 		st.TrustedProxies[i] = norm
 	}
 	return nil
@@ -123,4 +144,14 @@ func (s *Store) PutSetting(ctx context.Context, key string, raw []byte) error {
 		INSERT INTO settings (key, value) VALUES ($1, $2)
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, key, raw)
 	return err
+}
+
+// prefixBits reports how many leading bits a normalised CIDR fixes. Zero means it
+// covers every address.
+func prefixBits(cidr string) (int, error) {
+	p, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return 0, err
+	}
+	return p.Bits(), nil
 }
