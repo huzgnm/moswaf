@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { api, notify } from '../api'
 import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
+import Icon from '../components/Icon.vue'
 
 const sites = ref([])
 const loading = ref(true)
@@ -76,6 +77,9 @@ async function issueCert(site) {
 
 function modeLabel(mode) {
   return t(`sites.mode.${mode}`)
+}
+function modeTone(mode) {
+  return mode === 'protect' ? 'tag-ok' : mode === 'monitor' ? 'tag-monitor' : 'tag-off'
 }
 
 async function load() {
@@ -240,25 +244,32 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="card">
-    <div class="card-head">
-      <div>
-        <div class="card-title">{{ t('sites.title') }}</div>
-        <div class="card-sub">{{ t('sites.sub') }}</div>
-      </div>
-      <button class="btn btn-primary" @click="openCreate">{{ t('sites.addButton') }}</button>
+  <div class="page-head">
+    <div>
+      <h2>{{ t('sites.title') }}</h2>
+      <p class="page-sub">{{ t('sites.sub') }}</p>
     </div>
+    <div class="page-actions">
+      <button type="button" class="btn btn-primary" @click="openCreate"><Icon name="plus" />{{ t('sites.addButton') }}</button>
+    </div>
+  </div>
 
-    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
-    <div v-else-if="!sites.length" class="empty">{{ t('sites.empty') }}</div>
+  <div class="card">
+    <div v-if="loading" class="skel-rows"><div v-for="i in 4" :key="i" class="skel skel-line"></div></div>
+    <div v-else-if="!sites.length" class="empty">
+      <Icon name="sites" />
+      <b>{{ t('sites.emptyTitle') }}</b>
+      <span class="empty-hint">{{ t('sites.empty') }}</span>
+      <button type="button" class="btn btn-primary btn-sm" @click="openCreate"><Icon name="plus" />{{ t('sites.addButton') }}</button>
+    </div>
 
     <div v-else class="table-wrap">
       <table class="table">
         <thead>
           <tr>
-            <th>{{ t('sites.col.name') }}</th>
+            <th style="min-width:150px">{{ t('sites.col.name') }}</th>
             <th>{{ t('sites.col.domains') }}</th>
-            <th>{{ t('sites.col.upstream') }}</th>
+            <th style="min-width:190px">{{ t('sites.col.upstream') }}</th>
             <th>{{ t('sites.col.mode') }}</th>
             <th>{{ t('sites.col.rate') }}</th>
             <th>{{ t('sites.col.https') }}</th>
@@ -267,40 +278,41 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="s in sites" :key="s.id">
-            <td>{{ s.name }}</td>
+            <td><b class="site-name">{{ s.name }}</b></td>
             <td class="mono truncate">{{ s.domains.join(', ') }}</td>
-            <td class="mono">{{ s.upstream_scheme }}://{{ s.upstream_host }}:{{ s.upstream_port }}</td>
-            <td>
-              <span class="tag" :class="s.mode === 'protect' ? 'tag-ok' : s.mode === 'monitor' ? 'tag-monitor' : 'tag-off'">
+            <td class="mono dim nowrap">{{ s.upstream_scheme }}://{{ s.upstream_host }}:{{ s.upstream_port }}</td>
+            <td class="nowrap">
+              <span class="tag" :class="modeTone(s.mode)">
                 <span class="dot"></span>{{ modeLabel(s.mode) }}
               </span>
-              <span v-if="s.auth_enabled" class="tag tag-ok" style="margin-left:6px"
-                    :title="t('sites.auth.badgeHint')">{{ t('sites.auth.badge') }}</span>
+              <span v-if="s.auth_enabled" class="tag tag-verify" style="margin-left:6px" :title="t('sites.auth.badgeHint')">
+                <Icon name="lock" style="width:11px;height:11px" />{{ t('sites.auth.badge') }}
+              </span>
             </td>
-            <td class="mono">
+            <td class="mono sub">
               {{ s.rate_rps ? t('sites.rate.rps', { n: s.rate_rps }) : t('sites.rate.default') }}
             </td>
-            <td>
+            <td class="nowrap">
               <span class="tag" :class="certTone(s)" :title="s.acme_last_error || ''">
                 <span class="dot"></span>{{ certLabel(s) }}
               </span>
-              <span v-if="s.acme_enabled" class="card-sub" style="margin-left:6px">{{ t('sites.cert.auto') }}</span>
+              <span v-if="s.acme_enabled" class="dim" style="margin-left:6px; font-size:11.5px">{{ t('sites.cert.auto') }}</span>
             </td>
-            <td style="text-align:right; white-space:nowrap">
+            <td class="actions">
               <button
-                v-if="s.acme_enabled"
+                v-if="s.acme_enabled" type="button"
                 class="btn btn-sm" :disabled="issuing === s.id"
                 :title="t('sites.getCertHint')"
                 @click="issueCert(s)"
               >{{ issuing === s.id ? t('sites.getCertBusy') : t('sites.getCert') }}</button>
               <button
-                v-if="s.auth_enabled"
-                class="btn btn-sm" style="margin-left:6px"
+                v-if="s.auth_enabled" type="button"
+                class="btn btn-sm"
                 :title="t('sites.auth.manageHint')"
                 @click="openAccounts(s)"
-              >{{ t('sites.auth.manage') }}</button>
-              <button class="btn btn-sm" style="margin-left:6px" @click="openEdit(s)">{{ t('common.edit') }}</button>
-              <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(s)">{{ t('common.delete') }}</button>
+              ><Icon name="users" />{{ t('sites.auth.manage') }}</button>
+              <button type="button" class="btn btn-sm" @click="openEdit(s)">{{ t('common.edit') }}</button>
+              <button type="button" class="btn btn-sm btn-danger" @click="remove(s)">{{ t('common.delete') }}</button>
             </td>
           </tr>
         </tbody>
@@ -384,6 +396,8 @@ onMounted(load)
       <div class="hint">{{ t('sites.form.floodRPSHint') }}</div>
     </div>
 
+    <div class="divider"></div>
+
     <label class="switch" style="margin-bottom:14px">
       <input v-model="form.acme_enabled" type="checkbox" />
       <span class="track"></span>
@@ -396,8 +410,9 @@ onMounted(load)
       <div class="hint">{{ t('sites.form.acmeHint') }}</div>
     </div>
 
-    <div v-if="editing && editing.acme_last_error" class="hint" style="color:#f0a0a0; margin-bottom:14px">
-      {{ t('sites.form.acmeLastError', { error: editing.acme_last_error }) }}
+    <div v-if="editing && editing.acme_last_error" class="alert alert-critical" style="margin-bottom:14px">
+      <Icon name="alert" />
+      <div class="alert-body">{{ t('sites.form.acmeLastError', { error: editing.acme_last_error }) }}</div>
     </div>
 
     <div v-show="!form.acme_enabled" class="field">
@@ -437,8 +452,7 @@ onMounted(load)
       <input v-model="form.auth_paths" class="input mono" placeholder="/admin, /billing" />
       <div class="hint">{{ t('sites.form.authPathsHint') }}</div>
     </div>
-    <div v-if="form.auth_enabled && canGate(form) && !editing" class="hint"
-         style="margin-top:8px; color:#d8b46a">
+    <div v-if="form.auth_enabled && canGate(form) && !editing" class="hint warn" style="margin-top:8px">
       {{ t('sites.form.authNoAccountsYet') }}
     </div>
   </Modal>
@@ -452,7 +466,8 @@ onMounted(load)
   >
     <div class="hint" style="margin-bottom:14px">{{ t('sites.auth.sub') }}</div>
 
-    <div v-if="!accounts.length" class="empty" style="padding:18px 0">
+    <div v-if="!accounts.length" class="empty compact">
+      <Icon name="users" />
       {{ accountsBusy ? t('common.loading') : t('sites.auth.empty') }}
     </div>
 
@@ -468,15 +483,11 @@ onMounted(load)
         <tbody>
           <tr v-for="u in accounts" :key="u.id">
             <td class="mono">{{ u.username }}</td>
-            <td class="card-sub">{{ new Date(u.created_at).toLocaleDateString() }}</td>
-            <td style="text-align:right; white-space:nowrap">
-              <button class="btn btn-sm" @click="resetPassword(u)">{{ t('sites.auth.reset') }}</button>
-              <button class="btn btn-sm" style="margin-left:6px" @click="revokeAccount(u)">
-                {{ t('sites.auth.revoke') }}
-              </button>
-              <button class="btn btn-sm btn-danger" style="margin-left:6px" @click="deleteAccount(u)">
-                {{ t('common.delete') }}
-              </button>
+            <td class="sub">{{ new Date(u.created_at).toLocaleDateString() }}</td>
+            <td class="actions">
+              <button type="button" class="btn btn-sm" @click="resetPassword(u)">{{ t('sites.auth.reset') }}</button>
+              <button type="button" class="btn btn-sm" @click="revokeAccount(u)">{{ t('sites.auth.revoke') }}</button>
+              <button type="button" class="btn btn-sm btn-danger" @click="deleteAccount(u)">{{ t('common.delete') }}</button>
             </td>
           </tr>
         </tbody>
@@ -495,9 +506,15 @@ onMounted(load)
     </div>
     <div class="hint" style="margin:-8px 0 14px">{{ t('sites.auth.passwordHint') }}</div>
     <button
-      class="btn btn-primary"
+      type="button" class="btn btn-primary"
       :disabled="accountsBusy || !newAccount.username || !newAccount.password"
       @click="addAccount"
-    >{{ t('sites.auth.add') }}</button>
+    ><Icon name="plus" />{{ t('sites.auth.add') }}</button>
   </Modal>
 </template>
+
+<style scoped>
+.skel-rows { display: flex; flex-direction: column; gap: 14px; padding: 8px 0; }
+.site-name { font-weight: 600; }
+.table td:first-child { min-width: 150px; }
+</style>

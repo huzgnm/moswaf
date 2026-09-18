@@ -125,14 +125,14 @@ onUnmounted(() => document.removeEventListener('pointerdown', onOutside))
 
 .lang-trigger {
   display: inline-flex; align-items: center; gap: 7px;
-  background: var(--surface-2); color: var(--text-secondary);
-  border: 1px solid var(--line); border-radius: 8px;
+  background: var(--surface); color: var(--ink-2);
+  border: 1px solid var(--line-2); border-radius: var(--radius);
   padding: 5px 9px; font: inherit; font-size: 12.5px; line-height: 1.2;
   cursor: pointer; transition: border-color .12s, color .12s;
 }
 .lang-trigger:hover,
-.lang-trigger.open { color: var(--text-primary); border-color: var(--series-1); }
-.lang-trigger:focus-visible { outline: 2px solid var(--series-1); outline-offset: 1px; }
+.lang-trigger.open { color: var(--ink); border-color: var(--line-3); background: var(--surface-2); }
+.lang-trigger:focus-visible { outline: none; box-shadow: var(--focus); }
 
 .globe { width: 14px; height: 14px; flex: 0 0 14px; opacity: .8; }
 .lang-name { white-space: nowrap; }
@@ -143,22 +143,22 @@ onUnmounted(() => document.removeEventListener('pointerdown', onOutside))
   position: absolute; z-index: 40; top: calc(100% + 6px); right: 0;
   min-width: 210px; margin: 0; padding: 5px;
   list-style: none;
-  background: var(--surface-1); border: 1px solid var(--line-2);
-  border-radius: 10px; box-shadow: var(--shadow);
+  background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-lg);
 }
 
 .lang-option {
   display: grid; grid-template-columns: 16px 1fr auto; align-items: center; gap: 9px;
-  padding: 7px 9px; border-radius: 7px;
-  font-size: 13px; color: var(--text-secondary);
+  padding: 7px 9px; border-radius: var(--radius);
+  font-size: 13px; color: var(--ink-2);
   cursor: pointer; white-space: nowrap;
 }
 .lang-option:hover,
-.lang-option:focus { background: var(--surface-2); color: var(--text-primary); outline: none; }
-.lang-option.selected { color: var(--text-primary); }
+.lang-option:focus { background: var(--surface-2); color: var(--ink); outline: none; }
+.lang-option.selected { color: var(--ink); }
 
-.check { width: 16px; height: 16px; color: var(--series-1); }
+.check { width: 16px; height: 16px; color: var(--ink); }
 .check svg { width: 100%; height: 100%; display: block; }
 .native { font-weight: 500; }
-.english { font-size: 11.5px; color: var(--text-muted); }
+.english { font-size: 11.5px; color: var(--ink-3); }
 </style>
