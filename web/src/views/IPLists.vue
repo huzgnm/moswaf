@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api, notify, fmtTime } from '../api'
+import { t } from '../i18n'
 
 const kind = ref('black')
 const items = ref([])
@@ -31,7 +32,7 @@ async function load() {
 async function unban(ip) {
   try {
     await api.del(`/api/bans/${encodeURIComponent(ip)}`)
-    notify(ip === '*' ? 'All temporary bans lifted' : `Ban lifted for ${ip}`)
+    notify(ip === '*' ? t('ips.allLifted') : t('ips.lifted', { ip }))
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -39,9 +40,11 @@ async function unban(ip) {
 }
 
 function fmtTTL(sec) {
-  if (sec <= 0) return 'expiring'
+  if (sec <= 0) return t('ips.ttl.expiring')
   const m = Math.floor(sec / 60)
-  return m > 0 ? `${m}m ${sec % 60}s left` : `${sec}s left`
+  return m > 0
+    ? t('ips.ttl.minutes', { m, s: sec % 60 })
+    : t('ips.ttl.seconds', { s: sec })
 }
 
 function switchKind(k) {
@@ -59,7 +62,7 @@ async function add() {
       reason: form.value.reason,
       minutes: Number(form.value.minutes) || 0,
     })
-    notify(kind.value === 'black' ? 'Added to the blocklist' : 'Added to the allowlist')
+    notify(t(kind.value === 'black' ? 'ips.addedBlock' : 'ips.addedAllow'))
     form.value = { cidr: '', reason: '', minutes: 0 }
     await load()
   } catch (e) {
@@ -72,7 +75,7 @@ async function add() {
 async function remove(entry) {
   try {
     await api.del(`/api/ips/${entry.id}`)
-    notify('Removed')
+    notify(t('ips.removed'))
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -86,50 +89,44 @@ onMounted(load)
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">IP lists</div>
-        <div class="card-sub">
-          The allowlist is checked first and skips every other filter.
-          The blocklist rejects immediately, before any CPU is spent on rule scanning.
-        </div>
+        <div class="card-title">{{ t('ips.title') }}</div>
+        <div class="card-sub">{{ t('ips.sub') }}</div>
       </div>
       <div class="row">
         <button class="btn btn-sm" :style="kind === 'black' ? 'border-color: var(--series-1)' : ''" @click="switchKind('black')">
-          Blocklist
+          {{ t('ips.blocklist') }}
         </button>
         <button class="btn btn-sm" :style="kind === 'white' ? 'border-color: var(--series-1)' : ''" @click="switchKind('white')">
-          Allowlist
+          {{ t('ips.allowlist') }}
         </button>
         <button class="btn btn-sm" :style="kind === 'ban' ? 'border-color: var(--series-1)' : ''" @click="switchKind('ban')">
-          Temporary bans
+          {{ t('ips.bans') }}
         </button>
       </div>
     </div>
 
     <div v-if="kind !== 'ban'" class="row" style="margin-bottom:16px">
-      <input v-model="form.cidr" class="input mono" style="width:220px" placeholder="1.2.3.4 or 10.0.0.0/8" @keyup.enter="add" />
-      <input v-model="form.reason" class="input grow" placeholder="Reason (optional)" @keyup.enter="add" />
-      <input v-model="form.minutes" type="number" class="input mono" style="width:150px" placeholder="Minutes" />
-      <button class="btn btn-primary" :disabled="busy" @click="add">Add</button>
+      <input v-model="form.cidr" class="input mono" style="width:220px" :placeholder="t('ips.cidrPlaceholder')" @keyup.enter="add" />
+      <input v-model="form.reason" class="input grow" :placeholder="t('ips.reasonPlaceholder')" @keyup.enter="add" />
+      <input v-model="form.minutes" type="number" class="input mono" style="width:150px" :placeholder="t('ips.minutesPlaceholder')" />
+      <button class="btn btn-primary" :disabled="busy" @click="add">{{ t('common.add') }}</button>
     </div>
     <div v-if="kind !== 'ban'" class="hint" style="margin:-10px 0 16px">
-      Leave minutes at <code class="mono">0</code> for permanent. Enter a number to make the entry expire on its own.
+      {{ t('ips.minutesHint', { code: '0' }) }}
     </div>
 
     <div v-else class="row" style="margin-bottom:16px">
-      <span class="card-sub grow">
-        These IPs were banned automatically by the engine after repeatedly crossing the
-        threshold. They live in the data plane's memory and expire on their own; nothing is stored in the database.
-      </span>
-      <button class="btn btn-danger" :disabled="!bans.length" @click="unban('*')">Lift all</button>
+      <span class="card-sub grow">{{ t('ips.bansNote') }}</span>
+      <button class="btn btn-danger" :disabled="!bans.length" @click="unban('*')">{{ t('ips.liftAll') }}</button>
     </div>
 
-    <div v-if="loading" class="empty">Loading...</div>
+    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
 
     <template v-else-if="kind === 'ban'">
-      <div v-if="!bans.length" class="empty">No IP is currently under a temporary ban</div>
+      <div v-if="!bans.length" class="empty">{{ t('ips.noBans') }}</div>
       <table v-else class="table">
         <thead>
-          <tr><th>IP address</th><th>Reason</th><th>Time left</th><th></th></tr>
+          <tr><th>{{ t('ips.col.ip') }}</th><th>{{ t('ips.col.reason') }}</th><th>{{ t('ips.col.timeLeft') }}</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="b in bans" :key="b.ip">
@@ -137,7 +134,7 @@ onMounted(load)
             <td><span class="tag tag-deny"><span class="dot"></span>{{ b.reason }}</span></td>
             <td class="card-sub">{{ fmtTTL(b.ttl) }}</td>
             <td style="text-align:right">
-              <button class="btn btn-sm" @click="unban(b.ip)">Lift ban</button>
+              <button class="btn btn-sm" @click="unban(b.ip)">{{ t('ips.liftBan') }}</button>
             </td>
           </tr>
         </tbody>
@@ -145,16 +142,16 @@ onMounted(load)
     </template>
 
     <div v-else-if="!items.length" class="empty">
-      {{ kind === 'black' ? 'The blocklist is empty' : 'The allowlist is empty' }}
+      {{ t(kind === 'black' ? 'ips.emptyBlock' : 'ips.emptyAllow') }}
     </div>
 
     <table v-else class="table">
       <thead>
         <tr>
-          <th>Address</th>
-          <th>Reason</th>
-          <th>Expires</th>
-          <th>Added</th>
+          <th>{{ t('ips.col.address') }}</th>
+          <th>{{ t('ips.col.reason') }}</th>
+          <th>{{ t('ips.col.expires') }}</th>
+          <th>{{ t('ips.col.added') }}</th>
           <th></th>
         </tr>
       </thead>
@@ -162,10 +159,10 @@ onMounted(load)
         <tr v-for="e in items" :key="e.id">
           <td class="mono">{{ e.cidr }}</td>
           <td>{{ e.reason || '-' }}</td>
-          <td class="card-sub">{{ e.expires_at ? fmtTime(e.expires_at) : 'Never' }}</td>
+          <td class="card-sub">{{ e.expires_at ? fmtTime(e.expires_at) : t('common.never') }}</td>
           <td class="card-sub">{{ fmtTime(e.created_at) }}</td>
           <td style="text-align:right">
-            <button class="btn btn-sm btn-danger" @click="remove(e)">Remove</button>
+            <button class="btn btn-sm btn-danger" @click="remove(e)">{{ t('common.remove') }}</button>
           </td>
         </tr>
       </tbody>

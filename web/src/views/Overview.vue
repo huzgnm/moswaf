@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, fmtNumber, notify } from '../api'
+import { t } from '../i18n'
 import TrafficChart from '../components/TrafficChart.vue'
 
 const router = useRouter()
@@ -13,10 +14,10 @@ const loading = ref(true)
 let timer = null
 
 const RANGES = [
-  { h: 1, label: '1 hour' },
-  { h: 6, label: '6 hours' },
-  { h: 24, label: '24 hours' },
-  { h: 72, label: '3 days' },
+  { h: 1, label: 'range.1h' },
+  { h: 6, label: 'range.6h' },
+  { h: 24, label: 'range.24h' },
+  { h: 72, label: 'range.3d' },
 ]
 
 // A minute with no data means no requests arrived -> fill it with 0 so the
@@ -32,17 +33,17 @@ function densify(points, rangeHours) {
   // Over longer ranges, bucket several minutes into one point to keep the chart light
   const bucket = rangeHours > 24 ? 15 : rangeHours > 6 ? 5 : 1
   const out = []
-  for (let t = start; t <= end; t += step * bucket) {
+  for (let ms = start; ms <= end; ms += step * bucket) {
     let total = 0, blocked = 0, challenged = 0
     for (let k = 0; k < bucket; k++) {
-      const p = map.get(t + k * step)
+      const p = map.get(ms + k * step)
       if (p) {
         total += p.total
         blocked += p.blocked
         challenged += p.challenged
       }
     }
-    out.push({ minute: t, total, blocked, challenged })
+    out.push({ minute: ms, total, blocked, challenged })
   }
   return out
 }
@@ -52,10 +53,28 @@ const tiles = computed(() => {
   if (!o) return []
   const blockRate = o.requests > 0 ? ((o.blocked / o.requests) * 100).toFixed(1) : '0.0'
   return [
-    { label: 'Requests processed', value: fmtNumber(o.requests), sub: `in the last ${o.hours} hours` },
-    { label: 'Blocked', value: fmtNumber(o.blocked), sub: `${blockRate}% of all traffic`, tone: 'serious' },
-    { label: 'Challenged', value: fmtNumber(o.challenged), sub: 'suspicious visitors made to solve a PoW', tone: 'good' },
-    { label: 'Sites protected', value: `${o.sites_active}/${o.sites_total}`, sub: 'sites with filtering enabled' },
+    {
+      label: t('overview.tile.requests'),
+      value: fmtNumber(o.requests),
+      sub: t('overview.tile.requestsSub', { hours: o.hours }),
+    },
+    {
+      label: t('overview.tile.blocked'),
+      value: fmtNumber(o.blocked),
+      sub: t('overview.tile.blockedSub', { percent: blockRate }),
+      tone: 'serious',
+    },
+    {
+      label: t('overview.tile.challenged'),
+      value: fmtNumber(o.challenged),
+      sub: t('overview.tile.challengedSub'),
+      tone: 'good',
+    },
+    {
+      label: t('overview.tile.sites'),
+      value: `${o.sites_active}/${o.sites_total}`,
+      sub: t('overview.tile.sitesSub'),
+    },
   ]
 })
 
@@ -102,23 +121,22 @@ function barWidth(b, list) {
 
 <template>
   <div v-if="overview?.under_attack" class="alert">
-    <b>Under-attack mode</b> is on. Every visitor without a valid cookie must solve
-    the JS challenge before reaching the site.
+    {{ t('overview.alert') }}
   </div>
 
   <div class="grid grid-4">
-    <div v-for="t in tiles" :key="t.label" class="card tile">
-      <div class="tile-label">{{ t.label }}</div>
-      <div class="tile-value" :class="t.tone">{{ t.value }}</div>
-      <div class="tile-sub">{{ t.sub }}</div>
+    <div v-for="tile in tiles" :key="tile.label" class="card tile">
+      <div class="tile-label">{{ tile.label }}</div>
+      <div class="tile-value" :class="tile.tone">{{ tile.value }}</div>
+      <div class="tile-sub">{{ tile.sub }}</div>
     </div>
   </div>
 
   <div class="card" style="margin-top:16px">
     <div class="card-head">
       <div>
-        <div class="card-title">Traffic over time</div>
-        <div class="card-sub">Total requests, how many were blocked, and how many were challenged</div>
+        <div class="card-title">{{ t('overview.traffic.title') }}</div>
+        <div class="card-sub">{{ t('overview.traffic.sub') }}</div>
       </div>
       <div class="row">
         <button
@@ -126,7 +144,7 @@ function barWidth(b, list) {
           class="btn btn-sm"
           :style="hours === r.h ? 'border-color: var(--series-1); color: var(--text-primary)' : ''"
           @click="setRange(r.h)"
-        >{{ r.label }}</button>
+        >{{ t(r.label) }}</button>
       </div>
     </div>
     <TrafficChart :points="series" :loading="loading" />
@@ -135,10 +153,10 @@ function barWidth(b, list) {
   <div class="grid grid-2" style="margin-top:16px">
     <div class="card">
       <div class="card-head">
-        <div class="card-title">Top attacking IPs</div>
-        <button class="btn btn-sm" @click="router.push('/ips')">Manage IP lists</button>
+        <div class="card-title">{{ t('overview.topIPs') }}</div>
+        <button class="btn btn-sm" @click="router.push('/ips')">{{ t('overview.manageIPs') }}</button>
       </div>
-      <div v-if="!overview?.top_attackers?.length" class="empty">No IPs recorded yet</div>
+      <div v-if="!overview?.top_attackers?.length" class="empty">{{ t('overview.noIPs') }}</div>
       <div v-else>
         <div v-for="b in overview.top_attackers" :key="b.key" class="bar-row">
           <span class="mono bar-label">{{ b.key }}</span>
@@ -152,10 +170,10 @@ function barWidth(b, list) {
 
     <div class="card">
       <div class="card-head">
-        <div class="card-title">Most triggered rules</div>
-        <button class="btn btn-sm" @click="router.push('/rules')">View rules</button>
+        <div class="card-title">{{ t('overview.topRules') }}</div>
+        <button class="btn btn-sm" @click="router.push('/rules')">{{ t('overview.viewRules') }}</button>
       </div>
-      <div v-if="!overview?.top_rules?.length" class="empty">No rule has matched yet</div>
+      <div v-if="!overview?.top_rules?.length" class="empty">{{ t('overview.noRules') }}</div>
       <div v-else>
         <div v-for="b in overview.top_rules" :key="b.key" class="bar-row">
           <span class="bar-label">{{ b.label }}</span>
@@ -170,8 +188,8 @@ function barWidth(b, list) {
 
   <div class="card" style="margin-top:16px">
     <div class="card-head">
-      <div class="card-title">System status</div>
-      <div class="card-sub">Config version: {{ status?.config_version ?? '-' }}</div>
+      <div class="card-title">{{ t('overview.system') }}</div>
+      <div class="card-sub">{{ t('overview.configVersion', { version: status?.config_version ?? '-' }) }}</div>
     </div>
     <div class="row" style="gap:26px">
       <span class="tag" :class="status?.database === 'ok' ? 'tag-ok' : 'tag-deny'">
@@ -181,9 +199,9 @@ function barWidth(b, list) {
         <span class="dot"></span>Redis
       </span>
       <span class="tag" :class="dataplaneOk ? 'tag-ok' : 'tag-deny'">
-        <span class="dot"></span>Data plane (OpenResty)
+        <span class="dot"></span>{{ t('overview.dataplane') }}
       </span>
-      <span class="card-sub">Event queue: {{ fmtNumber(status?.event_queue ?? 0) }}</span>
+      <span class="card-sub">{{ t('overview.eventQueue', { count: fmtNumber(status?.event_queue ?? 0) }) }}</span>
     </div>
   </div>
 </template>

@@ -14,13 +14,13 @@ import Settings from './views/Settings.vue'
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: '/login',    component: Login,    meta: { public: true, title: 'Sign in' } },
-    { path: '/',         component: Overview, meta: { title: 'Overview' } },
-    { path: '/sites',    component: Sites,    meta: { title: 'Sites' } },
-    { path: '/rules',    component: Rules,    meta: { title: 'Detection rules' } },
-    { path: '/events',   component: Events,   meta: { title: 'Attack log' } },
-    { path: '/ips',      component: IPLists,  meta: { title: 'IP lists' } },
-    { path: '/settings', component: Settings, meta: { title: 'Settings' } },
+    { path: '/login',    component: Login,    meta: { public: true, title: 'login.title' } },
+    { path: '/',         component: Overview, meta: { title: 'nav.overview' } },
+    { path: '/sites',    component: Sites,    meta: { title: 'nav.sites' } },
+    { path: '/rules',    component: Rules,    meta: { title: 'nav.rules' } },
+    { path: '/events',   component: Events,   meta: { title: 'nav.events' } },
+    { path: '/ips',      component: IPLists,  meta: { title: 'nav.ips' } },
+    { path: '/settings', component: Settings, meta: { title: 'nav.settings' } },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })

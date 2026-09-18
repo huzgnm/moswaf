@@ -2,17 +2,21 @@
 import { ref, watch, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, session, toast, notify, logout } from './api'
+import { t } from './i18n'
+import LanguagePicker from './components/LanguagePicker.vue'
 
 const route = useRoute()
 const router = useRouter()
 
+// label is a translation key; the sidebar resolves it at render time so the menu
+// follows the language without this list being rebuilt.
 const nav = [
-  { path: '/',         label: 'Overview' },
-  { path: '/sites',    label: 'Sites' },
-  { path: '/events',   label: 'Attack log' },
-  { path: '/rules',    label: 'Detection rules' },
-  { path: '/ips',      label: 'IP lists' },
-  { path: '/settings', label: 'Settings' },
+  { path: '/',         label: 'nav.overview' },
+  { path: '/sites',    label: 'nav.sites' },
+  { path: '/events',   label: 'nav.events' },
+  { path: '/rules',    label: 'nav.rules' },
+  { path: '/ips',      label: 'nav.ips' },
+  { path: '/settings', label: 'nav.settings' },
 ]
 
 const underAttack = ref(false)
@@ -39,9 +43,7 @@ async function toggleUnderAttack() {
   try {
     await api.post('/api/settings/under-attack', { enabled: next })
     underAttack.value = next
-    notify(next
-      ? 'Under-attack mode on: every unknown visitor must pass the JS challenge'
-      : 'Under-attack mode off')
+    notify(t(next ? 'app.underAttackOn' : 'app.underAttackOff'))
   } catch (e) {
     notify(e.message, true)
   } finally {
@@ -70,25 +72,26 @@ function doLogout() {
         :class="{ active: route.path === item.path }"
         @click="router.push(item.path)"
       >
-        <span class="dot"></span>{{ item.label }}
+        <span class="dot"></span>{{ t(item.label) }}
       </div>
       <div class="spacer"></div>
       <div class="nav-item" @click="doLogout">
-        <span class="dot"></span>Sign out
+        <span class="dot"></span>{{ t('nav.signOut') }}
       </div>
     </aside>
 
     <div class="main">
       <header class="topbar">
-        <h1 style="font-size:15px">{{ route.meta.title }}</h1>
+        <h1 style="font-size:15px">{{ t(route.meta.title) }}</h1>
         <div class="row">
-          <label class="switch danger" :title="'Force every visitor to solve a JS challenge'">
+          <label class="switch danger" :title="t('app.underAttackHint')">
             <input type="checkbox" :checked="underAttack" :disabled="busy" @change="toggleUnderAttack" />
             <span class="track"></span>
             <span :style="{ color: underAttack ? 'var(--critical)' : 'var(--text-secondary)' }">
-              Under-attack mode
+              {{ t('app.underAttack') }}
             </span>
           </label>
+          <LanguagePicker />
           <span class="card-sub">{{ session.user?.username }}</span>
         </div>
       </header>

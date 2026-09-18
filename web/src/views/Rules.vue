@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { api, notify } from '../api'
+import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
 
 const rules = ref([])
@@ -23,19 +24,15 @@ function blank() {
   }
 }
 
-const ACTION_LABELS = {
-  deny: 'Block',
-  challenge: 'Challenge',
-  ban: 'Ban IP',
-  log: 'Log only',
-}
-const SEVERITY_LABELS = {
-  low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical',
-}
-const TARGET_LABELS = {
-  any: 'Whole request', uri: 'Path', args: 'Query string',
-  body: 'POST body', ua: 'User-Agent', header: 'Headers', cookie: 'Cookies',
-}
+// The keys are the values the API uses; the labels are resolved at render time
+// so a language change repaints the table and both dropdowns.
+const ACTIONS = ['deny', 'challenge', 'ban', 'log']
+const SEVERITIES = ['low', 'medium', 'high', 'critical']
+const TARGETS = ['any', 'uri', 'args', 'body', 'ua', 'header', 'cookie']
+
+const actionLabel = (a) => t(`rules.action.${a}`)
+const severityLabel = (sev) => t(`severity.${sev}`)
+const targetLabel = (target) => t(`rules.target.${target}`)
 
 const categories = computed(() => [...new Set(rules.value.map((r) => r.category))].sort())
 
@@ -62,7 +59,7 @@ async function toggle(rule) {
   try {
     await api.post(`/api/rules/${rule.id}/toggle`, { enabled: next })
     rule.enabled = next
-    notify(next ? `Rule "${rule.name}" enabled` : `Rule "${rule.name}" disabled`)
+    notify(t(next ? 'rules.enabled' : 'rules.disabled', { name: rule.name }))
   } catch (e) {
     notify(e.message, true)
   }
@@ -85,10 +82,10 @@ async function save() {
   try {
     if (editing.value) {
       await api.put(`/api/rules/${editing.value.id}`, form.value)
-      notify('Rule updated')
+      notify(t('rules.updated'))
     } else {
       await api.post('/api/rules', form.value)
-      notify('Rule added')
+      notify(t('rules.created'))
     }
     showForm.value = false
     await load()
@@ -100,10 +97,10 @@ async function save() {
 }
 
 async function remove(rule) {
-  if (!confirm(`Delete rule "${rule.name}"?`)) return
+  if (!confirm(t('rules.deleteConfirm', { name: rule.name }))) return
   try {
     await api.del(`/api/rules/${rule.id}`)
-    notify('Rule deleted')
+    notify(t('rules.deleted'))
     await load()
   } catch (e) {
     notify(e.message, true)
@@ -117,32 +114,30 @@ onMounted(load)
   <div class="card">
     <div class="card-head">
       <div>
-        <div class="card-title">Detection rules</div>
-        <div class="card-sub">
-          Built-in rules ship with MosWAF. Custom rules are scanned alongside them, in table order.
-        </div>
+        <div class="card-title">{{ t('rules.title') }}</div>
+        <div class="card-sub">{{ t('rules.sub') }}</div>
       </div>
-      <button class="btn btn-primary" @click="openCreate">Add rule</button>
+      <button class="btn btn-primary" @click="openCreate">{{ t('rules.addButton') }}</button>
     </div>
 
     <div class="row" style="margin-bottom:14px">
-      <input v-model="filter" class="input grow" placeholder="Search by name, id or pattern" />
+      <input v-model="filter" class="input grow" :placeholder="t('rules.search')" />
       <select v-model="category" class="select" style="width:180px">
-        <option value="">All categories</option>
+        <option value="">{{ t('rules.allCategories') }}</option>
         <option v-for="c in categories" :key="c" :value="c">{{ c }}</option>
       </select>
     </div>
 
-    <div v-if="loading" class="empty">Loading...</div>
+    <div v-if="loading" class="empty">{{ t('common.loading') }}</div>
     <table v-else class="table">
       <thead>
         <tr>
-          <th style="width:52px">On</th>
-          <th>Name</th>
-          <th>Category</th>
-          <th>Scans</th>
-          <th>Action</th>
-          <th>Severity</th>
+          <th style="width:52px">{{ t('rules.col.on') }}</th>
+          <th>{{ t('rules.col.name') }}</th>
+          <th>{{ t('rules.col.category') }}</th>
+          <th>{{ t('rules.col.scans') }}</th>
+          <th>{{ t('rules.col.action') }}</th>
+          <th>{{ t('rules.col.severity') }}</th>
           <th></th>
         </tr>
       </thead>
@@ -159,17 +154,17 @@ onMounted(load)
             <div class="mono" style="color:var(--text-muted); font-size:11.5px">{{ r.id }}</div>
           </td>
           <td><span class="tag">{{ r.category }}</span></td>
-          <td class="card-sub">{{ TARGET_LABELS[r.target] || r.target }}</td>
+          <td class="card-sub">{{ targetLabel(r.target) }}</td>
           <td>
             <span class="tag" :class="`tag-${r.action === 'ban' ? 'deny' : r.action}`">
-              <span class="dot"></span>{{ ACTION_LABELS[r.action] || r.action }}
+              <span class="dot"></span>{{ actionLabel(r.action) }}
             </span>
           </td>
-          <td class="card-sub">{{ SEVERITY_LABELS[r.severity] || r.severity }}</td>
+          <td class="card-sub">{{ severityLabel(r.severity) }}</td>
           <td style="text-align:right; white-space:nowrap">
-            <button class="btn btn-sm" @click="openEdit(r)">Edit</button>
+            <button class="btn btn-sm" @click="openEdit(r)">{{ t('common.edit') }}</button>
             <button v-if="!r.builtin" class="btn btn-sm btn-danger" style="margin-left:6px" @click="remove(r)">
-              Delete
+              {{ t('common.delete') }}
             </button>
           </td>
         </tr>
@@ -179,49 +174,46 @@ onMounted(load)
 
   <Modal
     v-if="showForm"
-    :title="editing ? `Edit rule: ${editing.name}` : 'Add a rule'"
+    :title="editing ? t('rules.form.editTitle', { name: editing.name }) : t('rules.form.addTitle')"
     :busy="busy"
     @close="showForm = false"
     @submit="save"
   >
     <div class="field">
-      <label class="label">Rule name</label>
-      <input v-model="form.name" class="input" placeholder="Block external access to /admin" />
+      <label class="label">{{ t('rules.form.name') }}</label>
+      <input v-model="form.name" class="input" :placeholder="t('rules.form.namePlaceholder')" />
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Category</label>
+        <label class="label">{{ t('rules.form.category') }}</label>
         <input v-model="form.category" class="input" />
       </div>
       <div class="field grow">
-        <label class="label">Where to scan</label>
+        <label class="label">{{ t('rules.form.target') }}</label>
         <select v-model="form.target" class="select">
-          <option v-for="(label, key) in TARGET_LABELS" :key="key" :value="key">{{ label }}</option>
+          <option v-for="key in TARGETS" :key="key" :value="key">{{ targetLabel(key) }}</option>
         </select>
       </div>
     </div>
 
     <div class="field">
-      <label class="label">Regular expression (PCRE)</label>
+      <label class="label">{{ t('rules.form.pattern') }}</label>
       <textarea v-model="form.pattern" class="input" placeholder="(?i)/admin/(config|backup)"></textarea>
-      <div class="hint">
-        Prefix with <code class="mono">(?i)</code> to make it case-insensitive.
-        Avoid lookahead and backreferences so the pattern stays fast in the data plane.
-      </div>
+      <div class="hint">{{ t('rules.form.patternHint', { code: '(?i)' }) }}</div>
     </div>
 
     <div class="row">
       <div class="field grow">
-        <label class="label">Action on match</label>
+        <label class="label">{{ t('rules.form.action') }}</label>
         <select v-model="form.action" class="select">
-          <option v-for="(label, key) in ACTION_LABELS" :key="key" :value="key">{{ label }}</option>
+          <option v-for="key in ACTIONS" :key="key" :value="key">{{ actionLabel(key) }}</option>
         </select>
       </div>
       <div class="field grow">
-        <label class="label">Severity</label>
+        <label class="label">{{ t('rules.form.severity') }}</label>
         <select v-model="form.severity" class="select">
-          <option v-for="(label, key) in SEVERITY_LABELS" :key="key" :value="key">{{ label }}</option>
+          <option v-for="key in SEVERITIES" :key="key" :value="key">{{ severityLabel(key) }}</option>
         </select>
       </div>
     </div>

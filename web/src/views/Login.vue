@@ -2,6 +2,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, setToken, session } from '../api'
+import { t } from '../i18n'
+import LanguagePicker from '../components/LanguagePicker.vue'
 
 const router = useRouter()
 const username = ref('admin')
@@ -35,22 +37,26 @@ async function submit() {
   <div class="login-wrap">
     <form class="login-card" @submit.prevent="submit">
       <div class="brand-big">Mos<b>WAF</b></div>
-      <p class="card-sub" style="margin:0 0 22px">Layer-7 web application firewall &amp; anti-DDoS</p>
+      <p class="card-sub" style="margin:0 0 22px">{{ t('app.tagline') }}</p>
 
       <div class="field">
-        <label class="label">Username</label>
+        <label class="label">{{ t('login.username') }}</label>
         <input ref="userInput" v-model="username" class="input" autocomplete="username" />
       </div>
       <div class="field">
-        <label class="label">Password</label>
+        <label class="label">{{ t('login.password') }}</label>
         <input v-model="password" type="password" class="input" autocomplete="current-password" />
       </div>
 
       <div v-if="error" class="login-error">{{ error }}</div>
 
       <button class="btn btn-primary" style="width:100%; justify-content:center" :disabled="busy">
-        {{ busy ? 'Signing in...' : 'Sign in' }}
+        {{ busy ? t('login.submitting') : t('login.submit') }}
       </button>
+
+      <div class="login-lang">
+        <LanguagePicker />
+      </div>
     </form>
   </div>
 </template>
@@ -69,6 +75,7 @@ async function submit() {
   color: var(--text-secondary); margin-bottom: 6px;
 }
 .brand-big b { color: var(--series-1); }
+.login-lang { display: flex; justify-content: center; margin-top: 18px; }
 .login-error {
   background: #2a1616; border: 1px solid #5a2a2a; color: #f0a0a0;
   padding: 9px 12px; border-radius: 8px; font-size: 12.5px; margin-bottom: 14px;
