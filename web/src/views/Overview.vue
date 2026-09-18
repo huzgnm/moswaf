@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, fmtNumber, notify } from '../api'
+import { intlTag } from '../i18n'
 import { t } from '../i18n'
 import TrafficChart from '../components/TrafficChart.vue'
 
@@ -154,6 +155,26 @@ const dataplaneOk = computed(() => {
   return d && typeof d === 'object' && d.status === 'ok'
 })
 
+// A two-letter code is what the dataset stores; the browser knows the names, in
+// whatever language the dashboard is in. No table of country names to ship, and
+// no table to translate four times.
+const countryNames = computed(() => {
+  try {
+    return new Intl.DisplayNames([intlTag()], { type: 'region' })
+  } catch {
+    return null   // very old browser: the code itself is still readable
+  }
+})
+
+function countryName(code) {
+  if (!code) return '?'
+  try {
+    return countryNames.value?.of(code) || code
+  } catch {
+    return code   // not a real region code
+  }
+}
+
 // Horizontal bars comparing magnitude within one ranking
 function barWidth(b, list) {
   const max = Math.max(...list.map((x) => x.count), 1)
@@ -238,6 +259,30 @@ function barWidth(b, list) {
 
   <div class="card" style="margin-top:16px">
     <div class="card-head">
+      <div>
+        <div class="card-title">{{ t('overview.topCountries') }}</div>
+        <div class="card-sub">{{ t('overview.topCountriesSub') }}</div>
+      </div>
+      <a class="attribution" href="https://db-ip.com" target="_blank" rel="noopener noreferrer">
+        {{ t('overview.geoAttribution') }}
+      </a>
+    </div>
+    <div v-if="!overview?.top_countries?.length" class="empty">
+      {{ status?.geoip && status.geoip.ranges > 0 ? t('overview.noCountries') : t('overview.geoMissing') }}
+    </div>
+    <div v-else>
+      <div v-for="b in overview.top_countries" :key="b.key" class="bar-row">
+        <span class="bar-label">{{ countryName(b.key) }}</span>
+        <span class="bar-track">
+          <span class="bar-fill" :style="{ width: barWidth(b, overview.top_countries) }"></span>
+        </span>
+        <span class="bar-val">{{ fmtNumber(b.count) }}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <div class="card-head">
       <div class="card-title">{{ t('overview.system') }}</div>
       <div class="card-sub">{{ t('overview.configVersion', { version: status?.config_version ?? '-' }) }}</div>
     </div>
@@ -274,5 +319,10 @@ function barWidth(b, list) {
 .bar-label { width: 150px; flex: 0 0 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
 .bar-track { flex: 1; height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
 .bar-fill { display: block; height: 100%; background: var(--series-1); border-radius: 4px; }
+.attribution {
+  font-size: 11px; color: var(--text-muted); text-decoration: none;
+  border-bottom: 1px dotted var(--line-2); align-self: center;
+}
+.attribution:hover { color: var(--text-secondary); }
 .bar-val { width: 62px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 </style>

@@ -89,6 +89,11 @@ export default {
   'overview.topRules': 'Luật khớp nhiều nhất',
   'overview.viewRules': 'Xem luật',
   'overview.noRules': 'Chưa có luật nào khớp',
+  'overview.topCountries': 'Tấn công đến từ đâu',
+  'overview.topCountriesSub': 'quốc gia của các địa chỉ trong nhật ký tấn công',
+  'overview.noCountries': 'Chưa ghi nhận cuộc tấn công nào xác định được quốc gia',
+  'overview.geoAttribution': 'Dữ liệu vị trí IP bởi DB-IP',
+  'overview.geoMissing': 'Chưa tải được cơ sở dữ liệu vị trí IP',
 
   'overview.system': 'Trạng thái hệ thống',
   'overview.configVersion': 'Phiên bản cấu hình: {version}',

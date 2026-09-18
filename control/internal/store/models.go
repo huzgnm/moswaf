@@ -77,6 +77,7 @@ type Event struct {
 	Severity string    `json:"severity"`
 	Status   int       `json:"status"`
 	RT       float64   `json:"rt"`
+	Country  string    `json:"country,omitempty"`
 }
 
 // Settings is the global policy, stored as a single JSONB row in the settings table.

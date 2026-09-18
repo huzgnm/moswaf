@@ -86,6 +86,11 @@ export default {
   'overview.topRules': 'Most triggered rules',
   'overview.viewRules': 'View rules',
   'overview.noRules': 'No rule has matched yet',
+  'overview.topCountries': 'Where attacks came from',
+  'overview.topCountriesSub': 'countries of the addresses in the attack log',
+  'overview.noCountries': 'No attacks recorded with a known country yet',
+  'overview.geoAttribution': 'IP geolocation by DB-IP',
+  'overview.geoMissing': 'The geolocation dataset has not been downloaded yet',
 
   'overview.system': 'System status',
   'overview.configVersion': 'Config version: {version}',

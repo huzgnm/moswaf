@@ -39,6 +39,12 @@ type rawEvent struct {
 }
 
 type Consumer struct {
+	// Optional. Without it events are recorded with no country, which is what an
+	// installation with no route to the internet gets and is a normal state -
+	// geography is reporting, and reporting must never be able to stop an event
+	// being recorded.
+	geo *GeoIP
+
 	db  *store.Store
 	rdb *redis.Client
 
@@ -50,6 +56,10 @@ type Consumer struct {
 func NewConsumer(db *store.Store, rdb *redis.Client) *Consumer {
 	return &Consumer{db: db, rdb: rdb}
 }
+
+// SetGeoIP attaches the geolocation dataset. Optional; without it events are
+// recorded with no country.
+func (c *Consumer) SetGeoIP(g *GeoIP) { c.geo = g }
 
 // Run works until ctx is cancelled: draining events, collecting stats and pruning old data.
 func (c *Consumer) Run(ctx context.Context) {
@@ -102,11 +112,15 @@ func (c *Consumer) drain(ctx context.Context) (int, error) {
 		if r.TS == 0 {
 			ts = time.Now()
 		}
+		country := ""
+		if c.geo != nil {
+			country = c.geo.Lookup(r.IP)
+		}
 		evs = append(evs, &store.Event{
 			TS: ts, Ray: r.Ray, Site: r.Site, IP: r.IP, Method: r.Method, Host: r.Host,
 			URI: r.URI, UA: r.UA, Referer: r.Referer, Action: r.Action, Reason: r.Reason,
 			RuleID: r.RuleID, RuleName: r.RuleName, Severity: r.Severity,
-			Status: r.Status, RT: r.RT,
+			Status: r.Status, RT: r.RT, Country: country,
 		})
 	}
 

@@ -145,6 +145,12 @@ ALTER TABLE stats_minute ADD COLUMN IF NOT EXISTS errors_4xx  BIGINT NOT NULL DE
 ALTER TABLE stats_minute ADD COLUMN IF NOT EXISTS blocked_4xx BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE stats_minute ADD COLUMN IF NOT EXISTS errors_5xx  BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE stats_minute ADD COLUMN IF NOT EXISTS page_views  BIGINT NOT NULL DEFAULT 0;
+
+-- Two-letter country code, filled in by the control plane when the event is
+-- recorded. Empty means unknown, which is an ordinary answer: private ranges have
+-- no country, the dataset does not cover every address, and an installation with
+-- no route to the internet has no dataset at all.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS country CHAR(2) NOT NULL DEFAULT '';
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

@@ -531,6 +531,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	countries, err := s.db.TopCountries(ctx, since, 10)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	sites, err := s.db.ListSites(ctx)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
@@ -570,6 +575,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"events":         byAction,
 		"top_attackers":  attackers,
 		"top_rules":      topRules,
+		"top_countries":  countries,
 		"sites_total":    len(sites),
 		"sites_active":   protected,
 		"under_attack":   settings.UnderAttack,
@@ -683,6 +689,9 @@ func (s *Server) handleSystemStatus(w http.ResponseWriter, r *http.Request) {
 	// otherwise look identical from the outside.
 	if st := s.pub.CrawlerStatus(); len(st) > 0 {
 		out["crawlers"] = st
+	}
+	if s.geo != nil {
+		out["geoip"] = s.geo.Status()
 	}
 
 	// ask the data plane directly
