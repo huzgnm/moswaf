@@ -122,22 +122,41 @@ check_ports() {
 
 fetch_source() {
   local here; here="$(cd "$(dirname "$0")" && pwd)"
-  if [[ -f "$here/docker-compose.yml" && -d "$here/dataplane" ]]; then
-    if [[ "$here" != "$INSTALL_DIR" ]]; then
-      info "Copying the source from $here to $INSTALL_DIR"
-      mkdir -p "$INSTALL_DIR"
-      # .env is deliberately excluded. Copying it in would install the source
-      # checkout's secrets, admin password and ports into production - write_env
-      # then sees a file and generates nothing - and on an UPDATE it would
-      # overwrite the live configuration with whatever the checkout happened to
-      # carry. .env.example is not matched by this pattern and still ships.
-      tar -C "$here" --exclude='.git' --exclude='data' --exclude='.local' \
-          --exclude='node_modules' --exclude='.env' -cf - . | tar -C "$INSTALL_DIR" -xf -
-    fi
+
+  # The order of these branches matters. Running the installer from inside the
+  # install directory - `cd /opt/moswaf && bash install.sh --update`, the obvious
+  # thing to type - used to match the first branch, find nothing to copy (source
+  # and destination are the same directory) and return without fetching anything.
+  # UPDATE then rebuilt the code already on disk and reported success, so it
+  # looked like an update that changed nothing. Requiring the source to be
+  # somewhere else sends that case to the git branch below, where it belongs.
+  if [[ -f "$here/docker-compose.yml" && -d "$here/dataplane" && "$here" != "$INSTALL_DIR" ]]; then
+    info "Copying the source from $here to $INSTALL_DIR"
+    mkdir -p "$INSTALL_DIR"
+    # .env is deliberately excluded. Copying it in would install the source
+    # checkout's secrets, admin password and ports into production - write_env
+    # then sees a file and generates nothing - and on an UPDATE it would
+    # overwrite the live configuration with whatever the checkout happened to
+    # carry. .env.example is not matched by this pattern and still ships.
+    tar -C "$here" --exclude='.git' --exclude='data' --exclude='.local' \
+        --exclude='node_modules' --exclude='.env' -cf - . | tar -C "$INSTALL_DIR" -xf -
+
   elif [[ -d "$INSTALL_DIR/.git" ]]; then
-    info "Updating the existing checkout in $INSTALL_DIR"
+    command -v git >/dev/null 2>&1 || die "git is missing. Install it and run this again."
+    info "Fetching the latest code into $INSTALL_DIR"
     git -C "$INSTALL_DIR" fetch --depth 1 origin "$MOSWAF_BRANCH"
     git -C "$INSTALL_DIR" reset --hard "origin/$MOSWAF_BRANCH"
+    ok "Now on $(git -C "$INSTALL_DIR" log -1 --format='%h %s')"
+
+  elif [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
+    # Installed by copying a source tree in, so there is no history to pull from.
+    # Saying so is the point: an UPDATE that cannot fetch has to admit it rather
+    # than rebuild the same code and report success.
+    warn "$INSTALL_DIR is not a git checkout, so there is no new code to fetch."
+    warn "The files already there will be rebuilt as they are."
+    warn "To take new code, run the installer from an updated source checkout"
+    warn "outside $INSTALL_DIR, or reinstall from $MOSWAF_REPO."
+
   else
     command -v git >/dev/null 2>&1 || die "git is missing. Install it and run this again."
     info "Cloning $MOSWAF_REPO"
@@ -247,8 +266,19 @@ do_install() {
   compose build
   info "Starting services..."
   compose up -d
-  wait_healthy || true
-  print_result
+
+  # The credentials are printed either way - they are real and the operator needs
+  # them - but an install that never came up must not look like one that did.
+  if wait_healthy; then
+    print_result
+  else
+    print_result
+    warn "The control plane did not become healthy, so the dashboard above is not"
+    warn "answering yet. Check the log, then run: bash $0 --repair"
+    echo "  ${DIM}docker compose --env-file $INSTALL_DIR/.env -f $INSTALL_DIR/docker-compose.yml logs mgmt${NC}"
+    echo
+    exit 1
+  fi
 }
 
 do_update() {
@@ -259,9 +289,21 @@ do_update() {
   compose build --pull
   info "Recreating containers..."
   compose up -d
-  wait_healthy || true
-  ok "Updated. All data and configuration were kept."
+
+  # An update that leaves the control plane down is a failed update, whatever
+  # was rebuilt on the way. Say so instead of printing a success line over it.
+  local healthy=0
+  wait_healthy && healthy=1
   compose ps
+  echo
+  if [[ "$healthy" != "1" ]]; then
+    warn "The rebuild finished but the control plane is not healthy."
+    echo "  ${DIM}Read its log:  docker compose --env-file $INSTALL_DIR/.env -f $INSTALL_DIR/docker-compose.yml logs mgmt${NC}"
+    echo "  ${DIM}Then try:      bash $0 --repair${NC}"
+    echo
+    die "UPDATE did not finish cleanly."
+  fi
+  ok "Updated. All data and configuration were kept."
 }
 
 # REPAIR is for the usual breakages: a container stuck in a restart loop, a
