@@ -1,12 +1,20 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { api, notify } from '../api'
 import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import CountryPicker from '../components/CountryPicker.vue'
 
 const sites = ref([])
 const loading = ref(true)
+
+// What the country picker can offer, and what the global rule currently says.
+// The second one is why "follow the global rule" is a meaningful choice rather
+// than a word: it is shown next to the option, so nobody has to open Settings in
+// another tab to find out what they are agreeing to.
+const geo = ref(null)         // { ready, countries, dataset }
+const globalGeo = ref(null)   // { geo_mode, geo_countries }
 const showForm = ref(false)
 const busy = ref(false)
 const editing = ref(null)
@@ -31,6 +39,11 @@ function blank() {
     tls_key: '',
     auth_enabled: false,
     auth_paths: '',
+    // "" is not "off": it means this site follows the global rule, and the two
+    // have to stay apart. Collapsing them takes an exemption away from whoever
+    // set it, the next time the global rule is edited, without ever saying so.
+    geo_mode: '',
+    geo_countries: [],
   }
 }
 
@@ -93,6 +106,31 @@ async function load() {
   }
 }
 
+async function loadGeo() {
+  // Both are optional decoration around the site form: a failure here must not
+  // stop somebody editing an upstream, so it is not reported as an error.
+  try { geo.value = await api.get('/api/geo/countries') } catch (e) { geo.value = null }
+  try {
+    const st = await api.get('/api/settings')
+    globalGeo.value = { geo_mode: st.geo_mode || 'off', geo_countries: st.geo_countries || [] }
+  } catch (e) {
+    globalGeo.value = null
+  }
+}
+
+// One line describing a country rule, used for the global rule under the
+// "follow it" option and for the badge in the table.
+function geoSummary(mode, countries) {
+  const n = (countries || []).length
+  if (mode === 'block') return t('geo.summaryBlock', { n })
+  if (mode === 'allow') return t('geo.summaryAllow', { n })
+  return t('geo.summaryOff')
+}
+
+const globalGeoSummary = computed(() =>
+  globalGeo.value ? geoSummary(globalGeo.value.geo_mode, globalGeo.value.geo_countries) : ''
+)
+
 function openCreate() {
   editing.value = null
   form.value = blank()
@@ -110,6 +148,8 @@ function openEdit(site) {
     // the box would invite somebody to edit it into something narrower by
     // accident. Empty reads as what it means: everything.
     auth_paths: (site.auth_paths || []).filter((p) => p !== '/').join(', '),
+    geo_mode: site.geo_mode || '',
+    geo_countries: [...(site.geo_countries || [])],
   }
   showForm.value = true
 }
@@ -124,6 +164,8 @@ async function save() {
     flood_rps: Number(form.value.flood_rps) || 0,
     auth_enabled: canGate(form.value) && form.value.auth_enabled,
     auth_paths: form.value.auth_paths.split(',').map((p) => p.trim()).filter(Boolean),
+    geo_mode: form.value.geo_mode || '',
+    geo_countries: (form.value.geo_countries || []).map((c) => c.toUpperCase()),
   }
   busy.value = true
   try {
@@ -240,7 +282,7 @@ async function deleteAccount(u) {
   }
 }
 
-onMounted(load)
+onMounted(() => { load(); loadGeo() })
 </script>
 
 <template>
@@ -287,6 +329,13 @@ onMounted(load)
               </span>
               <span v-if="s.auth_enabled" class="tag tag-verify" style="margin-left:6px" :title="t('sites.auth.badgeHint')">
                 <Icon name="lock" style="width:11px;height:11px" />{{ t('sites.auth.badge') }}
+              </span>
+              <span
+                v-if="s.geo_mode === 'block' || s.geo_mode === 'allow'"
+                class="tag" :class="s.geo_mode === 'allow' ? 'tag-monitor' : 'tag-deny'"
+                style="margin-left:6px" :title="geoSummary(s.geo_mode, s.geo_countries)"
+              >
+                <Icon name="globe" style="width:11px;height:11px" />{{ (s.geo_countries || []).length }}
               </span>
             </td>
             <td class="mono sub">
@@ -377,6 +426,55 @@ onMounted(load)
         </select>
       </div>
     </div>
+
+    <div class="divider"></div>
+
+    <div class="field">
+      <label class="label">{{ t('geo.title') }}</label>
+      <select v-model="form.geo_mode" class="select">
+        <option value="">{{ t('geo.modeInherit') }}</option>
+        <option value="off">{{ t('geo.modeOff') }}</option>
+        <option value="block">{{ t('geo.modeBlock') }}</option>
+        <option value="allow">{{ t('geo.modeAllow') }}</option>
+      </select>
+      <div v-if="form.geo_mode === ''" class="hint">
+        {{ globalGeoSummary ? t('geo.inheritHint', { rule: globalGeoSummary }) : t('geo.inheritHintPlain') }}
+      </div>
+      <div v-else-if="form.geo_mode === 'off'" class="hint">{{ t('geo.siteOffHint') }}</div>
+    </div>
+
+    <template v-if="form.geo_mode === 'block' || form.geo_mode === 'allow'">
+      <div v-if="geo && !geo.ready" class="alert alert-warn" style="margin-bottom:12px">
+        <Icon name="clock" />
+        <div class="alert-body"><b>{{ t('geo.notReady') }}</b> {{ t('geo.notReadyHint') }}</div>
+      </div>
+
+      <div v-if="form.geo_mode === 'allow' && !form.geo_countries.length" class="alert alert-critical" style="margin-bottom:12px">
+        <Icon name="alert" />
+        <div class="alert-body"><b>{{ t('geo.allowEmpty') }}</b> {{ t('geo.allowEmptyHint') }}</div>
+      </div>
+      <div v-else-if="form.geo_mode === 'allow'" class="alert alert-warn" style="margin-bottom:12px">
+        <Icon name="info" />
+        <div class="alert-body">{{ t('geo.allowCrawlers') }}</div>
+      </div>
+
+      <div class="field">
+        <label class="label">{{ form.geo_mode === 'allow' ? t('geo.listAllow') : t('geo.listBlock') }}</label>
+        <CountryPicker
+          v-model="form.geo_countries"
+          :countries="geo?.countries || []"
+          :disabled="!geo?.ready"
+        />
+      </div>
+
+      <ul class="geo-notes">
+        <li>{{ t('geo.noteUnknown') }}</li>
+        <li>{{ t('geo.noteCrawlers') }}</li>
+        <li>{{ t('geo.noteAction') }}</li>
+      </ul>
+    </template>
+
+    <div class="divider"></div>
 
     <div class="row">
       <div class="field grow">
@@ -516,5 +614,7 @@ onMounted(load)
 <style scoped>
 .skel-rows { display: flex; flex-direction: column; gap: 14px; padding: 8px 0; }
 .site-name { font-weight: 600; }
+.geo-notes { margin: 0 0 14px; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; line-height: 1.6; }
+.geo-notes li + li { margin-top: 4px; }
 .table td:first-child { min-width: 150px; }
 </style>
