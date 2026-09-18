@@ -27,14 +27,24 @@ RUN cd control && CGO_ENABLED=0 GOOS=linux go build \
 
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata \
-    && mkdir -p /etc/moswaf/sites /etc/moswaf/certs /etc/moswaf/admin-tls
+
+# su-exec drops privileges without the signal and process handling that su brings
+# with it - the control plane stays PID 1 and keeps receiving SIGTERM from Docker.
+RUN apk add --no-cache ca-certificates tzdata su-exec \
+    && addgroup -S -g 10001 moswaf \
+    && adduser  -S -u 10001 -G moswaf -H -s /sbin/nologin moswaf \
+    && mkdir -p /etc/moswaf/sites /etc/moswaf/certs /etc/moswaf/admin-tls \
+    && chown -R moswaf:moswaf /etc/moswaf
 
 COPY --from=build /moswafd /moswafd
+COPY control/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 9443
 
+# Runs as the moswaf user, so the healthcheck exercises the same identity the
+# service does rather than a more privileged one.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/moswafd", "-healthcheck"]
 
-ENTRYPOINT ["/moswafd"]
+ENTRYPOINT ["/entrypoint.sh"]
