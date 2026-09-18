@@ -3,7 +3,7 @@
 **Date:** 2026-09-17
 **Scope:** data plane (`dataplane/lua/`, `dataplane/conf/`), control plane (`control/`), deployment config (`install.sh`, `docker-compose.yml`, `.env.example`)
 **Method:** source review + runnable reproduction tests (Go and Lua), then black-box re-verification against a running stack.
-**Baseline commit:** `cd6ce7d` · **Fixes verified through:** PR `23dda80`, plus the auth-gateway feature (PR #40, `f61e288`) reviewed and attacked live in round 18. 42 findings across 18 rounds — the last two rounds, on the two largest features, raised none. Rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–18 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38/#40.
+**Baseline commit:** `cd6ce7d` · **Fixes verified through:** the auth-gateway (PR #40) and country-firewall (PR #42) features, both reviewed and attacked live. 43 findings across 19 rounds. Rounds 1–6 PRs #4/#5/#7/#8/#10, rounds 7–19 PRs #12/#13/#15/#16/#17/#20/#24/#26/#27/#29/#31/#32/#34/#36/#38/#40/#42.
 
 ---
 
@@ -20,10 +20,11 @@ in Go but rendered to nginx in Go with nothing escaped.
 The headline result of round 1: **a single `User-Agent` header disabled the entire
 signature engine.**
 
-Across eighteen rounds, **42 findings were raised and all 42 fixed and re-verified**;
-the last two rounds are the exception that proves the pattern — the two largest features
-of the project, geolocation and a login gateway, each reviewed and attacked and each
-yielding nothing above cosmetic. Rounds
+Across nineteen rounds, **43 findings were raised and all 43 fixed and re-verified**. The
+late rounds mostly reviewed new features that held — the login gateway and the two
+geolocation features each attacked and each clean — with one exception in round 19: building
+the country firewall turned up a long-standing bug in the IPv6 parser that every list
+decision, the blocklist included, had been quietly relying on. Rounds
 1–4 covered the WAF core, the control plane, deployment and a deep-evasion sweep (18
 findings). Round 5 reviewed **automatic certificates over ACME HTTP-01** (5 findings) —
 the notable one being that the ACME challenge path was *not* exempt from the WAF
@@ -137,6 +138,7 @@ most risk.
 | 40 | **High** | A solved JS challenge could be **shared with a whole botnet** — the salt was bound to nobody and never spent, so one solve minted a valid cookie for every replaying IP; defeats the under-attack/flood defence | `dataplane/test/challenge.lua` + live PoC (1 solve → cross-IP cookies) | **Fixed ✓ (PR #34)** |
 | 41 | Medium | Manual **issue-certificate** button could burn a domain's Let's Encrypt allowance — 5-min cooldown (12/hr > CA's 5-failed/hr) and it re-issued healthy certs (→ the 5-duplicate/week limit), silent until a cert is genuinely needed | `go test` (cooldown/decision) | **Fixed ✓ (PR #36)** |
 | 42 | Medium | `NeedsCertificate` never checked cert **coverage** → a domain added to a site with a valid cert was served the wrong cert for up to ~2 months (surfaced while fixing #41) | `go test` (real cert SANs) | **Fixed ✓ (PR #36)** |
+| 43 | Medium | `ipv6_groups` silently dropped empty segments → malformed IPv6 (`::ffff:`, `1::2::3`, leading/trailing `:`) parsed into a valid 8-group address, so the blocklist/ban/geo decided about an address nobody sent (surfaced building the country firewall) | differential vs Go `net/netip` (30 strings) | **Fixed ✓ (PR #42)** |
 
 ---
 
@@ -1178,6 +1180,70 @@ and left as the better trade:
     configuration in the clear. The assumption underneath is a trusted single-host network —
     the same one Redis already relies on; a multi-host deployment would need to encrypt this
     and Redis together, as one decision rather than one path.
+
+### Round 19 — the country firewall, and a parser bug under it
+
+Blocking or allowing by country is the same shape as the geolocation feature of round 17 —
+a set of address ranges, a membership test — but on the *hot path* and driving a *decision*
+rather than a label, so it is built differently: the control plane resolves the chosen
+countries to their ranges, merges them, drops the country labels, and publishes only that
+one merged set per rule; the data plane runs a binary search per request. The feature held
+up. Building it turned over the rock the finding was under.
+
+**43. The IPv6 parser accepted addresses nobody could send — MEDIUM.** `ipv6_groups`, the
+function every list decision in the data plane runs an address through — the blocklist, the
+temporary bans, the trusted-proxy list, and now the country sets — split each half of an
+address on `:` with a pattern that silently dropped empty pieces. So a second `::` inside a
+half, a leading colon, a trailing one, simply vanished: `::ffff:` came back as `::ffff`,
+`1::2::3` as `1:2:3`, `:::` as `::` — none of them addresses, each returned as a perfectly
+ordinary set of eight groups. A parser that invents an address out of a string that is not
+one is the dangerous kind of lenient, because every decision downstream is then made about
+an address nobody sent — a ban keyed on a host that does not exist, a country rule placing
+a garbage string somewhere on the map. The reach is real: `client_ip` builds the address
+from the `X-Forwarded-For` header, which is client-controlled behind a trusted proxy, so the
+malformed string arrives from outside.
+
+It is a **correctness** bug rather than a privilege escalation, and the report says so
+plainly: the header is attacker-controlled either way, so a malformed string that parses to a
+valid address grants nothing a valid string would not have — what it corrupts is the WAF's
+own bookkeeping, not the attacker's access. **Fixed (PR #42):** the split rejects an empty
+piece instead of skipping it. Verified not by listing malformed strings and asserting they
+are refused — that only checks the strings one thought of — but by a **differential test**:
+thirty tricky inputs run through the fixed parser and through Go's `net/netip` as an
+independent oracle, comparing byte for byte. Every malformed input is refused by both; every
+valid one parses identically. It answers the stronger question — is there *any* string the
+two read differently — rather than the weaker one, and it found none.
+
+**The country firewall itself, attacked live.** A rule was set to allow one country, with
+`real_ip` configured so the client address could be driven from the header, and the outcomes
+checked against a running gate:
+
+  - an address in the allowed country is let in and one outside it is refused, over both IPv4
+    and IPv6 (a v6 address in the country's published v6 ranges passes; one outside them is
+    refused) — the fixed-width hex comparison the v6 search relies on orders addresses the
+    same way arithmetic would;
+  - the rule sits behind the allowlist and the blocklist and the crawler check: an address on
+    the allowlist is let through the country rule (an operator's "block this country except
+    our partner in it"), and a verified Googlebot is let through an allow rule that names only
+    one country — a site does not fall out of the search index over a geography rule, and the
+    crawler is verified by published address range, not by the user agent it claims;
+  - **it fails open, which is the whole of the difference between a firewall feature and an
+    outage.** An allow rule is the dangerous mode — "refuse everyone not in the list" — and
+    there are several blameless ways to end up with an empty list: removing the last country,
+    a rule whose countries have no ranges, a dataset that has not loaded. Removing every
+    country left the site serving rather than refusing the planet; the control plane also
+    normalises an allow rule with no countries to "off" before it ever publishes, so the
+    open door has two independent latches.
+  - a malformed `X-Forwarded-For` (`1::2::3`) does not crash and is not placed: the parser
+    now refuses it, the address resolution drops that hop, and the decision falls back to the
+    proxy address — no country is invented for a string that is not an address.
+
+Two properties were reasoned from the code but **not** exercised live, and are marked as such
+rather than counted as passing: that an unloaded dataset fails open (the same code path as an
+emptied rule, but the test host already had the dataset from round 17), and that a country
+with only IPv4 ranges lets an IPv6 visitor through (no country in the live dataset had an
+empty v6 set to drive it). Both would take a crafted dataset to force; the honest label is
+that the code says so and the live run did not reach them.
 
 ---
 
