@@ -229,12 +229,34 @@ fetch_source() {
 
   elif [[ -f "$INSTALL_DIR/docker-compose.yml" ]]; then
     # Installed by copying a source tree in, so there is no history to pull from.
-    # Saying so is the point: an UPDATE that cannot fetch has to admit it rather
-    # than rebuild the same code and report success.
-    warn "$INSTALL_DIR is not a git checkout, so there is no new code to fetch."
-    warn "The files already there will be rebuilt as they are."
-    warn "To take new code, run the installer from an updated source checkout"
-    warn "outside $INSTALL_DIR, or reinstall from $MOSWAF_REPO."
+    #
+    # This used to warn and carry on, and that was the worst thing it could do.
+    # UPDATE went on to rebuild the identical files, Docker answered every layer
+    # from cache, compose saw no reason to recreate anything, and the run ended
+    # with "Updated. All data and configuration were kept." The warning scrolled
+    # past in the middle of a build log. So an installation could sit months
+    # behind while every single update reported success - which is exactly how
+    # it went: a box ran four releases behind, including security fixes, with
+    # nothing on screen ever saying so.
+    #
+    # It heals itself now. A checkout is fetched and adopted, history included,
+    # so this branch runs once and every update after it takes the normal path.
+    command -v git >/dev/null 2>&1 || die "git is missing. Install it and run this again."
+    warn "$INSTALL_DIR has no git history, so UPDATE had no way to fetch new code."
+    info "Adopting a fresh checkout so that updates work from here on..."
+
+    local tmp; tmp="$(mktemp -d)"
+    if ! git clone --depth 1 -b "$MOSWAF_BRANCH" "$MOSWAF_REPO" "$tmp/src" >/dev/null 2>&1; then
+      rm -rf "$tmp"
+      die "Could not clone $MOSWAF_REPO. Nothing was changed. Check the network
+   and try again - the installation on disk is untouched and still running."
+    fi
+    # .git is deliberately NOT excluded here: carrying the history in is the
+    # whole repair. data and .env stay as they are - the first is the database
+    # and the certificates, the second is this machine's secrets.
+    tar -C "$tmp/src" --exclude='data' --exclude='.env' -cf - . | tar -C "$INSTALL_DIR" -xf -
+    rm -rf "$tmp"
+    ok "Now on $(git -C "$INSTALL_DIR" log -1 --format='%h %s')"
 
   else
     command -v git >/dev/null 2>&1 || die "git is missing. Install it and run this again."
@@ -410,7 +432,24 @@ do_update() {
     echo
     die "UPDATE did not finish cleanly."
   fi
-  ok "Updated. All data and configuration were kept."
+  # Say which code is now running, not just that something happened.
+  #
+  # "Updated" on its own is a claim nobody can check, and this installer has
+  # already printed it over a run that fetched nothing at all. A commit subject
+  # is checkable: it is either the release the operator expected or it is not,
+  # and they can see which without reading a build log.
+  local now_on=""
+  [[ -d "$INSTALL_DIR/.git" ]] && \
+    now_on="$(git -C "$INSTALL_DIR" log -1 --format='%h %s' 2>/dev/null || true)"
+
+  if [[ -n "$now_on" ]]; then
+    ok "Updated to: $now_on"
+    echo "  ${DIM}All data and configuration were kept.${NC}"
+  else
+    ok "Updated. All data and configuration were kept."
+    warn "This installation still has no git history, so the version above could"
+    warn "not be read. Updates may not be fetching anything - run --repair."
+  fi
 }
 
 # REPAIR is for the usual breakages: a container stuck in a restart loop, a
