@@ -197,6 +197,27 @@ CREATE TABLE IF NOT EXISTS access_rules (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS access_rules_order_idx ON access_rules (priority, created_at);
+
+-- The per-address budget stopped being two hard ceilings and became a sustained
+-- rate plus a burst, so the old numbers no longer mean what they meant.
+--
+-- 60 and 120 were never a choice anybody made - they were this program's
+-- defaults, and under the old algorithm they worked out at twelve requests a
+-- second sustained, which one page load spent half of. Installations still
+-- carrying them are carrying a mistake of ours, so they are moved to the new
+-- defaults.
+--
+-- Only when BOTH still match exactly. An operator who picked their own numbers
+-- picked them, and a migration that overwrites a deliberate setting because the
+-- meaning changed underneath it is worse than one that leaves a stale value: the
+-- first is us deciding we know better about their site.
+UPDATE settings
+   SET value = jsonb_set(
+                 jsonb_set(value, '{global_rate_rps}',   '20'::jsonb, true),
+                 '{global_rate_burst}', '300'::jsonb, true)
+ WHERE key = 'global'
+   AND value->>'global_rate_rps'   = '60'
+   AND value->>'global_rate_burst' = '120';
 `
 
 func (s *Store) Migrate(ctx context.Context) error {

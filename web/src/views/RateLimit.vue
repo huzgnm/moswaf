@@ -32,7 +32,10 @@ const form = ref({})
 let timer = null
 
 // Values to restore when a rule is switched back on after being zeroed
-const DEFAULTS = { global_rate_rps: 60, global_rate_burst: 120, flood_rps: 300, flood_error_rate: 30 }
+// Must match store.DefaultSettings on the server. These are only the
+// fallback shown before settings load; a stale pair here shows the operator
+// a number their firewall is not using.
+const DEFAULTS = { global_rate_rps: 20, global_rate_burst: 300, flood_rps: 300, flood_error_rate: 30 }
 const remembered = {}
 
 async function load(first = false) {

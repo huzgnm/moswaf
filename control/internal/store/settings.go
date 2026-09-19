@@ -34,6 +34,15 @@ func (s *Store) GetSettings(ctx context.Context) (Settings, error) {
 	return st, nil
 }
 
+// MaxBurstSeconds is the longest debt the engine will let an address carry,
+// matching MAX_DEBT in dataplane/lua/moswaf/ratelimit.lua.
+//
+// Duplicated across the two languages rather than shared, because there is no
+// mechanism to share it - so it is named on both sides and said out loud here:
+// if one moves, the other has to move with it, or this validation starts
+// refusing settings the engine would have accepted.
+const MaxBurstSeconds = 60
+
 func ValidateSettings(st *Settings) error {
 	switch st.DefaultMode {
 	case "protect", "monitor", "off":
@@ -42,6 +51,22 @@ func ValidateSettings(st *Settings) error {
 	}
 	if st.GlobalRateRPS < 0 || st.GlobalRateBurst < 0 {
 		return fmt.Errorf("rate limits cannot be negative")
+	}
+	// A burst larger than the rate can pay off in a minute would be silently
+	// capped by the engine, and a setting that is accepted, displayed back, and
+	// then ignored is worse than one that is refused: the operator goes away
+	// believing a number that is not in force anywhere.
+	//
+	// The cap exists because the burst is really a debt ceiling - at a rate of
+	// five a second a burst of ten thousand is over half an hour during which
+	// one oversized page load would keep somebody throttled. Nothing here should
+	// refuse a visitor for longer than a ban would.
+	if max := st.GlobalRateRPS * MaxBurstSeconds; st.GlobalRateRPS > 0 && st.GlobalRateBurst > max {
+		return fmt.Errorf(
+			"a burst of %d cannot take effect at %d requests a second: the "+
+				"engine will not hold an address in debt for more than %d seconds, "+
+				"so anything above %d is ignored. Raise the rate, or lower the burst",
+			st.GlobalRateBurst, st.GlobalRateRPS, MaxBurstSeconds, max)
 	}
 	if st.ChallengeDifficulty < 8 {
 		st.ChallengeDifficulty = 8
