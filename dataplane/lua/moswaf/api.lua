@@ -163,12 +163,22 @@ function _M.bans()
     -- lock it takes is the same one every request needs to ask whether it is
     -- banned, so answering this page precisely would slow down the thing the page
     -- exists to show.
-    local keys = ban:get_keys(BAN_PAGE + 1)
-    local truncated = #keys > BAN_PAGE
+    -- limit=0 asks for all of them, and only the host agent does.
+    --
+    -- The dashboard never gets this: it would mean walking every key while
+    -- holding the lock every request needs to ask whether it is banned. The agent
+    -- asks once a minute, from another process, and it needs the whole set -
+    -- reconciling the kernel against a truncated list would leave rules for
+    -- addresses that are no longer banned, or miss ones that are.
+    local args = ngx.req.get_uri_args(5)
+    local want_all = args.limit == "0"
+
+    local keys = ban:get_keys(want_all and 0 or (BAN_PAGE + 1))
+    local truncated = (not want_all) and #keys > BAN_PAGE
 
     local items = {}
     for i = 1, #keys do
-        if #items >= BAN_PAGE then break end
+        if not want_all and #items >= BAN_PAGE then break end
         local key = keys[i]
         local ip = key:match("^b:(.+)$")
         if ip then
@@ -191,6 +201,7 @@ function _M.bans()
     -- the answer.
     local out = { items = items, shown = #items, truncated = truncated }
     if not truncated then out.total = #items end
+    out.complete = want_all or not truncated
     return json(200, out)
 end
 
