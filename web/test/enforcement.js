@@ -83,13 +83,18 @@ check(enforcementNote({ enforcement: 'kernel_refused', refused_reason: 'in the a
 check(enforcementNote({ enforcement: 'kernel_refused' }) === '',
   'a refusal with no reason produced something anyway')
 
-// A clock going backwards, or a server a second ahead, must not print a
-// negative age.
-const ahead = enforcementNote({ enforcement: 'kernel', enforcement_since: 1000 }, 900)
-check(!ahead.includes('-'), `a timestamp in the future printed a negative age: ${ahead}`)
-
-check(enforcementNote({ enforcement: 'kernel', enforcement_since: 1000 }, 1000) !== '',
-  'zero seconds in the kernel produced no note at all')
+// A clock behind the server's must read as zero, not as a negative age.
+//
+// Stated as what it should equal rather than as a character it should not
+// contain: "no minus sign" passes for any wrong answer that happens not to
+// print one, and it is the same shape of check as the tone blocklist this file
+// already had once.
+const inKernel = { enforcement: 'kernel', enforcement_since: 1000 }
+const atZero = enforcementNote(inKernel, 1000)
+check(enforcementNote(inKernel, 900) === atZero,
+  `a clock 100s behind the server did not read the same as zero seconds: ` +
+  `got ${JSON.stringify(enforcementNote(inKernel, 900))}, expected ${JSON.stringify(atZero)}`)
+check(atZero !== '', 'zero seconds in the kernel produced no note at all')
 
 const labelled = enforcementLabel({ enforcement: 'kernel_pending', stuck: true })
 check(labelled !== enforcementLabel({ enforcement: 'kernel_pending', stuck: false }),
