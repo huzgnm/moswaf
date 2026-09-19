@@ -46,6 +46,15 @@ func (a *agent) expiry() time.Duration {
 	return a.cfg.resyncEvery * 4
 }
 
+// holdFor is how long a released address is refused re-adding.
+//
+// Two reconcile intervals, not one. A release that arrives in the middle of a
+// cycle has to outlive the rest of that cycle and also the ban-list snapshot it
+// was working from, and one interval covers only the first of those.
+func (a *agent) holdFor() time.Duration {
+	return a.cfg.resyncEvery * 2
+}
+
 // noteApplied records that this address is in the kernel set, keeping the
 // timestamp of when it first got there.
 //

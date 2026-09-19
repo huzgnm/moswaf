@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/netip"
@@ -92,9 +93,60 @@ type banEvent struct {
 	TS     int64  `json:"ts"`
 }
 
+// preflight answers one question before this program is ever allowed to run for
+// real: would it refuse to drop the address the operator is sitting at?
+//
+// It exists because the honest answer to "is this configured correctly" cannot be
+// "read the unit file and check". The address somebody administers a machine from
+// is the one thing that must be in the never-drop list, getting it wrong is
+// silent until the moment it locks them out, and by then the way to fix it is the
+// thing that stopped working.
+//
+// So the installer runs this, with the address it believes the operator is
+// connected from, and only enables the service if it passes. A non-zero exit here
+// means the service does not get started - not that it starts and hopes.
+func preflight(cfg config, from string) int {
+	nd, err := newNeverDrop(cfg.management, cfg.docker)
+	if err != nil {
+		fmt.Printf("REFUSED: %v\n", err)
+		return 1
+	}
+	fmt.Printf("never dropped: %s\n", strings.Join(nd.management, ", "))
+
+	if from == "" {
+		fmt.Println("no address given to check against; pass -check-from <ip>")
+		return 1
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(from))
+	if err != nil {
+		fmt.Printf("REFUSED: %q is not an address\n", from)
+		return 1
+	}
+	covered, why := nd.covers(addr.Unmap())
+	if !covered {
+		fmt.Printf("REFUSED: %s is NOT protected. If this is the address you "+
+			"administer this machine from, the agent could one day drop it and "+
+			"you would lose the way in. Add it and run this again.\n", addr)
+		return 1
+	}
+	fmt.Printf("OK: %s is protected by %s\n", addr, why)
+	return 0
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags)
+
+	check := flag.Bool("check", false,
+		"verify the never-drop list and exit without touching the kernel")
+	checkFrom := flag.String("check-from", os.Getenv("SSH_CLIENT_IP"),
+		"with -check: the address that must be protected")
+	flag.Parse()
+
 	cfg := loadConfig()
+
+	if *check {
+		os.Exit(preflight(cfg, *checkFrom))
+	}
 
 	nd, err := newNeverDrop(cfg.management, cfg.docker)
 	if err != nil {
@@ -121,7 +173,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	a := &agent{cfg: cfg, nd: nd, nft: nft, rdb: rdb}
+	a := &agent{cfg: cfg, nd: nd, nft: nft, rdb: rdb, just: newTombstones()}
 
 	go a.reconcileLoop(ctx)
 	a.consumeLoop(ctx)
@@ -131,10 +183,11 @@ func main() {
 }
 
 type agent struct {
-	cfg config
-	nd  *neverDrop
-	nft *nftables
-	rdb *redis.Client
+	cfg  config
+	nd   *neverDrop
+	nft  *nftables
+	rdb  *redis.Client
+	just *tombstones // addresses released too recently to re-add
 }
 
 // consumeLoop is the low-latency path: one event, one kernel change.
@@ -174,9 +227,18 @@ func (a *agent) apply(ctx context.Context, raw string) {
 	// Checked before the address is parsed, because this one has no address. A
 	// switch that parsed first would reject the event that clears everything.
 	if ev.Op == "release_all" {
+		// Read before the flush, so every address that was being dropped can be
+		// noted. Without this the next reconcile, working from a ban list it
+		// fetched before the flush, would put the whole set back.
+		was, listErr := a.nft.list()
 		if err := a.nft.flush(); err != nil {
 			log.Printf("moswaf-kbans: could not release every address: %v", err)
 			return
+		}
+		if listErr == nil {
+			for addr := range was {
+				a.just.mark(addr, a.holdFor())
+			}
 		}
 		a.forgetAll(ctx)
 		log.Printf("moswaf-kbans: released every address in the kernel")
@@ -202,6 +264,10 @@ func (a *agent) apply(ctx context.Context, raw string) {
 			log.Printf("moswaf-kbans: could not release %s: %v", addr, err)
 			return
 		}
+		// Noted before the publish, so a reconcile that lands between the two
+		// still sees the note rather than a set that says the address is gone
+		// and a ban list that says it is not.
+		a.just.mark(addr, a.holdFor())
 		a.forget(ctx, addr)
 	default:
 		log.Printf("moswaf-kbans: ignoring an event of unknown kind %q", ev.Op)
@@ -223,6 +289,10 @@ func (a *agent) drop(ctx context.Context, addr netip.Addr, ttl int) {
 		a.noteRefused(ctx, addr, why)
 		return
 	}
+	// A fresh ban is newer information than the release that came before it. Left
+	// in place, a note from a minute ago would refuse enforcement to a decision
+	// made now - punishing this ban for the previous one being lifted.
+	a.just.clear(addr)
 	if err := a.nft.add(addr, ttl); err != nil {
 		log.Printf("moswaf-kbans: could not drop %s: %v", addr, err)
 		return
@@ -253,7 +323,41 @@ func (a *agent) reconcileLoop(ctx context.Context) {
 	}
 }
 
+// desired turns a ban list into the set the kernel should hold.
+//
+// Pulled out of reconcile because it is the part with opinions - three reasons
+// an address on the ban list still does not get a kernel rule - and because
+// everything around it needs a kernel, a Redis and an HTTP server to exercise,
+// which meant the opinions were the one part that could not be tested. That is
+// backwards: the loops that call nft are mechanical, and this is where a mistake
+// locks somebody out or fails to stop an attack.
+func (a *agent) desired(bans []banRow, now time.Time) map[netip.Addr]int {
+	want := map[netip.Addr]int{}
+	for _, b := range bans {
+		addr, err := netip.ParseAddr(strings.TrimSpace(b.IP))
+		if err != nil || b.TTL <= 0 {
+			continue
+		}
+		addr = addr.Unmap()
+		if refused, _ := a.nd.covers(addr); refused {
+			continue
+		}
+		// Released since this list was fetched. The list is a snapshot, the
+		// release is newer than the snapshot, so the snapshot loses - otherwise
+		// this loop puts back an address the operator just unbanned, and the
+		// dashboard says lifted while the kernel goes on dropping.
+		if a.just.held(addr, now) {
+			continue
+		}
+		want[addr] = b.TTL
+	}
+	return want
+}
+
 func (a *agent) reconcile(ctx context.Context) {
+	now := time.Now()
+	a.just.prune(now)
+
 	bans, err := fetchBans(ctx, a.cfg.bansURL, a.cfg.internalToken)
 	if err != nil {
 		// Leaves the kernel exactly as it is. Removing everything because the list
@@ -265,18 +369,7 @@ func (a *agent) reconcile(ctx context.Context) {
 		return
 	}
 
-	want := map[netip.Addr]int{}
-	for _, b := range bans {
-		addr, err := netip.ParseAddr(strings.TrimSpace(b.IP))
-		if err != nil || b.TTL <= 0 {
-			continue
-		}
-		addr = addr.Unmap()
-		if refused, _ := a.nd.covers(addr); refused {
-			continue
-		}
-		want[addr] = b.TTL
-	}
+	want := a.desired(bans, now)
 
 	have, err := a.nft.list()
 	if err != nil {

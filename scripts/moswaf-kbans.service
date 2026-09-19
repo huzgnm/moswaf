@@ -1,0 +1,55 @@
+[Unit]
+Description=MosWAF kernel ban agent
+Documentation=https://github.com/mosvpn/moswaf
+# Not Requires=. The agent is an optimisation, not a dependency: if Docker is
+# down there are no bans to program, and a hard dependency would only add a
+# second thing to fix while somebody is already fixing the first.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/moswaf/kbans.env
+ExecStart=/usr/local/bin/moswaf-kbans
+Restart=on-failure
+RestartSec=5s
+
+# A crash loop must not become the machine's problem. The agent refuses to start
+# on a configuration it cannot trust - no management address, for instance - and
+# that refusal is deliberate and permanent until somebody fixes it. Retrying it
+# forever would fill the journal and teach nobody anything.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# It needs exactly one privilege: writing nftables. Nothing else on this machine
+# is any of its business, and the sandbox says so rather than trusting the code
+# to stay well-behaved through every future change.
+#
+# NET_ADMIN is not optional - it is the whole job - but everything around it is
+# closed: no new privileges, a private /tmp, read-only system directories, no
+# access to other users' home directories, no kernel tunables, no modules.
+User=root
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Small and bounded. Whatever happens upstream, this process is not the thing
+# that runs the machine out of memory during a flood.
+MemoryMax=128M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target
