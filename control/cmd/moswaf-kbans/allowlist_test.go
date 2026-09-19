@@ -19,20 +19,20 @@ func TestTheManagementAddressCanNeverBeDropped(t *testing.T) {
 	}
 
 	mustRefuse := []string{
-		"59.153.228.62",   // the address the operator actually signs in from
-		"59.153.224.0",    // and either end of the range they gave
-		"59.153.239.255",  //
+		"59.153.228.62",  // the address the operator actually signs in from
+		"59.153.224.0",   // and either end of the range they gave
+		"59.153.239.255", //
 		"127.0.0.1", "::1", "0.0.0.0",
 		"10.0.0.5", "172.16.4.2", "192.168.1.10",
-		"100.64.0.1",      // carrier NAT: one address shared by many real people
-		"169.254.1.1",     // link local, which is what an address means when DHCP failed
-		"224.0.0.1",       // multicast
+		"100.64.0.1",  // carrier NAT: one address shared by many real people
+		"169.254.1.1", // link local, which is what an address means when DHCP failed
+		"224.0.0.1",   // multicast
 		"fe80::1", "fd00::1",
 		// Multicast. Nothing with a multicast source can be a visitor - no unicast
 		// reply could reach it - and the IPv4 side already refused 224/4. Catching
 		// one and not the other was an asymmetry rather than a decision.
 		"ff02::1", "ff00::1",
-		"172.18.0.4",      // the container network the WAF talks to its own database over
+		"172.18.0.4",           // the container network the WAF talks to its own database over
 		"::ffff:59.153.228.62", // and the management address written as IPv6
 	}
 	for _, s := range mustRefuse {

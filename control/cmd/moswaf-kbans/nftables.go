@@ -54,17 +54,17 @@ func (n *nftables) run(args ...string) (string, error) {
 //
 // Three properties are deliberate and none of them is cosmetic:
 //
-//   policy accept - this chain can only ever drop somebody it was told to drop.
-//   It never becomes a default-deny, so no mistake in this program, and no
-//   failure to run it, can black-hole the machine.
+//	policy accept - this chain can only ever drop somebody it was told to drop.
+//	It never becomes a default-deny, so no mistake in this program, and no
+//	failure to run it, can black-hole the machine.
 //
-//   ct state established,related accept, first - an administrator's session that
-//   is already open is never cut, even if their address somehow enters a ban set
-//   while they are working. Losing a connection mid-repair is how a fixable
-//   problem becomes a trip to the datacentre.
+//	ct state established,related accept, first - an administrator's session that
+//	is already open is never cut, even if their address somehow enters a ban set
+//	while they are working. Losing a connection mid-repair is how a fixable
+//	problem becomes a trip to the datacentre.
 //
-//   its own table - created and modified here, and nothing else on the machine is
-//   read or flushed. Somebody else's firewall is somebody else's.
+//	its own table - created and modified here, and nothing else on the machine is
+//	read or flushed. Somebody else's firewall is somebody else's.
 const ruleset = `
 table inet moswaf {
 	set ban4 { type ipv4_addr; flags timeout; }
@@ -138,6 +138,24 @@ func (n *nftables) remove(addr netip.Addr) error {
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+// flush empties both ban sets and leaves the table and chain in place.
+//
+// "flush set" rather than "delete table": the chain, its priority and its accept
+// policy are this program's contract with the machine, and tearing them down to
+// clear a list would mean rebuilding them to serve the next ban. A window where
+// the table does not exist is a window where a drop cannot be programmed.
+func (n *nftables) flush() error {
+	if n.dryRun {
+		return nil
+	}
+	for _, s := range []string{set4, set6} {
+		if _, err := n.run("flush", "set", tableFamily, tableName, s); err != nil {
+			return err
+		}
 	}
 	return nil
 }

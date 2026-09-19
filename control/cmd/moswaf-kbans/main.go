@@ -6,13 +6,13 @@
 // it is the one piece of MosWAF with the power to make the machine unreachable,
 // so the shape of this program is mostly about refusing to use that power:
 //
-//   it will not start without being told which addresses administer the machine
-//   it refuses to drop those, and every address no stranger can arrive from
-//   it touches one nftables table and never any other
-//   every element it adds carries the kernel's own expiry, so a dead agent
-//     leaves rules that drain rather than rules that stay
-//   when anything goes wrong it does nothing, which leaves the WAF exactly where
-//     it was: refusing these addresses in userspace, more slowly
+//	it will not start without being told which addresses administer the machine
+//	it refuses to drop those, and every address no stranger can arrive from
+//	it touches one nftables table and never any other
+//	every element it adds carries the kernel's own expiry, so a dead agent
+//	  leaves rules that drain rather than rules that stay
+//	when anything goes wrong it does nothing, which leaves the WAF exactly where
+//	  it was: refusing these addresses in userspace, more slowly
 //
 // None of that makes it safe to be careless with. It makes it survivable.
 package main
@@ -160,16 +160,29 @@ func (a *agent) consumeLoop(ctx context.Context) {
 		if len(res) < 2 {
 			continue
 		}
-		a.apply(res[1])
+		a.apply(ctx, res[1])
 	}
 }
 
-func (a *agent) apply(raw string) {
+func (a *agent) apply(ctx context.Context, raw string) {
 	var ev banEvent
 	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
 		log.Printf("moswaf-kbans: ignoring an unreadable event: %v", err)
 		return
 	}
+
+	// Checked before the address is parsed, because this one has no address. A
+	// switch that parsed first would reject the event that clears everything.
+	if ev.Op == "release_all" {
+		if err := a.nft.flush(); err != nil {
+			log.Printf("moswaf-kbans: could not release every address: %v", err)
+			return
+		}
+		a.forgetAll(ctx)
+		log.Printf("moswaf-kbans: released every address in the kernel")
+		return
+	}
+
 	addr, err := netip.ParseAddr(strings.TrimSpace(ev.IP))
 	if err != nil {
 		log.Printf("moswaf-kbans: ignoring an event for %q, which is not an address", ev.IP)
@@ -179,7 +192,7 @@ func (a *agent) apply(raw string) {
 
 	switch ev.Op {
 	case "drop":
-		a.drop(addr, ev.TTL)
+		a.drop(ctx, addr, ev.TTL)
 	case "release":
 		// A release has to beat a drop that has not been applied yet, not only one
 		// that has. Otherwise the reconcile a moment later re-adds a rule for an
@@ -187,13 +200,15 @@ func (a *agent) apply(raw string) {
 		// while the packets are still being discarded.
 		if err := a.nft.remove(addr); err != nil {
 			log.Printf("moswaf-kbans: could not release %s: %v", addr, err)
+			return
 		}
+		a.forget(ctx, addr)
 	default:
 		log.Printf("moswaf-kbans: ignoring an event of unknown kind %q", ev.Op)
 	}
 }
 
-func (a *agent) drop(addr netip.Addr, ttl int) {
+func (a *agent) drop(ctx context.Context, addr netip.Addr, ttl int) {
 	if ttl <= 0 {
 		return
 	}
@@ -201,11 +216,20 @@ func (a *agent) drop(addr netip.Addr, ttl int) {
 		// Loud, because somebody is going to have to explain why a ban did not
 		// take effect, and this is the answer.
 		log.Printf("moswaf-kbans: REFUSING to drop %s - it is covered by %s", addr, why)
+		// And recorded, so the explanation reaches the dashboard rather than only
+		// this log. An escalation that is never going to happen must not read as
+		// one that has not happened yet: the first is a decision, the second is a
+		// fault, and the person looking at the screen is trying to tell them apart.
+		a.noteRefused(ctx, addr, why)
 		return
 	}
 	if err := a.nft.add(addr, ttl); err != nil {
 		log.Printf("moswaf-kbans: could not drop %s: %v", addr, err)
+		return
 	}
+	// Published now rather than at the next reconcile. The minute in between is
+	// exactly when somebody is watching to see whether the escalation worked.
+	a.noteApplied(ctx, addr)
 }
 
 // reconcileLoop is the correctness backstop.
@@ -287,7 +311,40 @@ func (a *agent) reconcile(ctx context.Context) {
 		log.Printf("moswaf-kbans: reconciled - %d added, %d released, %d in the kernel",
 			added, removed, len(want))
 	}
-	a.reportHealth(ctx, len(want))
+
+	// Read back rather than assumed.
+	//
+	// What gets published has to be what the kernel holds, not what this function
+	// meant to put there. Those two agree on every ordinary cycle and differ
+	// exactly when an add or a remove failed - which is the only cycle where
+	// anybody reads the dashboard to find out what happened.
+	final, err := a.nft.list()
+	if err != nil {
+		log.Printf("moswaf-kbans: could not read the kernel set back: %v", err)
+		a.reportHealth(ctx, -1)
+		return
+	}
+
+	applied := make(map[netip.Addr]int, len(final))
+	var orphans []netip.Addr
+	for addr := range final {
+		if ttl, ok := want[addr]; ok {
+			applied[addr] = ttl
+			continue
+		}
+		// In the kernel with nothing banned behind it. The removal above tried and
+		// did not succeed, so this address is being refused for a reason the ban
+		// list cannot explain - which is worth saying out loud rather than leaving
+		// somebody to discover by not being able to reach the site.
+		applied[addr] = 0
+		orphans = append(orphans, addr)
+	}
+	if len(orphans) > 0 {
+		log.Printf("moswaf-kbans: %d address(es) are still dropped in the kernel "+
+			"with no matching ban; they will be retried next cycle", len(orphans))
+	}
+	a.publishState(ctx, applied, orphans)
+	a.reportHealth(ctx, len(applied))
 }
 
 // reportHealth writes what the dashboard reads to answer "is escalation working
@@ -298,8 +355,14 @@ func (a *agent) reconcile(ctx context.Context) {
 // dashboard that could not tell those apart would show an agent that has been
 // failing for an hour exactly like one that started a second ago.
 func (a *agent) reportHealth(ctx context.Context, applied int) {
-	err := a.rdb.HSet(ctx, "moswaf:kernel_agent",
-		"seen_at", time.Now().UTC().Format(time.RFC3339),
+	now := time.Now()
+	err := a.rdb.HSet(ctx, keyHealth,
+		"seen_at", now.UTC().Format(time.RFC3339),
+		// The same moment as an integer. seen_at is for people; this is for the
+		// arithmetic that decides whether the agent is alive, and doing that
+		// arithmetic on a formatted date would put timezone parsing in the path of
+		// answering "is this machine protected".
+		"seen_unix", now.Unix(),
 		"applied", applied,
 		"resync_every", int(a.cfg.resyncEvery/time.Second),
 	).Err()
@@ -309,7 +372,7 @@ func (a *agent) reportHealth(ctx context.Context, applied int) {
 	}
 	// Expires at a few times the reconcile interval, so a dead agent stops being
 	// reported as present rather than leaving its last word there forever.
-	a.rdb.Expire(ctx, "moswaf:kernel_agent", a.cfg.resyncEvery*4)
+	a.rdb.Expire(ctx, keyHealth, a.expiry())
 }
 
 func init() {
