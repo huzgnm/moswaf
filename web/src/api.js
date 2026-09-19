@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { t, intlTag } from './i18n'
+import { t, intlTag } from './i18n.js'
 
 const TOKEN_KEY = 'moswaf.token'
 
