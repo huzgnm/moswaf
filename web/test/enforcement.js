@@ -60,10 +60,19 @@ check(enforcementTone({ enforcement: 'kernel_pending', stuck: true }) === 'tag-m
 // The one that matters most: a refusal is the agent protecting whoever is
 // reading the page. A warning colour there sends somebody hunting a bug that is
 // the feature working.
+//
+// Named as the tones that ARE allowed, not as the alarm tones that are not.
+// A list of forbidden colours has to be remembered and extended - the app has
+// twelve tag tones and half of them read as an alarm - so the first one left
+// out, or the first one added later, passes silently. This way anything that is
+// not one of the three calm tones fails, including a tone nobody has written
+// yet.
+const CALM_TONES = ['tag-ok', 'tag-off', 'tag-verify']
 const refusedTone = enforcementTone({ enforcement: 'kernel_refused' })
-check(!['tag-monitor', 'tag-deny', 'tag-critical'].includes(refusedTone),
-  `a refused ban was shown in "${refusedTone}", an alarm tone. It is usually the agent declining ` +
-  'to drop the administrator own address, and reads as a fault it is not.')
+check(CALM_TONES.includes(refusedTone),
+  `a refused ban was shown in "${refusedTone}", which is not one of ${CALM_TONES.join(', ')}. ` +
+  'It is usually the agent declining to drop the administrator own address, and an alarm colour ' +
+  'there reads as a fault it is not.')
 
 // ---------------------------------------------------------------- the note
 
