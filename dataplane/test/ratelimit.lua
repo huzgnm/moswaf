@@ -158,6 +158,88 @@ do
         "got reason " .. tostring(reason))
 end
 
+-- ============================================================================
+-- What a ban is allowed to rest on.
+--
+-- This was live. An administrator opened their own admin panel; the browser
+-- fetched its scripts the way every browser does - all at once - and the third
+-- request past the rate limit, inside that same second, banned them for ten
+-- minutes. The log recorded "flood" about somebody who had clicked once.
+--
+-- The counting was wrong, but the SHAPE was wronger: a ban rested on how much
+-- traffic an address sent. Everybody sends too much eventually - a page with
+-- forty assets, two hundred people behind one carrier address, somebody clicking
+-- quickly - so no threshold on volume separates an attacker from a customer.
+--
+-- Volume is answered with a challenge now. Bans rest on two things a real
+-- visitor does not produce.
+-- ============================================================================
+
+-- 1. Being refused by the signature engine. No page load trips a SQL injection
+--    rule, however many assets it has.
+do
+    dict:reset()
+    local ip = "203.0.113.5"
+    local n = 0
+    for _ = 1, ratelimit.ATTACK_BAN_AT - 1 do
+        n = ratelimit.mark_attack(ip)
+    end
+    check("one short of the attack threshold is not a ban",
+        n < ratelimit.ATTACK_BAN_AT, "count reached " .. n)
+
+    n = ratelimit.mark_attack(ip)
+    check("reaching it is", n >= ratelimit.ATTACK_BAN_AT,
+        "somebody refused by the rules ten times in a minute is trying things " ..
+        "rather than browsing, and no amount of ordinary traffic imitates that")
+end
+
+-- 2. Being handed challenge after challenge and never answering one. A browser
+--    answers the first and is not asked again, so nothing that solves it can
+--    reach this.
+do
+    dict:reset()
+    local ip = "198.51.100.7"
+    local n = 0
+    for _ = 1, ratelimit.CHALLENGE_BAN_AT - 1 do
+        n = ratelimit.mark_challenge(ip)
+    end
+    check("one short of the challenge threshold is not a ban",
+        n < ratelimit.CHALLENGE_BAN_AT, "count reached " .. n)
+
+    n = ratelimit.mark_challenge(ip)
+    check("reaching it is", n >= ratelimit.CHALLENGE_BAN_AT)
+
+    -- The threshold has to sit above what ONE misbehaving machine produces, not
+    -- merely above what a browser produces. This counter is keyed on the address,
+    -- and behind a carrier NAT an address is two hundred people - so a threshold a
+    -- single idle scraper can reach is a threshold that bans its neighbours.
+    check("the threshold sits above what one machine can reach on its own",
+        ratelimit.CHALLENGE_BAN_AT >= 300,
+        "the threshold is " .. ratelimit.CHALLENGE_BAN_AT .. " a minute. One " ..
+        "scraper at a couple of requests a second reaches that, and because the " ..
+        "count is per address it takes everyone sharing that address with it")
+end
+
+-- 3. And the counter that used to ban is gone. How often an address went over a
+--    rate limit says more about how many files the page has than about the
+--    address.
+check("there is no counter for rate-limit violations any more",
+    ratelimit.mark_violation == nil,
+    "mark_violation still exists. It counted something every real visitor does, " ..
+    "and while it exists somebody will wire a ban back onto it")
+
+-- The two counters are separate accusations, and one must not bring the other
+-- closer.
+do
+    dict:reset()
+    local ip = "192.0.2.10"
+    for _ = 1, 20 do ratelimit.mark_challenge(ip) end
+    local attacks = ratelimit.mark_attack(ip)
+    check("challenges do not count towards the attack threshold", attacks == 1,
+        "an address challenged twenty times started its attack count at " ..
+        attacks)
+end
+
 -- ------------------------------------------------------------------ report
 
 io.write("\n\n")

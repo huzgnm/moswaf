@@ -116,6 +116,35 @@ local function do_challenge(ctx, mode, reason)
         ctx.action = "monitor"
         return nil
     end
+
+    -- Handed a challenge and never seen to answer one.
+    --
+    -- A browser is challenged once: it solves the proof of work, keeps the
+    -- cookie, and is not asked again. So an address collecting challenge after
+    -- challenge is one that is not answering them - and that cannot be produced
+    -- by a page with too many assets, by a crowd sharing one carrier address, or
+    -- by somebody clicking quickly, because every one of those answers the first
+    -- one and stops being counted.
+    --
+    -- This is what a flood earns instead of a ban on request count. Being refused
+    -- a lot proves nothing about anybody; being asked a lot and never replying
+    -- does.
+    local st = config.get().settings
+    -- Somebody holding a solved challenge is never counted, wherever this was
+    -- called from.
+    --
+    -- The accusation is "asked and never answered". A visitor carrying a valid
+    -- cookie has answered, and counting them would turn the one signal a real
+    -- person cannot produce into one they produce by being busy. Checked here
+    -- rather than only at the call sites so that the sentence above this function
+    -- is true of the function, and not merely true of the places that remembered.
+    if not challenge.has_valid_cookie(ctx.ip, ctx.ua) then
+        local unsolved = ratelimit.mark_challenge(ctx.ip)
+        if unsolved >= ratelimit.CHALLENGE_BAN_AT then
+            ipset.ban_ip(ctx.ip, st.ban_seconds, "unsolved_challenges:" .. unsolved)
+        end
+    end
+
     ctx.action = "challenge"
     ctx.status = 503
     return challenge.serve(ctx.ip, ctx.ua, reason)
@@ -406,21 +435,56 @@ function _M.run()
         -- The counters are unusable (shared dict exhausted). Challenge everyone
         -- rather than pass them through, but never escalate to a ban: the count
         -- that a ban would be based on does not mean anything right now.
+        -- Has this visitor already proved they are a browser?
+        --
+        -- The rate limit is counted per address, and an address is not a person:
+        -- behind a carrier NAT it is two hundred of them. So exceeding it says
+        -- nothing about whoever sent this particular request, and if they have
+        -- already solved a challenge it says nothing about them at all.
+        local solved = challenge.has_valid_cookie(ip, ua)
+
         if rreason == ratelimit.DICT_FULL then
+            if solved then
+                return block(ctx, mode, "counters_unavailable", nil, 429)
+            end
             return do_challenge(ctx, mode, "counters_unavailable")
         end
 
-        local violations = ratelimit.mark_violation(ip)
-        -- repeat offender -> ban temporarily instead of rejecting request by request
-        if violations >= 3 then
-            ipset.ban_ip(ip, st.ban_seconds, rreason)
-            return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
-        end
-        -- first offence: prefer a challenge so real people are not blocked by mistake
-        if site.challenge ~= "off" then
+        -- Going over a rate limit does not earn a ban, and this is the whole
+        -- shape of the thing.
+        --
+        -- Everybody goes over eventually. A page with forty assets is forty
+        -- requests. A phone on a carrier NAT shares one address with two hundred
+        -- other people, so the budget is not theirs, it is the crowd's. Somebody
+        -- double-clicks. Treating that volume as an attack is how an administrator
+        -- opening their own admin panel was banned for ten minutes with "flood"
+        -- written in the log.
+        --
+        -- So: too much traffic is answered with a challenge, which a browser
+        -- solves without its owner noticing and an unattended client does not.
+        -- A ban is reserved for the signature engine, below, where being refused
+        -- ten times in a minute means somebody is trying things rather than
+        -- browsing.
+        if site.challenge ~= "off" and not solved then
             return do_challenge(ctx, mode, "flood:" .. rreason)
         end
-        return block(ctx, mode, "flood:" .. rreason, nil, 429)
+
+        -- Already solved, and still over the shared limit. Refused for this
+        -- request and nothing more: no second proof of work - they have done it -
+        -- and nothing counted against them, because the thing being counted is
+        -- never answering, and they answered.
+        --
+        -- Without this, two hundred people sharing one carrier address would each
+        -- be re-challenged on every over-limit request, and the address would
+        -- collect thirty "unanswered" challenges in seconds - banning all two
+        -- hundred of them for the crime of having solved it already. That is the
+        -- same collective punishment this change exists to remove, reached by a
+        -- different counter.
+        -- The site has switched the challenge off, which is what an API-only site
+        -- does - a client that cannot run JavaScript is not helped by being asked
+        -- to. It is refused for this request and nothing more; as soon as the rate
+        -- drops it is served again.
+        return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
     end
 
     -- 6. under-attack mode: switched on by hand, set on the site, or engaged by
@@ -513,6 +577,14 @@ function _M.run()
             ipset.ban_ip(ip, st.ban_seconds, "rule:" .. matched.id)
             return block(ctx, mode, "rule", matched, 403)
         else
+            -- A refusal by the signature engine is the thing worth counting.
+            -- Somebody refused ten times in a minute is trying things, not
+            -- browsing - no page load produces this, and no number of assets and
+            -- no amount of carrier NAT produces it either.
+            local attacks = ratelimit.mark_attack(ip)
+            if attacks >= ratelimit.ATTACK_BAN_AT then
+                ipset.ban_ip(ip, st.ban_seconds, "attacks:" .. attacks)
+            end
             return block(ctx, mode, "rule", matched, nil)
         end
     end
