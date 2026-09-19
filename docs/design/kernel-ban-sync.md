@@ -130,7 +130,38 @@ silently (raised by the UI session, which owns the dashboard):
    actually-applied set (e.g. a `moswaf:kernel_applied` key it rewrites each
    reconcile) and `/api/bans` joins against it, so `"kernel"` is only ever
    reported for IPs the agent has confirmed. During a flood, or if the agent is
-   down, IPs correctly show `kernel_pending` rather than a false `kernel`.
+   down, IPs correctly show `kernel_pending` rather than a false `kernel`. The
+   middle state earns its place precisely here: **it is the only way a dead or
+   lagging agent becomes visible** — when the agent is healthy it lasts tens of ms
+   and nobody sees it.
+
+   **Default when the ack is unreadable is `lua`, never `kernel`.** If Redis is
+   lost or the agent has not written yet, do not assume kernel enforcement.
+   Guessing "kernelled" tells the operator an IP is silent while it is actually
+   eating CPU — exactly when they are hunting where the CPU went. Guessing "lua"
+   only makes them think escalation has not run yet, which they can check. When
+   unsure, lean toward *"this still costs CPU."*
+
+   **Per-row state is not enough — surface agent health directly.** Three per-row
+   states still force the operator to *infer* agent health (see a row stuck in
+   `pending`, recall it should be fast, conclude the agent is broken). The worst
+   case: the agent dies when no IP has crossed the threshold → no pending rows →
+   empty table → looks perfectly normal, and the broken agent is invisible until
+   the next flood, exactly when it is needed. So `/api/bans` also carries a
+   top-level block, not per-row:
+
+   ```
+   "kernel_agent": { "seen_at": "<ISO|null>", "stale": true|false,
+                     "applied": <element count in nft> }
+   ```
+
+   `stale = true` when the agent has not reported within `N` seconds
+   (`N = 3× reconcile cycle`). If it has never reported (not installed, or just
+   started): `seen_at = null` **and `stale = true`, not false** — "never seen" and
+   "just seen" must not read the same. This makes "is escalation actually running"
+   a direct answer readable even when the bans table is empty — one field, not a
+   monitoring system.
+
    The firewall project owns the `/api/bans` contract and has committed to keeping
    it stable, so this field (and the ack mechanism) is **agreed between firewall +
    UI before either writes** — not sprung at deploy.
@@ -142,7 +173,11 @@ silently (raised by the UI session, which owns the dashboard):
    applied* (not merely enqueued); if it cannot be applied (agent down, nft
    error) the API must **return a failure**, not `200` — telling the operator
    "couldn't remove it" is far better than claiming it was removed while the
-   kernel still drops the IP.
+   kernel still drops the IP. And if the IP is in `kernel_pending` at unban time,
+   the delete must **cancel the queued intent**, not only clear applied state —
+   otherwise a later agent reconcile applies a rule for an IP that was just
+   unbanned. The tombstone has to beat the *unprocessed queue*, not just the
+   already-applied set.
 
 ### Sync source — prefer push over `get_keys`
 
@@ -246,10 +281,29 @@ Graduated escalation (data-plane side):
 - the post-ban counter resets/expires with the ban window so a later, unrelated
   ban of the same IP starts its count fresh.
 
+`/api/bans` state + agent-health contract (control plane):
+- `enforcement` reports `kernel` only for IPs present in the agent's confirmed
+  `moswaf:kernel_applied`; an IP with intent but no confirmation reads
+  `kernel_pending`, not `kernel`.
+- with `moswaf:kernel_applied` missing / Redis unreadable / agent never ran,
+  `enforcement` defaults to `lua` — NEVER `kernel`. (Guessing "kernelled" is the
+  lie that hides CPU cost.)
+- `kernel_agent.stale` is `true` with `seen_at=null` before the agent's first
+  report; flips to `false` right after a report; returns to `true` after
+  `N = 3× reconcile` seconds of silence — asserted with the bans table both
+  populated and EMPTY (a dead agent must be visible with zero pending rows).
+- `DELETE /api/bans/{ip}` returns a failure (not `200`) when the nft removal
+  cannot be confirmed; on an IP in `kernel_pending` it cancels the queued intent
+  so a later reconcile does not re-apply a rule (race test: unban while the add
+  event is still queued, assert no nft element ever appears).
+
 Regression to add on the data-plane side:
 - the new uncapped `/bans?limit=0` returns all bans (harness that pushes >1000
   bans and asserts none are truncated), and `ban_events` receives one entry per
   `ban_ip`/`unban`.
+- the post-ban counter lives outside `moswaf_ban`: after escalating many IPs,
+  `banned_count()` / the `/metrics` gauge and the `get_keys(1000)` bans list are
+  unchanged (the counter keys do not leak into either).
 
 ## Decisions made
 
