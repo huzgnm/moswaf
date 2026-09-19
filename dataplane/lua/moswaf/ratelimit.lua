@@ -84,6 +84,16 @@ end
 -- longer than a ban would.
 local MAX_DEBT = 60
 
+-- Exported so a test can pin it, and pin it from this side.
+--
+-- The same number lives in the Go control plane as store.MaxBurstSeconds, where
+-- it refuses a burst this engine would silently cap. There is no mechanism to
+-- share a constant across the two languages, so both are pinned by a test that
+-- names the other: change one and a test on the far side goes red. Naming alone
+-- was not enough - it made the pairing something a reader had to notice, and the
+-- failure it guards against is the reader not noticing.
+_M.MAX_DEBT = MAX_DEBT
+
 --- Ask whether this address may send one more request.
 --
 -- scope: "g" for global, or a site id, so one site's traffic cannot spend

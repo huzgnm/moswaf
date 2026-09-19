@@ -349,6 +349,25 @@ do
         "changing how much is measured must not quietly change what earns a ban")
 end
 
+-- ================================ the number the control plane also believes
+
+do
+    -- MAX_DEBT is duplicated in Go as store.MaxBurstSeconds, where it refuses a
+    -- burst this engine would quietly cap. Nothing links the two, so each side
+    -- pins the other by name: moving this one turns a Go test red, and moving
+    -- that one turns this red.
+    --
+    -- Without this the guard only pointed one way. Lowering MAX_DEBT to 30 while
+    -- Go kept 60 would leave every test green, and the control plane would go on
+    -- accepting settings - and showing them back as in force - that this file
+    -- had already thrown half of away.
+    check("MAX_DEBT still matches store.MaxBurstSeconds in Go",
+        ratelimit.MAX_DEBT == 60,
+        "this is " .. tostring(ratelimit.MAX_DEBT) .. " and Go's " ..
+        "MaxBurstSeconds is 60. Change both, or the control plane validates " ..
+        "against a ceiling the engine does not have")
+end
+
 -- =================================================================== report
 
 io.write("\n")
