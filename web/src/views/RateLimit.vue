@@ -167,8 +167,8 @@ async function unban(ip) {
     // being dropped, and the row stays exactly where it was - no optimistic
     // removal, nothing struck through, nothing that reads as "done, with a
     // warning". still_blocked is the server saying so in as many words.
-    if (e.code === 'kernel_unban_failed') {
-      unbanError.value = { ip: e.ip || ip, message: e.error || e.message }
+    if (e.body?.code === 'kernel_unban_failed') {
+      unbanError.value = { ip: e.body.ip || ip, message: e.body.error || e.message }
       return
     }
     notify(e.message, true)

@@ -62,7 +62,12 @@ async function request(method, path, body) {
     // released while the kernel is still dropping it.
     const err = new Error((data && data.error) || t('api.error', { status: res.status }))
     err.status = res.status
-    if (data && typeof data === 'object') Object.assign(err, data)
+    // The body goes in its own property rather than being spread onto the error.
+    // Spreading lets a response decide what "status" or "message" mean on an
+    // Error object - and it would win, because it is assigned last. No endpoint
+    // sends those today, which is exactly what makes it the kind of trap that
+    // goes off later, in somebody else's change, far from this line.
+    err.body = data
     throw err
   }
   return data
