@@ -100,3 +100,51 @@ func TestRenderSiteRejectsBadIDs(t *testing.T) {
 		}
 	}
 }
+
+// Every location that sets a proxy header has to set Host as well.
+//
+// nginx does not merge proxy_set_header across levels - a location declaring one
+// replaces the whole inherited set - so a location that adds a header without
+// repeating Host silently drops the "Host $host" from nginx.conf, and Host
+// becomes $proxy_host: the name of the generated upstream block. Behind any
+// name-based virtual host that is every site on the origin answering "not bound
+// here" at once, with MosWAF reporting 200 and logging nothing.
+//
+// It is checked per location rather than once over the file because the trap is
+// per location: a block that looks fine today breaks the moment somebody adds a
+// header to it.
+func TestEveryProxyLocationSetsHost(t *testing.T) {
+	site := testSite()
+	// with the gate on, so the login locations are rendered and checked too
+	site.AuthEnabled = true
+	site.AuthPaths = []string{"/"}
+	site.TLSCert, site.TLSKey, site.HasTLS = "cert", "key", true
+	out, err := renderSite(site, SiteRender{})
+	if err != nil {
+		t.Fatalf("renderSite: %v", err)
+	}
+
+	var current string
+	var headers, host bool
+	check := func() {
+		if headers && !host {
+			t.Errorf("location %q sets proxy headers but not Host, so the inherited "+
+				"\"Host $host\" is discarded and Host becomes $proxy_host", current)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "location ") {
+			check()
+			current, headers, host = trimmed, false, false
+			continue
+		}
+		if strings.HasPrefix(trimmed, "proxy_set_header ") {
+			headers = true
+			if strings.HasPrefix(trimmed, "proxy_set_header Host ") {
+				host = true
+			}
+		}
+	}
+	check()
+}
