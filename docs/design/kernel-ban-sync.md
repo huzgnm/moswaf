@@ -54,6 +54,36 @@ network-namespaced container. Two deployment options — owner to pick:
 Recommendation: **A** for a security product — do not grant a container host-net
 + NET_ADMIN just to avoid a systemd unit.
 
+### What gets kernel-dropped — graduated escalation (owner decision)
+
+Do **not** kernel-drop an IP the moment it is banned. Kernel-drop only the
+**persistent** offenders: an IP that has already been blocked/banned at the Lua
+layer **and keeps sending anyway**. Three tiers:
+
+1. **Detected bad → 403 block** (existing). One offence, refused at Lua.
+2. **Repeated blocks → temporary ban** in `moswaf_ban` (existing). Still enforced
+   at Lua.
+3. **Banned but still hammering → kernel drop** (new). While an IP is banned,
+   every request from it that still arrives is a "post-ban hit" — the IP is
+   ignoring the ban. Count those hits (`bh:<ip>` in a shared dict); when the
+   count crosses a threshold `K` within the ban window, emit the ban event with a
+   `kernel` flag and only then does the agent add it to `ban4/ban6`.
+
+Why this shape:
+- **Fewer false-positive lockouts.** A legitimate client that trips one rule is
+  blocked once and never kernel-dropped; only something that deliberately keeps
+  pounding after being refused reaches the kernel set.
+- **Targets exactly the CPU-expensive IPs.** The IPs worth a kernel drop are the
+  ones generating *volume*; a banned IP that goes quiet costs nothing to leave at
+  Lua level. The flood sources self-select into the kernel set.
+- **Bounds per-IP Lua cost.** Under a sustained single-source flood, that IP hits
+  Lua at most ~`K` times, then graduates to kernel and goes silent — bounded work
+  per bad IP instead of unbounded.
+
+`K` and the window are config (sensible default e.g. `K=50` over the ban TTL).
+The post-ban hit counter is incremented on the ban-check path that already runs;
+it adds one `incr` per already-banned request, no new scan.
+
 ### Sync source — prefer push over `get_keys`
 
 Do **not** build the agent on `/bans`/`get_keys(1000)` (truncates at the cap,
@@ -101,6 +131,10 @@ The failure that matters is **locking the operator out of their own box** or
 1. **Never-drop allowlist is enforced in the agent, before insert** — not only in
    nft. The agent refuses to add to `ban4/ban6` any address that is:
    - the SSH/management IP(s) (from config, required, install fails without it);
+     decided for this deployment: `59.153.224.0/20` (the operator's SSH source is
+     dynamic across that ISP /20, so the whole prefix is allowlisted; the ~4096
+     addresses are exempt from **kernel-drop only** — they are still inspected and
+     Lua-banned as normal);
    - loopback `127.0.0.0/8`, `::1`;
    - RFC1918 `10/8 172.16/12 192.168/16`, CGNAT `100.64/10`, link-local
      `169.254/16`, `fe80::/10`, ULA `fc00::/7`;
@@ -144,15 +178,30 @@ Integration (lima VM, real kernel):
 - Redis/data-plane unreachable → agent no-ops, existing traffic still served by
   Lua bans (fail-open verified).
 
+Graduated escalation (data-plane side):
+- an IP blocked/banned once but that stops is NEVER promoted to the kernel feed
+  (no `kernel` event emitted below the threshold) — the false-positive guard.
+- a banned IP that keeps hitting emits the `kernel` event exactly once at the
+  `K`-th post-ban hit, not before and not repeatedly.
+- the post-ban counter resets/expires with the ban window so a later, unrelated
+  ban of the same IP starts its count fresh.
+
 Regression to add on the data-plane side:
 - the new uncapped `/bans?limit=0` returns all bans (harness that pushes >1000
   bans and asserts none are truncated), and `ban_events` receives one entry per
   `ban_ip`/`unban`.
 
-## Open questions for the owner / fixer
+## Decisions made
 
-1. Deployment shape A (host systemd) vs B (privileged compose service).
-2. Is the management/SSH allowlist a single IP, a list, or a CIDR? (install input)
-3. Acceptable full-resync interval vs. event latency (default 60s / stream).
-4. Do we ever ban CIDRs, or only single IPs? (single → simple sets; CIDR →
+- Deployment shape: **A (host systemd unit)** — owner to reconfirm, but do not
+  grant a container host-net + NET_ADMIN.
+- Management/SSH allowlist: **`59.153.224.0/20`** (see threat model §1).
+- Escalation to kernel is **graduated** (see "What gets kernel-dropped"): only
+  persistent post-ban offenders, default `K=50` over the ban window.
+
+## Open questions for the fixer
+
+1. Acceptable full-resync interval vs. event latency (default 60s / stream).
+2. Do we ever ban CIDRs, or only single IPs? (single → simple sets; CIDR →
    `flags interval` sets and interval-safe allowlist checks.)
+3. Exact `K` and post-ban window defaults.
