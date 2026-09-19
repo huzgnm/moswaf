@@ -86,6 +86,7 @@ lua-test: ## Run the data plane test suites (needs luajit)
 	@luajit dataplane/test/auth.lua
 	@luajit dataplane/test/geo.lua
 	@luajit dataplane/test/accessrules.lua
+	@luajit dataplane/test/kernelban.lua
 	@luajit dataplane/test/bans.lua
 	@bash dataplane/test/entrypoint.sh
 

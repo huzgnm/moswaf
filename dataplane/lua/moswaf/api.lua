@@ -6,8 +6,9 @@ local ipset  = require "moswaf.ipset"
 local log    = require "moswaf.log"
 local flood  = require "moswaf.flood"
 
-local util     = require "moswaf.util"
-local rulesets = require "moswaf.accessrules"
+local util      = require "moswaf.util"
+local rulesets  = require "moswaf.accessrules"
+local kernelban = require "moswaf.kernelban"
 
 local _M = {}
 
@@ -163,12 +164,22 @@ function _M.bans()
     -- lock it takes is the same one every request needs to ask whether it is
     -- banned, so answering this page precisely would slow down the thing the page
     -- exists to show.
-    local keys = ban:get_keys(BAN_PAGE + 1)
-    local truncated = #keys > BAN_PAGE
+    -- limit=0 asks for all of them, and only the host agent does.
+    --
+    -- The dashboard never gets this: it would mean walking every key while
+    -- holding the lock every request needs to ask whether it is banned. The agent
+    -- asks once a minute, from another process, and it needs the whole set -
+    -- reconciling the kernel against a truncated list would leave rules for
+    -- addresses that are no longer banned, or miss ones that are.
+    local args = ngx.req.get_uri_args(5)
+    local want_all = args.limit == "0"
+
+    local keys = ban:get_keys(want_all and 0 or (BAN_PAGE + 1))
+    local truncated = (not want_all) and #keys > BAN_PAGE
 
     local items = {}
     for i = 1, #keys do
-        if #items >= BAN_PAGE then break end
+        if not want_all and #items >= BAN_PAGE then break end
         local key = keys[i]
         local ip = key:match("^b:(.+)$")
         if ip then
@@ -191,10 +202,76 @@ function _M.bans()
     -- the answer.
     local out = { items = items, shown = #items, truncated = truncated }
     if not truncated then out.total = #items end
+    out.complete = want_all or not truncated
+
+    -- What is actually enforcing each of these, from the agent that would know.
+    --
+    -- Deliberately not done for want_all, which is the agent's own call: it is
+    -- reading this list to decide what the kernel should hold, so telling it what
+    -- the kernel holds would be answering its question with its own last answer.
+    -- It would also add a Redis round trip to the one caller that needs none.
+    if not want_all then
+        local ips = {}
+        for i = 1, #items do ips[i] = items[i].ip end
+
+        local state = kernelban.kernel_state(ips)
+        local now = ngx.time()
+        for i = 1, #items do
+            local e = kernelban.enforcement(items[i].ip, state, now)
+            items[i].enforcement       = e.enforcement
+            items[i].enforcement_since = e.enforcement_since
+            items[i].refused_reason    = e.refused_reason
+            items[i].stuck             = e.stuck
+        end
+        out.kernel_agent = kernelban.agent_status(state, now)
+
+        -- Addresses the kernel is dropping with no ban behind them. Normally an
+        -- empty list, and reported separately from items rather than mixed into
+        -- them: these are not bans, and counting them as bans would make shown
+        -- and total disagree with the thing they are counting.
+        if #state.orphans > 0 then out.kernel_orphans = state.orphans end
+    end
+
     return json(200, out)
 end
 
 -- Lift the ban for one IP, or for all of them when ip=*
+--
+-- A ban can live in two places and this endpoint has to end it in both. The order
+-- is not a detail:
+--
+--   kernel first, then the dict. If the kernel step fails, the ban stays whole -
+--   still refused in userspace, still listed, still removable. The caller is told
+--   no, and what they see on the screen is true.
+--
+--   dict first would mean a failed kernel step leaves an address that the
+--   dashboard shows as free and the kernel goes on discarding. Nothing in the
+--   product can see that state, the address is in no list to retry from, and the
+--   person it happened to gets a connection that times out with no page and no
+--   explanation, for as long as the kernel timeout runs.
+--
+-- So this endpoint never answers 200 for an unban that only half happened.
+--
+-- The kernel step is only insisted on when there is a kernel to speak of. On the
+-- ordinary installation - no agent, no escalation ever - none of it runs and the
+-- behaviour is what it always was.
+local function kernel_involved(ip)
+    if kernelban.pending_since(ip) then return true end
+    local state = kernelban.kernel_state({ ip })
+    -- Unreachable is not the same as empty, and this is the line where confusing
+    -- them does real damage. A queue that cannot be read makes every check below
+    -- answer "no kernel here" - so the one condition under which the kernel step
+    -- must not be skipped is the exact condition that would skip it. Unknown is
+    -- treated as involved: the worst case is an unban that has to be retried,
+    -- against a worst case of somebody silently locked out.
+    if not state.reachable then return true end
+    if state.applied[ip] or state.refused[ip] then return true end
+    -- An agent that is running may hold entries this side never queued: a resync
+    -- adds them from the ban list directly. Its presence is enough to make the
+    -- release worth insisting on.
+    return state.health ~= nil
+end
+
 function _M.unban()
     if not authorised() then return end
     local args = ngx.req.get_uri_args(5)
@@ -202,14 +279,49 @@ function _M.unban()
     if type(ip) ~= "string" or ip == "" then
         return json(400, { error = "the ip parameter is required" })
     end
+
     if ip == "*" then
+        local state = kernelban.kernel_state(nil)
+        local needs_kernel = (not state.reachable) or state.health ~= nil
+                             or #state.orphans > 0
+        if needs_kernel and not kernelban.request_release_all() then
+            return json(409, {
+                code          = "kernel_unban_failed",
+                still_blocked = true,
+                error         = "the kernel agent could not be reached, so the " ..
+                                "bans were left in place rather than lifted in " ..
+                                "one layer only",
+            })
+        end
         ngx.shared.moswaf_ban:flush_all()
         ngx.log(ngx.NOTICE, "moswaf: lifted every temporary ban")
-        return json(200, { unbanned = "all" })
+        return json(200, {
+            unbanned = "all",
+            kernel_release = needs_kernel and "queued" or "not needed",
+        })
     end
+
+    local needs_kernel = kernel_involved(ip)
+    if needs_kernel and not kernelban.request_release(ip) then
+        return json(409, {
+            code          = "kernel_unban_failed",
+            still_blocked = true,
+            ip            = ip,
+            error         = "the kernel agent could not be reached, so the ban " ..
+                            "was left in place rather than lifted in one layer only",
+        })
+    end
+
     ipset.unban(ip)
+    kernelban.clear_pending(ip)
     ngx.log(ngx.NOTICE, "moswaf: lifted the ban for ", ip)
-    return json(200, { unbanned = ip })
+    return json(200, {
+        unbanned = ip,
+        -- "queued", not "done". The agent removes it in the next moment, not this
+        -- one, and saying so is the difference between a dashboard that is
+        -- slightly behind and one that is wrong.
+        kernel_release = needs_kernel and "queued" or "not needed",
+    })
 end
 
 -- Live flood state per site, for the dashboard. Read-only, and it reads shared

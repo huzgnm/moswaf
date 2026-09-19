@@ -20,6 +20,11 @@
 #
 #  Non-interactive flags (for scripts and CI):
 #    --install | --update | --repair | --uninstall
+#    --kernel-ban          install the host agent that drops persistent
+#                          attackers in the kernel (OFF unless asked for)
+#    --no-kernel-ban       stop and remove that agent
+#    --admin-addr <ip|cidr>  with --kernel-ban: the address you administer this
+#                          machine from, which the agent must never drop
 #    --admin-port <port>   admin dashboard port (default 9443)
 #    --admin-bind <ip>     address the dashboard binds to (default 0.0.0.0,
 #                          use 127.0.0.1 to reach it only through an SSH tunnel)
@@ -44,6 +49,19 @@ HTTP_PORT="80"
 HTTPS_PORT="443"
 ACTION=""
 ASSUME_YES=0
+
+# The address or range this machine is administered from, for the kernel ban
+# agent. Empty by default and never guessed silently: see do_kernel_ban.
+ADMIN_ADDR=""
+
+# Where the kernel ban agent lives. Up here with the other paths rather than
+# beside the functions that install it, because the menu and the uninstaller
+# read KBANS_UNIT to decide what to offer and what to clean up - and under
+# `set -u` a path that is only defined further down is a path that works until
+# somebody reorders the file.
+KBANS_BIN="/usr/local/bin/moswaf-kbans"
+KBANS_ENV="/etc/moswaf/kbans.env"
+KBANS_UNIT="/etc/systemd/system/moswaf-kbans.service"
 
 RED=$'\033[0;31m'; GRN=$'\033[0;32m'; YLW=$'\033[0;33m'; BLU=$'\033[0;36m'
 BLD=$'\033[1m'; DIM=$'\033[2m'; NC=$'\033[0m'
@@ -86,6 +104,9 @@ while [[ $# -gt 0 ]]; do
     --update)      ACTION="update"; shift ;;
     --repair)      ACTION="repair"; shift ;;
     --uninstall)   ACTION="uninstall"; shift ;;
+    --kernel-ban)     ACTION="kernel_ban"; shift ;;
+    --no-kernel-ban)  ACTION="kernel_ban_off"; shift ;;
+    --admin-addr)  ADMIN_ADDR="$2"; shift 2 ;;
     --admin-port)  ADMIN_PORT="$2"; shift 2 ;;
     --admin-bind)  ADMIN_BIND="$2"; shift 2 ;;
     --http-port)   HTTP_PORT="$2";  shift 2 ;;
@@ -549,6 +570,15 @@ do_uninstall() {
   compose down --remove-orphans || true
   ok "Containers removed."
 
+  # The kernel agent is the one piece that does not live in a container, so
+  # "remove every MosWAF container" would leave it behind: a root service still
+  # programming nftables for a WAF that no longer exists, with no dashboard left
+  # to explain why an address cannot reach the machine.
+  if [[ -f "$KBANS_UNIT" ]]; then
+    info "Removing the kernel ban agent as well..."
+    do_kernel_ban_off
+  fi
+
   if confirm "Also delete ALL DATA (database, logs, certificates) in $INSTALL_DIR/data?"; then
     compose down -v --remove-orphans || true
     rm -rf "${INSTALL_DIR:?}/data"
@@ -557,6 +587,216 @@ do_uninstall() {
     ok "Data kept in $INSTALL_DIR/data"
   fi
   ok "MosWAF uninstalled."
+}
+
+# ------------------------------------------------------- kernel ban agent
+#
+# The only part of MosWAF that runs outside Docker, and the only part that can
+# make a server unreachable. Everything below is shaped by that.
+#
+# It is OFF unless somebody asks for it. A WAF that refuses bad requests is
+# something you can install on a machine you care about without thinking hard; a
+# program that tells the kernel to discard packets is not, and turning the second
+# on by default because somebody wanted the first would be answering a question
+# they were never asked.
+#
+# The install refuses rather than guesses at every point where a wrong answer
+# costs the machine: no nft, no address, an address that turns out not to be
+# protected - each of those stops the install with the service not enabled,
+# which leaves the WAF exactly where it was.
+
+# Where this SSH session came from, if it is one.
+#
+# Offered as a suggestion and never used without being shown. It is right almost
+# every time and wrong in the two cases that matter - a console login, or sudo
+# that scrubbed the environment - and in those it is empty rather than wrong,
+# which is why it can be offered at all.
+ssh_client_addr() {
+  local c="${SSH_CONNECTION:-}"
+  [[ -n "$c" ]] && { echo "$c" | awk '{print $1}'; return; }
+  c="${SSH_CLIENT:-}"
+  [[ -n "$c" ]] && { echo "$c" | awk '{print $1}'; return; }
+  echo ""
+}
+
+# The subnets the containers talk to each other over, read from Docker rather
+# than assumed. Dropping one of these would cut the WAF off from its own
+# database instead of cutting off an attacker.
+docker_subnets() {
+  local out
+  out="$(docker network inspect $(docker network ls -q) \
+        --format '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null \
+        | tr ' ' '\n' | grep -E '^[0-9]' | sort -u | paste -sd, -)"
+  echo "${out:-172.17.0.0/16,172.18.0.0/16}"
+}
+
+do_kernel_ban() {
+  need_root
+  installed || die "MosWAF is not installed in $INSTALL_DIR. Run INSTALL first."
+
+  command -v nft >/dev/null 2>&1 || die \
+    "nftables is not installed on this host. The agent programs kernel drops
+   through nft and there is nothing useful it can do without it.
+   Install it first:  apt install nftables   (or)   dnf install nftables"
+
+  command -v systemctl >/dev/null 2>&1 || die \
+    "This host does not use systemd, so there is nowhere to install the agent as
+   a service. The WAF keeps working; only kernel escalation is unavailable."
+
+  echo
+  echo "  ${BLD}Kernel ban agent${NC}"
+  echo "  ${DIM}Addresses that keep knocking after being banned get dropped by the"
+  echo "  kernel instead of being answered. Cheaper under a flood - and it is the"
+  echo "  one piece of MosWAF that could lock you out of this server.${NC}"
+  echo
+
+  # ---- the address that must never be dropped
+  local suggested addr
+  suggested="$(ssh_client_addr)"
+  addr="$ADMIN_ADDR"
+
+  if [[ -z "$addr" ]]; then
+    if ! has_tty; then
+      die "--kernel-ban needs --admin-addr <ip-or-cidr>: the address you reach
+   this server from, which the agent must never drop. There is no terminal to
+   ask on, and guessing it is the one mistake that cannot be undone from here."
+    fi
+    echo "  Which address do you administer this server from?"
+    echo "  ${DIM}The agent will never drop it. A range is fine: 59.153.224.0/20${NC}"
+    [[ -n "$suggested" ]] && \
+      echo "  ${DIM}This SSH session comes from ${BLD}${suggested}${NC}${DIM} - press Enter to use it.${NC}"
+    echo
+    read -r -p "  Address or range: " addr </dev/tty || addr=""
+    addr="${addr:-$suggested}"
+  fi
+
+  [[ -n "$addr" ]] || die \
+    "No address given. The agent will not be installed.
+   Without knowing which addresses administer this machine it could be asked to
+   discard yours, and you would find out by losing the connection you were about
+   to fix it over."
+
+  # ---- build the binary, using the toolchain the stack already has
+  info "Building the agent..."
+  local built="$INSTALL_DIR/data/moswaf-kbans"
+  ( cd "$INSTALL_DIR/control" && \
+    docker run --rm -v "$PWD":/src -w /src golang:1.23-alpine \
+      go build -trimpath -o /src/moswaf-kbans ./cmd/moswaf-kbans ) \
+    || die "The agent did not build. Nothing was installed or changed."
+  mv "$INSTALL_DIR/control/moswaf-kbans" "$built"
+
+  # ---- write the configuration
+  mkdir -p /etc/moswaf
+  local redis_pw token proxy_port
+  redis_pw="$(env_get REDIS_PASSWORD)"
+  token="$(env_get MOSWAF_INTERNAL_TOKEN)"
+  proxy_port="$(env_get MOSWAF_PROXY_API_PORT)"; proxy_port="${proxy_port:-8081}"
+
+  # This file holds the Redis password and the internal token, so it is created
+  # unreadable rather than created and then chmod'ed - there is no window.
+  local prev_umask
+  prev_umask="$(umask)"
+  umask 077
+  cat > "$KBANS_ENV" <<EOF
+# MosWAF kernel ban agent. Written by install.sh; safe to edit.
+#
+# MOSWAF_KBANS_ALLOW is the list this agent will never drop, whatever it is
+# told. It is the reason you can still reach this machine. Add to it; think
+# twice before taking anything out.
+MOSWAF_KBANS_ALLOW=$addr
+MOSWAF_KBANS_DOCKER_SUBNETS=$(docker_subnets)
+MOSWAF_KBANS_REDIS=127.0.0.1:6379
+MOSWAF_KBANS_REDIS_PASSWORD=$redis_pw
+MOSWAF_KBANS_BANS_URL=http://127.0.0.1:${proxy_port}/bans?limit=0
+MOSWAF_INTERNAL_TOKEN=$token
+MOSWAF_KBANS_RESYNC=60s
+
+# Set to 1 to have the agent log what it would do and touch nothing.
+MOSWAF_KBANS_DRY_RUN=0
+EOF
+  chmod 600 "$KBANS_ENV"
+  umask "$prev_umask"
+
+  # ---- prove it before enabling it
+  #
+  # The binary checks its own configuration and reports whether the address
+  # would be protected. Running this before the service is enabled is the whole
+  # safety story: a failure here means nothing was started, rather than
+  # something was started and we find out later.
+  info "Checking the agent would never drop ${BLD}${addr}${NC}..."
+  local check_from="${suggested:-$addr}"
+  # A range cannot be checked against itself, so when the operator gave a CIDR
+  # and there is no SSH address to test, take the first address in it.
+  [[ "$check_from" == */* ]] && check_from="${check_from%%/*}"
+
+  if ! ( set -a; . "$KBANS_ENV"; set +a; "$built" -check -check-from "$check_from" ); then
+    rm -f "$KBANS_ENV"
+    die "The agent refused its own configuration, so it was not installed and
+   nothing on this machine was changed. Fix the address and run again:
+     bash $SELF_PATH --kernel-ban --admin-addr <your-ip-or-range>"
+  fi
+
+  # ---- only now does anything get installed
+  #
+  # Everything that could still fail is checked before the first file is written.
+  # Installing the binary and then dying on a missing unit would leave a machine
+  # with the agent on it and nothing to run it - not dangerous, but a state
+  # somebody has to work out before they can try again.
+  local unit_src="$INSTALL_DIR/scripts/moswaf-kbans.service"
+  [[ -f "$unit_src" ]] || die \
+    "scripts/moswaf-kbans.service is missing from the checkout, so there is no
+   service to install. Nothing was changed. Run UPDATE first to refresh the
+   source, then try again."
+
+  install -m 0755 "$built" "$KBANS_BIN"
+  rm -f "$built"
+  install -m 0644 "$unit_src" "$KBANS_UNIT"
+
+  systemctl daemon-reload
+  systemctl enable --now moswaf-kbans >/dev/null 2>&1 || true
+  sleep 2
+
+  if systemctl is-active --quiet moswaf-kbans; then
+    ok "The kernel ban agent is running."
+    echo "  ${DIM}Never dropped: ${addr}, this machine's own addresses, and the"
+    echo "  container subnets.${NC}"
+    echo "  ${DIM}Log:      journalctl -u moswaf-kbans -f${NC}"
+    echo "  ${DIM}Turn off: bash $SELF_PATH --no-kernel-ban${NC}"
+    echo
+    echo "  ${DIM}Nothing is dropped until an address is banned AND keeps sending"
+    echo "  requests afterwards. Every kernel entry expires when its ban does.${NC}"
+  else
+    warn "The agent was installed but is not running."
+    echo "  ${DIM}journalctl -u moswaf-kbans -n 50${NC}"
+    echo "  ${DIM}The WAF is unaffected - it refuses these addresses in userspace,"
+    echo "  which is what it was doing before.${NC}"
+  fi
+  echo
+}
+
+do_kernel_ban_off() {
+  need_root
+  if ! [[ -f "$KBANS_UNIT" ]]; then
+    info "The kernel ban agent is not installed."
+    return 0
+  fi
+
+  systemctl disable --now moswaf-kbans >/dev/null 2>&1 || true
+
+  # Remove the table as well as the service. Stopping the agent alone would
+  # leave whatever it last programmed in the kernel, draining on its own
+  # timeouts - correct, but not what somebody who just asked for it to be off
+  # expects to be true.
+  if command -v nft >/dev/null 2>&1; then
+    nft delete table inet moswaf >/dev/null 2>&1 || true
+  fi
+
+  rm -f "$KBANS_UNIT" "$KBANS_BIN"
+  systemctl daemon-reload
+  ok "The kernel ban agent is removed and its nftables table is gone."
+  echo "  ${DIM}${KBANS_ENV} was kept, so turning it back on will not ask again.${NC}"
+  echo "  ${DIM}Bans still work; they are refused in userspace as before.${NC}"
+  echo
 }
 
 # ------------------------------------------------------------------ menu
@@ -578,6 +818,11 @@ menu() {
   echo "  ${BLD}2)${NC} UPDATE      ${DIM}pull the latest code, rebuild, keep all data${NC}"
   echo "  ${BLD}3)${NC} REPAIR      ${DIM}diagnose and fix a broken install${NC}"
   echo "  ${BLD}4)${NC} UNINSTALL   ${DIM}remove MosWAF${NC}"
+  if [[ -f "$KBANS_UNIT" ]]; then
+    echo "  ${BLD}5)${NC} KERNEL BAN  ${DIM}installed - choose to turn it off${NC}"
+  else
+    echo "  ${BLD}5)${NC} KERNEL BAN  ${DIM}drop persistent attackers in the kernel (off)${NC}"
+  fi
   echo "  ${BLD}0)${NC} Exit"
   echo
 
@@ -585,7 +830,7 @@ menu() {
   # that already has MosWAF, INSTALL on one that does not.
   local choice fallback
   if installed; then fallback=2; else fallback=1; fi
-  read -r -p "  Choose [0-4] (Enter = $fallback): " choice </dev/tty || choice=""
+  read -r -p "  Choose [0-5] (Enter = $fallback): " choice </dev/tty || choice=""
   choice="${choice:-$fallback}"
   echo
   case "$choice" in
@@ -593,6 +838,10 @@ menu() {
     2) do_update ;;
     3) do_repair ;;
     4) do_uninstall ;;
+    # Picking 5 when it is already on means turning it off - there is nothing
+    # else somebody could want from that entry, and a second menu to say so
+    # would be a menu whose only purpose is to be answered.
+    5) if [[ -f "$KBANS_UNIT" ]]; then do_kernel_ban_off; else do_kernel_ban; fi ;;
     0) info "Nothing to do." ;;
     *) die "Invalid choice: $choice" ;;
   esac
@@ -609,10 +858,12 @@ menu() {
 # nothing at all and said so in a way that looked like success.
 if [[ -n "$ACTION" ]]; then
   case "$ACTION" in
-    install)   do_install ;;
-    update)    do_update ;;
-    repair)    do_repair ;;
-    uninstall) do_uninstall ;;
+    install)        do_install ;;
+    update)         do_update ;;
+    repair)         do_repair ;;
+    uninstall)      do_uninstall ;;
+    kernel_ban)     do_kernel_ban ;;
+    kernel_ban_off) do_kernel_ban_off ;;
   esac
 elif has_tty; then
   menu

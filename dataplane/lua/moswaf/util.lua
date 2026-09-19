@@ -212,13 +212,52 @@ function _M.ip_in_list(ip, list)
     return false
 end
 
+-- Is this address one that no stranger on the internet can be arriving from?
+--
+-- The name says "private", but the question it has to answer is wider than RFC
+-- 1918: it is "could a real visitor legitimately have this address". Loopback,
+-- link-local, carrier NAT space and multicast are all "no" for different reasons,
+-- and every one of them is an address that should never be acted on as if it
+-- were a visitor.
+--
+-- It used to cover four IPv4 ranges and answer "no" to every IPv6 address at all,
+-- because it parsed as IPv4 and gave up when that failed. That was enough while
+-- nothing depended on it. It is not enough for deciding what may be dropped in
+-- the kernel, where "::1 is not private" would mean the machine's own loopback
+-- could be queued for a drop.
 function _M.is_private_ip(ip)
+    if type(ip) ~= "string" then return false end
+
     local n = _M.ipv4_to_int(_M.unmap_ipv4(ip) or ip)
-    if not n then return false end
-    return (n >= 167772160  and n <= 184549375)    -- 10/8
-        or (n >= 2886729728 and n <= 2887778303)   -- 172.16/12
-        or (n >= 3232235520 and n <= 3232301055)   -- 192.168/16
-        or (n >= 2130706432 and n <= 2147483647)   -- 127/8
+    if n then
+        return (n <= 16777215)                         -- 0.0.0.0/8, "this network"
+            or (n >= 167772160  and n <= 184549375)    -- 10/8
+            or (n >= 1681915904 and n <= 1686110207)   -- 100.64/10, carrier NAT
+            or (n >= 2130706432 and n <= 2147483647)   -- 127/8, loopback
+            or (n >= 2851995648 and n <= 2852061183)   -- 169.254/16, link local
+            or (n >= 2886729728 and n <= 2887778303)   -- 172.16/12
+            or (n >= 3232235520 and n <= 3232301055)   -- 192.168/16
+            or (n >= 3758096384)                       -- 224/4 multicast and above
+    end
+
+    local g = _M.ipv6_groups(ip)
+    if not g then return false end
+
+    -- ::1 and :: - the loopback and the unspecified address.
+    local all_zero = true
+    for i = 1, 7 do
+        if g[i] ~= 0 then all_zero = false break end
+    end
+    if all_zero and (g[8] == 0 or g[8] == 1) then return true end
+
+    -- ff00::/8, multicast. The IPv4 side already refused 224/4 and this is the
+    -- same category: nothing with a multicast source address is a visitor, because
+    -- no unicast reply could ever reach it. Missing it here while catching it
+    -- there was an asymmetry rather than a decision.
+    if g[1] >= 0xff00 then return true end
+    if g[1] >= 0xfe80 and g[1] <= 0xfebf then return true end   -- fe80::/10 link local
+    if g[1] >= 0xfc00 and g[1] <= 0xfdff then return true end   -- fc00::/7  unique local
+    return false
 end
 
 -- Canonicalise an address so that one client cannot own several identities.
