@@ -116,6 +116,25 @@ local function do_challenge(ctx, mode, reason)
         ctx.action = "monitor"
         return nil
     end
+
+    -- Handed a challenge and never seen to answer one.
+    --
+    -- A browser is challenged once: it solves the proof of work, keeps the
+    -- cookie, and is not asked again. So an address collecting challenge after
+    -- challenge is one that is not answering them - and that cannot be produced
+    -- by a page with too many assets, by a crowd sharing one carrier address, or
+    -- by somebody clicking quickly, because every one of those answers the first
+    -- one and stops being counted.
+    --
+    -- This is what a flood earns instead of a ban on request count. Being refused
+    -- a lot proves nothing about anybody; being asked a lot and never replying
+    -- does.
+    local st = config.get().settings
+    local unsolved = ratelimit.mark_challenge(ctx.ip)
+    if unsolved >= ratelimit.CHALLENGE_BAN_AT then
+        ipset.ban_ip(ctx.ip, st.ban_seconds, "unsolved_challenges:" .. unsolved)
+    end
+
     ctx.action = "challenge"
     ctx.status = 503
     return challenge.serve(ctx.ip, ctx.ua, reason)
@@ -410,17 +429,29 @@ function _M.run()
             return do_challenge(ctx, mode, "counters_unavailable")
         end
 
-        local violations = ratelimit.mark_violation(ip)
-        -- repeat offender -> ban temporarily instead of rejecting request by request
-        if violations >= 3 then
-            ipset.ban_ip(ip, st.ban_seconds, rreason)
-            return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
-        end
-        -- first offence: prefer a challenge so real people are not blocked by mistake
+        -- Going over a rate limit does not earn a ban, and this is the whole
+        -- shape of the thing.
+        --
+        -- Everybody goes over eventually. A page with forty assets is forty
+        -- requests. A phone on a carrier NAT shares one address with two hundred
+        -- other people, so the budget is not theirs, it is the crowd's. Somebody
+        -- double-clicks. Treating that volume as an attack is how an administrator
+        -- opening their own admin panel was banned for ten minutes with "flood"
+        -- written in the log.
+        --
+        -- So: too much traffic is answered with a challenge, which a browser
+        -- solves without its owner noticing and an unattended client does not.
+        -- A ban is reserved for the signature engine, below, where being refused
+        -- ten times in a minute means somebody is trying things rather than
+        -- browsing.
         if site.challenge ~= "off" then
             return do_challenge(ctx, mode, "flood:" .. rreason)
         end
-        return block(ctx, mode, "flood:" .. rreason, nil, 429)
+        -- The site has switched the challenge off, which is what an API-only site
+        -- does - a client that cannot run JavaScript is not helped by being asked
+        -- to. It is refused for this request and nothing more; as soon as the rate
+        -- drops it is served again.
+        return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
     end
 
     -- 6. under-attack mode: switched on by hand, set on the site, or engaged by
@@ -513,6 +544,14 @@ function _M.run()
             ipset.ban_ip(ip, st.ban_seconds, "rule:" .. matched.id)
             return block(ctx, mode, "rule", matched, 403)
         else
+            -- A refusal by the signature engine is the thing worth counting.
+            -- Somebody refused ten times in a minute is trying things, not
+            -- browsing - no page load produces this, and no number of assets and
+            -- no amount of carrier NAT produces it either.
+            local attacks = ratelimit.mark_attack(ip)
+            if attacks >= ratelimit.ATTACK_BAN_AT then
+                ipset.ban_ip(ip, st.ban_seconds, "attacks:" .. attacks)
+            end
             return block(ctx, mode, "rule", matched, nil)
         end
     end
