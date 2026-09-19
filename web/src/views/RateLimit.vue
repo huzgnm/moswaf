@@ -38,6 +38,14 @@ const remembered = {}
 async function load(first = false) {
   if (first) loading.value = true
   try {
+    // Never ask for limit=0 here, however tempting it looks next to the "showing
+    // the first 1,000" notice below. That path makes the data plane walk every
+    // key in the ban dict while holding the lock every request needs to ask
+    // whether it is banned - so opening this page would slow down the thing the
+    // page is here to watch, and hardest exactly when the list is long enough to
+    // want it, which is during a flood. The uncapped read belongs to the host
+    // agent: a different process, once a minute, and it genuinely needs all of
+    // them.
     const [st, b] = await Promise.all([api.get('/api/settings'), api.get('/api/bans')])
     settings.value = st
     bans.value = b.items || []
