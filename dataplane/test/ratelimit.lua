@@ -35,8 +35,25 @@ function dict:incr(key, value, init, _ttl)
 end
 
 function dict:get(key) return self.store[key] end
+
+-- add() succeeds only when the key is absent. That is the whole mechanism behind
+-- counting one violation per episode rather than one per request, so the stub has
+-- to have the same property - a version that always succeeded would let the test
+-- pass against code that still banned on the third request of a page load.
+--
+-- Expiry is modelled against the test's own clock: without it, the gate key would
+-- live forever and the "separate episodes still accumulate" case would be a
+-- single episode.
+function dict:add(key, value, ttl)
+    local e = self.expiry and self.expiry[key]
+    if self.store[key] ~= nil and (not e or e > ngx.now()) then return false, "exists" end
+    self.store[key] = value
+    self.expiry = self.expiry or {}
+    self.expiry[key] = ttl and (ngx.now() + ttl) or nil
+    return true
+end
 function dict:flush_expired(_n) return 0 end
-function dict:reset() self.store = {}; self.full = false end
+function dict:reset() self.store = {}; self.expiry = {}; self.full = false end
 function dict:free_space() return self.full and 0 or 1024 end
 function dict:capacity() return 65536 end
 
@@ -156,6 +173,48 @@ do
     check("#7: the degraded path reports DICT_FULL rather than a rate reason",
         reason == ratelimit.DICT_FULL,
         "got reason " .. tostring(reason))
+end
+
+-- ============================================================================
+-- Opening a page is not a flood.
+--
+-- This one was live. An administrator opened their own admin panel; the browser
+-- fetched the panel's scripts the way every browser does - all at once - and the
+-- third request past the limit, inside that same second, banned them for ten
+-- minutes. The attack log recorded "flood" about somebody who had clicked once.
+--
+-- The cause was counting VIOLATIONS PER REQUEST. Thirty over-limit requests in one
+-- second were thirty arguments for a ban, when they were one page view.
+-- ============================================================================
+do
+    dict:reset()
+    local ip = "150.241.71.89"
+
+    -- A page load: forty requests in the same instant, all over the limit.
+    local violations = 0
+    for _ = 1, 40 do
+        violations = ratelimit.mark_violation(ip)
+    end
+
+    check("a single burst counts as ONE violation, not forty",
+        violations == 1,
+        "forty simultaneous over-limit requests produced " .. violations ..
+        " violations. access.lua bans at three, so this is an administrator " ..
+        "banned before their admin panel finished loading - and the log calls " ..
+        "it a flood")
+
+    check("and that is below the ban threshold", violations < 3,
+        "a page load reached the ban threshold on its own")
+
+    -- A real flood keeps going. Separate episodes still add up, so the escalation
+    -- it exists for still works.
+    clock = clock + 11
+    ratelimit.mark_violation(ip)
+    clock = clock + 11
+    local third = ratelimit.mark_violation(ip)
+    check("but separate episodes still accumulate", third == 3,
+        "three bursts spread over twenty-two seconds gave " .. third ..
+        " violations; sustained abuse must still reach the ban")
 end
 
 -- ------------------------------------------------------------------ report

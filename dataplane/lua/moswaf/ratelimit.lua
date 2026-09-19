@@ -80,10 +80,38 @@ function _M.check(scope, ip, rps, burst)
     return false, nil, c1, c10
 end
 
--- Count how often an IP was blocked recently -> the basis for escalating to a ban
+-- How long after one violation before the same address can earn another.
+--
+-- This is the whole difference between counting EPISODES and counting REQUESTS,
+-- and getting it wrong bans people for using the site normally.
+--
+-- A browser opening a page fires every asset at once - thirty, fifty, a hundred
+-- requests inside one second. That is not a burst of traffic, it is one page
+-- view. Counting each over-limit request as its own violation meant the third
+-- request of that single second was a ban: an administrator opening their own
+-- admin panel was banned before the page finished loading, and the log said
+-- "flood" about somebody who had clicked once.
+--
+-- Ten seconds means three violations take at least twenty seconds of repeatedly
+-- going over - which a flood does and a page load cannot.
+local VIOLATION_GAP = 10
+
+-- Count how often an IP went over the limit recently -> the basis for escalating
+-- to a ban.
+--
+-- One count per episode. The second and subsequent over-limit requests inside the
+-- same episode still get refused; they simply do not each argue for a ban.
 function _M.mark_violation(ip, window)
     window = window or 60
     local key = "v:" .. ip .. ":" .. floor(ngx.now() / window)
+
+    -- add() succeeds only when the key is absent, so exactly one request per
+    -- episode gets through here however many arrive together.
+    local first = cnt:add("vg:" .. ip, 1, VIOLATION_GAP)
+    if not first then
+        return cnt:get(key) or 0        -- already counted; report, do not add
+    end
+
     return bump(key, window * 2) or 0
 end
 
