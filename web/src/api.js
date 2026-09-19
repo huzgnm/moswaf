@@ -54,7 +54,17 @@ async function request(method, path, body) {
   const text = await res.text()
   const data = text ? JSON.parse(text) : null
 
-  if (!res.ok) throw new Error((data && data.error) || t('api.error', { status: res.status }))
+  if (!res.ok) {
+    // The body travels with the error, not just its message. A refusal can carry
+    // facts the caller has to act on rather than only show - a failed unban says
+    // "still_blocked", and a caller that removed the row on the strength of the
+    // status code alone would leave the operator believing an address was
+    // released while the kernel is still dropping it.
+    const err = new Error((data && data.error) || t('api.error', { status: res.status }))
+    err.status = res.status
+    if (data && typeof data === 'object') Object.assign(err, data)
+    throw err
+  }
   return data
 }
 
