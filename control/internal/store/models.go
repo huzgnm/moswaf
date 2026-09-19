@@ -98,20 +98,29 @@ type Event struct {
 
 // Settings is the global policy, stored as a single JSONB row in the settings table.
 type Settings struct {
-	UnderAttack         bool     `json:"under_attack"`
-	DefaultMode         string   `json:"default_mode"`
-	RealIPHeader        string   `json:"real_ip_header"`
-	TrustedProxies      []string `json:"trusted_proxies"`
-	GlobalRateRPS       int      `json:"global_rate_rps"`
-	GlobalRateBurst     int      `json:"global_rate_burst"`
-	BanSeconds          int      `json:"ban_seconds"`
-	ChallengeDifficulty int      `json:"challenge_difficulty"`
-	ChallengeTTL        int      `json:"challenge_ttl"`
-	BlockStatus         int      `json:"block_status"`
-	MaxBodyScan         int      `json:"max_body_scan"`
-	ScanBody            bool     `json:"scan_body"`
-	LogAllowed          bool     `json:"log_allowed"`
-	LogRetainDays       int      `json:"log_retain_days"`
+	UnderAttack    bool     `json:"under_attack"`
+	DefaultMode    string   `json:"default_mode"`
+	RealIPHeader   string   `json:"real_ip_header"`
+	TrustedProxies []string `json:"trusted_proxies"`
+	// The per-address request budget, as a sustained rate plus a burst - the
+	// same two numbers nginx's limit_req takes, and they mean different things.
+	//
+	// GlobalRateRPS is what one address may sustain indefinitely.
+	// GlobalRateBurst is how many requests it may fire back to back before that
+	// pace is enforced, and it has to exceed the number of requests in one page
+	// render: opening a page with sixty assets is sixty requests from one click.
+	// Sized below that, this stops catching attackers and starts catching
+	// visitors - which is exactly how it was wrong before.
+	GlobalRateRPS       int  `json:"global_rate_rps"`
+	GlobalRateBurst     int  `json:"global_rate_burst"`
+	BanSeconds          int  `json:"ban_seconds"`
+	ChallengeDifficulty int  `json:"challenge_difficulty"`
+	ChallengeTTL        int  `json:"challenge_ttl"`
+	BlockStatus         int  `json:"block_status"`
+	MaxBodyScan         int  `json:"max_body_scan"`
+	ScanBody            bool `json:"scan_body"`
+	LogAllowed          bool `json:"log_allowed"`
+	LogRetainDays       int  `json:"log_retain_days"`
 
 	// Automatic flood defence.
 	//
@@ -185,12 +194,25 @@ func NormaliseGeo(mode string, countries []string) (string, []string) {
 
 func DefaultSettings() Settings {
 	return Settings{
-		UnderAttack:         false,
-		DefaultMode:         "protect",
-		RealIPHeader:        "",
-		TrustedProxies:      []string{},
-		GlobalRateRPS:       60,
-		GlobalRateBurst:     120,
+		UnderAttack:    false,
+		DefaultMode:    "protect",
+		RealIPHeader:   "",
+		TrustedProxies: []string{},
+		// Twenty a second sustained, three hundred back to back.
+		//
+		// Both are chosen against what a person can do, not against what an
+		// attack looks like - a distributed flood is flood.lua's job and no
+		// per-address number reaches it. The busiest real browsing is roughly
+		// ten page views a minute; at sixty requests each that is ten a second
+		// on average, so twenty leaves room for somebody impatient. Three
+		// hundred covers about five page loads with no pause between them,
+		// which is what clicking quickly through a site looks like.
+		//
+		// These replace 60/s and 120-per-10s, which sound larger and were far
+		// tighter: the old ten-second ceiling worked out at twelve a second
+		// sustained, and one page load spent half of it.
+		GlobalRateRPS:       20,
+		GlobalRateBurst:     300,
 		BanSeconds:          600,
 		ChallengeDifficulty: 16,
 		ChallengeTTL:        1800,

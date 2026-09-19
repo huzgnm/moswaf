@@ -24,6 +24,8 @@ local challenge = require "moswaf.challenge"
 local auth      = require "moswaf.auth"
 local geo       = require "moswaf.geo"
 local rulesets  = require "moswaf.accessrules"
+
+local floor = math.floor
 local kernelban = require "moswaf.kernelban"
 
 local _M = {}
@@ -434,12 +436,22 @@ function _M.run()
     -- truthy, so `tonumber(site.rate_rps) or global` would evaluate to 0 and switch
     -- rate limiting off entirely.
     local rps = tonumber(site.rate_rps) or 0
-    if rps <= 0 then rps = tonumber(st.global_rate_rps) or 60 end
+    if rps <= 0 then rps = tonumber(st.global_rate_rps) or 20 end
 
     local burst = tonumber(site.rate_burst) or 0
-    if burst <= 0 then burst = tonumber(st.global_rate_burst) or 120 end
-    local hit, rreason, c1, c10 = ratelimit.check(site_id ~= "" and site_id or "g", ip, rps, burst)
-    ctx.rps = c1
+    if burst <= 0 then burst = tonumber(st.global_rate_burst) or 300 end
+
+    -- rps is the rate this address may sustain; burst is how many it may fire
+    -- back to back before that pace is enforced. The second number is what makes
+    -- opening a page - sixty requests from one click - not look like an attack.
+    local hit, rreason, debt, allowance =
+        ratelimit.check(site_id ~= "" and site_id or "g", ip, rps, burst)
+
+    -- Logged as a fraction of the allowance rather than a request count, because
+    -- that is the thing the limit is actually about. "14.2 of 15" says how close
+    -- somebody was; "sixty requests" says nothing without knowing over how long.
+    ctx.rps = debt > 0 and (floor(debt * 100 + 0.5) / 100) or 0
+    ctx.rate_allowance = allowance
     if hit then
         -- The counters are unusable (shared dict exhausted). Challenge everyone
         -- rather than pass them through, but never escalate to a ban: the count
@@ -493,7 +505,8 @@ function _M.run()
         -- does - a client that cannot run JavaScript is not helped by being asked
         -- to. It is refused for this request and nothing more; as soon as the rate
         -- drops it is served again.
-        return block(ctx, mode, "flood:" .. rreason .. ":" .. c1 .. "/" .. c10, nil, 429)
+        return block(ctx, mode, "flood:" .. rreason .. ":" ..
+                     string.format("%.1f/%.1fs", debt, allowance), nil, 429)
     end
 
     -- 6. under-attack mode: switched on by hand, set on the site, or engaged by
