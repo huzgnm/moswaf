@@ -737,13 +737,20 @@ EOF
   fi
 
   # ---- only now does anything get installed
+  #
+  # Everything that could still fail is checked before the first file is written.
+  # Installing the binary and then dying on a missing unit would leave a machine
+  # with the agent on it and nothing to run it - not dangerous, but a state
+  # somebody has to work out before they can try again.
+  local unit_src="$INSTALL_DIR/scripts/moswaf-kbans.service"
+  [[ -f "$unit_src" ]] || die \
+    "scripts/moswaf-kbans.service is missing from the checkout, so there is no
+   service to install. Nothing was changed. Run UPDATE first to refresh the
+   source, then try again."
+
   install -m 0755 "$built" "$KBANS_BIN"
   rm -f "$built"
-  if [[ -f "$INSTALL_DIR/scripts/moswaf-kbans.service" ]]; then
-    install -m 0644 "$INSTALL_DIR/scripts/moswaf-kbans.service" "$KBANS_UNIT"
-  else
-    die "scripts/moswaf-kbans.service is missing from the checkout."
-  fi
+  install -m 0644 "$unit_src" "$KBANS_UNIT"
 
   systemctl daemon-reload
   systemctl enable --now moswaf-kbans >/dev/null 2>&1 || true

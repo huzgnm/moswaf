@@ -138,7 +138,11 @@ func main() {
 
 	check := flag.Bool("check", false,
 		"verify the never-drop list and exit without touching the kernel")
-	checkFrom := flag.String("check-from", os.Getenv("SSH_CLIENT_IP"),
+	// No default. It used to read SSH_CLIENT_IP, which is not a variable ssh sets
+	// - the real ones are SSH_CONNECTION and SSH_CLIENT - so the default was
+	// always empty while looking like it did something. A default that never
+	// fires is worse than none: it invites somebody to rely on it.
+	checkFrom := flag.String("check-from", "",
 		"with -check: the address that must be protected")
 	flag.Parse()
 

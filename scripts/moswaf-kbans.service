@@ -7,19 +7,26 @@ Documentation=https://github.com/mosvpn/moswaf
 After=network-online.target docker.service
 Wants=network-online.target
 
+# A crash loop must not become the machine's problem. The agent refuses to start
+# on a configuration it cannot trust - no management address, for instance - and
+# that refusal is deliberate and permanent until somebody fixes it. Retrying it
+# forever would fill the journal and teach nobody anything.
+#
+# These belong in [Unit]. They used to live in [Service] and systemd moved them
+# in v230; put back there they are silently ignored - a warning in the journal
+# nobody reads, the default 10s window in force, and with RestartSec=5s a broken
+# agent restarts twice per window and never reaches the burst limit at all. The
+# protection reads as present and is not there, which is worse than not writing
+# it: the first is a thing somebody trusts.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 EnvironmentFile=/etc/moswaf/kbans.env
 ExecStart=/usr/local/bin/moswaf-kbans
 Restart=on-failure
 RestartSec=5s
-
-# A crash loop must not become the machine's problem. The agent refuses to start
-# on a configuration it cannot trust - no management address, for instance - and
-# that refusal is deliberate and permanent until somebody fixes it. Retrying it
-# forever would fill the journal and teach nobody anything.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # It needs exactly one privilege: writing nftables. Nothing else on this machine
 # is any of its business, and the sandbox says so rather than trusting the code
