@@ -4,6 +4,9 @@ import { api, notify, fmtNumber } from '../api'
 import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import {
+  enforcementOf, isStuck, enforcementTone, enforcementLabel, enforcementNote,
+} from '../enforcement.js'
 
 // Rate limiting, the way an operator thinks about it: three rules, each a
 // switch and one sentence saying what it does with the current numbers, and
@@ -179,60 +182,6 @@ function fmtTTL(sec) {
   if (sec <= 0) return t('ips.ttl.expiring')
   const m = Math.floor(sec / 60)
   return m > 0 ? t('ips.ttl.minutes', { m, s: Math.floor(sec % 60) }) : t('ips.ttl.seconds', { s: Math.floor(sec) })
-}
-
-// A ban with no enforcement field is one this control plane does not describe -
-// an older build, or the uncapped read the agent uses. Unknown and absent are
-// treated alike: say nothing rather than guess, which is also what an unknown
-// future value gets.
-const KNOWN_ENFORCEMENT = ['lua', 'kernel_pending', 'kernel', 'kernel_refused']
-
-function enforcementOf(b) {
-  return KNOWN_ENFORCEMENT.includes(b.enforcement) ? b.enforcement : 'lua'
-}
-
-// stuck is its own field and only means anything while a request is pending;
-// the server reports false for every other state, and this does not read it as
-// a fifth kind of enforcement.
-function isStuck(b) {
-  return b.stuck === true && enforcementOf(b) === 'kernel_pending'
-}
-
-function enforcementTone(b) {
-  if (isStuck(b)) return 'tag-monitor'
-  switch (enforcementOf(b)) {
-    case 'kernel': return 'tag-ok'
-    case 'kernel_pending': return 'tag-off'
-    // Deliberately not a warning colour. A refusal is almost always the agent
-    // declining to drop an administrator's own address at the kernel, which is
-    // it doing its job; painting it red sends somebody hunting a bug that is a
-    // feature.
-    case 'kernel_refused': return 'tag-verify'
-    default: return 'tag-off'
-  }
-}
-
-function enforcementLabel(b) {
-  if (isStuck(b)) return t('kban.stuck')
-  return t(`kban.${enforcementOf(b)}`)
-}
-
-// The detail under the badge: how long it has been in this state, or why it was
-// refused. Nothing for a plain Lua ban, which is the majority and needs no note.
-function enforcementNote(b) {
-  const e = enforcementOf(b)
-  if (e === 'kernel_refused') return b.refused_reason || ''
-  if (!b.enforcement_since) return ''
-  const secs = Math.max(0, Math.floor(Date.now() / 1000 - b.enforcement_since))
-  return e === 'kernel'
-    ? t('kban.sinceKernel', { d: fmtDuration(secs) })
-    : t('kban.sincePending', { d: fmtDuration(secs) })
-}
-
-function fmtDuration(sec) {
-  if (sec < 60) return t('kban.secs', { s: sec })
-  const m = Math.floor(sec / 60)
-  return m < 60 ? t('kban.mins', { m }) : t('kban.hours', { h: Math.floor(m / 60) })
 }
 
 function reasonLabel(reason) {
