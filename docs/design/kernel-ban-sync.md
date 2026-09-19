@@ -84,6 +84,32 @@ Why this shape:
 The post-ban hit counter is incremented on the ban-check path that already runs;
 it adds one `incr` per already-banned request, no new scan.
 
+### Ban state is now two-valued — `/api/bans` contract + unban propagation
+
+Once kernel-drop exists, a banned IP is in one of two states that mean very
+different things to an operator:
+
+- **lua-banned** — still runs the full access phase on every request, still costs
+  CPU (this is where an IP sits until it crosses the escalation threshold);
+- **kernel-dropped** — packets dropped in-kernel, silent, ~free.
+
+The dashboard reads `GET /api/bans` (today a flat list) and unbans via
+`DELETE /api/bans/{ip}`. Two requirements so the UI neither misleads nor fails
+silently (raised by the UI session, which owns the dashboard):
+
+1. **`/api/bans` must expose the state** — an *additive* field
+   (e.g. `enforcement: "lua" | "kernel"`) so the dashboard can show which IPs are
+   still eating CPU versus already silenced. During a flood that is the exact
+   question the operator opens the page to answer. The firewall project owns the
+   `/api/bans` contract and has committed to keeping it stable, so this field is
+   **agreed between firewall + UI before either writes** — not sprung at deploy.
+2. **unban must propagate to the kernel** — `DELETE /api/bans/{ip}` on a
+   kernel-dropped IP must remove the nft element too (emit an unban tombstone the
+   agent applies), not only delete the shared-dict key. Otherwise the UI reports
+   "unbanned" while the kernel still drops the IP — a silent failure, the worst
+   kind. The DELETE should not report success until the tombstone is enqueued (or
+   the UI must show "pending kernel removal").
+
 ### Sync source — prefer push over `get_keys`
 
 Do **not** build the agent on `/bans`/`get_keys(1000)` (truncates at the cap,
