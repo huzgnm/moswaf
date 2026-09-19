@@ -162,6 +162,12 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		// Static values, every one of them from a variable this server filled in.
 		// None is derived from a request header: "$http_x_moswaf_token" here would
 		// be a client-supplied value being handed back as proof of who we are.
+		// Host for the same reason as the location below: declaring any header
+		// here drops the inherited one. The control plane routes this by path and
+		// does not read Host, so nothing depends on the value - but leaving one
+		// location in the file without it is how the next person learns the trap
+		// the hard way.
+		w("%s    proxy_set_header Host           $host;", indent)
 		w("%s    proxy_set_header X-MosWAF-Site  $moswaf_auth_site;", indent)
 		w("%s    proxy_set_header X-MosWAF-IP    $moswaf_auth_ip;", indent)
 		w("%s    proxy_set_header X-MosWAF-Token $moswaf_auth_token;", indent)
@@ -190,6 +196,20 @@ func renderSite(s *store.Site, opt SiteRender) (string, error) {
 		// is the common mistake, reads exactly what the attacker chose. MosWAF has
 		// already worked out who the client is; passing its guess along as well only
 		// gives the origin a chance to believe the wrong one.
+		// Host is repeated here, and it has to be.
+		//
+		// nginx does not merge proxy_set_header across levels: a location that
+		// declares one replaces the whole inherited set. nginx.conf sets
+		// "Host $host" at the http level, and the four headers below silently
+		// discarded it - Host fell back to nginx's own default, $proxy_host, which
+		// is the name of the generated upstream block. Every name-based virtual
+		// host behind MosWAF then had no idea which of its sites was being asked
+		// for, and answered "this domain is not bound here" for all of them at
+		// once, while the firewall reported 200 and logged nothing.
+		//
+		// Anything added to this list later walks into the same trap, so Host
+		// stays at the top of it.
+		w("%s    proxy_set_header Host             $host;", indent)
 		w("%s    proxy_set_header X-Real-IP        $moswaf_client_ip;", indent)
 		w("%s    proxy_set_header X-Forwarded-For  $moswaf_client_ip;", indent)
 		w("%s    proxy_set_header X-Forwarded-Host $host;", indent)
