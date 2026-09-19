@@ -324,6 +324,28 @@ export function mockApi() {
         if (p.startsWith('/api/ips/')) { state.ips = state.ips.filter((i) => String(i.id) !== p.split('/').pop()); return send({ ok: true }) }
 
         if (p === '/api/bans') {
+          // MOSWAF_MOCK_KERNEL exercises the kernel-agent states, which cannot be
+          // reached without an agent: off (no agent at all - the ordinary case),
+          // on, stale, failing, orphans.
+          const k = process.env.MOSWAF_MOCK_KERNEL || 'off'
+          if (k !== 'off') {
+            const nowS = Math.floor(now() / 1000)
+            const items = [
+              { ip: '45.83.122.9',  reason: 'attacks', ttl: 512, enforcement: 'kernel', enforcement_since: nowS - 940, stuck: false },
+              { ip: '185.220.101.44', reason: 'rule:sqli-union', ttl: 403, enforcement: 'kernel_pending', enforcement_since: nowS - 6, stuck: false },
+              { ip: '92.63.197.153', reason: 'attacks', ttl: 388, enforcement: 'kernel_pending', enforcement_since: nowS - 260, stuck: true },
+              { ip: '59.153.228.62', reason: 'unsolved_challenges:4', ttl: 120, enforcement: 'kernel_refused',
+                refused_reason: 'trong dải quản trị 59.153.224.0/20', stuck: false },
+              { ip: '141.98.10.62', reason: 'rule:scanner-ua', ttl: 77, enforcement: 'lua', stuck: false },
+            ]
+            const out = { items, shown: items.length, truncated: false, total: items.length }
+            out.kernel_agent = k === 'failing'
+              ? { present: true, seen_at: new Date().toISOString(), resync_every: 60, failing: true, stale: false }
+              : { present: true, seen_at: new Date().toISOString(), resync_every: 60, applied: 2, failing: false, stale: k === 'stale' }
+            if (k === 'orphans') out.kernel_orphans = ['203.0.113.7', '198.51.100.24']
+            return send(out)
+          }
+
           // MOSWAF_MOCK_BANS=many exercises the cut list, which is the state
           // that cannot be reached with three rows of sample data
           if (process.env.MOSWAF_MOCK_BANS === 'many') {

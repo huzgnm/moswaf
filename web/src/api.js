@@ -1,5 +1,5 @@
 import { reactive } from 'vue'
-import { t, intlTag } from './i18n'
+import { t, intlTag } from './i18n.js'
 
 const TOKEN_KEY = 'moswaf.token'
 
@@ -54,7 +54,22 @@ async function request(method, path, body) {
   const text = await res.text()
   const data = text ? JSON.parse(text) : null
 
-  if (!res.ok) throw new Error((data && data.error) || t('api.error', { status: res.status }))
+  if (!res.ok) {
+    // The body travels with the error, not just its message. A refusal can carry
+    // facts the caller has to act on rather than only show - a failed unban says
+    // "still_blocked", and a caller that removed the row on the strength of the
+    // status code alone would leave the operator believing an address was
+    // released while the kernel is still dropping it.
+    const err = new Error((data && data.error) || t('api.error', { status: res.status }))
+    err.status = res.status
+    // The body goes in its own property rather than being spread onto the error.
+    // Spreading lets a response decide what "status" or "message" mean on an
+    // Error object - and it would win, because it is assigned last. No endpoint
+    // sends those today, which is exactly what makes it the kind of trap that
+    // goes off later, in somebody else's change, far from this line.
+    err.body = data
+    throw err
+  }
   return data
 }
 

@@ -4,6 +4,9 @@ import { api, notify, fmtNumber } from '../api'
 import { t } from '../i18n'
 import Modal from '../components/Modal.vue'
 import Icon from '../components/Icon.vue'
+import {
+  enforcementOf, isStuck, enforcementTone, enforcementLabel, enforcementNote,
+} from '../enforcement.js'
 
 // Rate limiting, the way an operator thinks about it: three rules, each a
 // switch and one sentence saying what it does with the current numbers, and
@@ -25,6 +28,14 @@ const bans = ref([])
 // total out rather than filling in a figure that would read as an answer.
 const bansTruncated = ref(false)
 const bansTotal = ref(null)
+
+// What is actually enforcing each ban, and whether the thing that would know is
+// running. Absent on a control plane without the kernel agent, which is most of
+// them - see kernelAgent below.
+const kernelAgent = ref(null)
+const kernelOrphans = ref([])
+const unbanError = ref(null)   // { ip, message } from a refusal, kept on screen
+let refreshTimer = null
 const loading = ref(true)
 const busy = ref(false)
 const editing = ref('')     // 'access' | 'flood' | 'error'
@@ -53,6 +64,11 @@ async function load(first = false) {
     settings.value = st
     bans.value = b.items || []
     bansTruncated.value = !!b.truncated
+    // present:false means "not installed", which is the ordinary case, not a
+    // fault. Everything kernel-shaped hides itself rather than reporting a
+    // machine as unprotected when nobody asked it to be.
+    kernelAgent.value = b.kernel_agent?.present ? b.kernel_agent : null
+    kernelOrphans.value = b.kernel_orphans || []
     // Absent on a control plane older than this field, and absent by design
     // when the list was cut - either way there is no total to show.
     bansTotal.value = typeof b.total === 'number' ? b.total : null
@@ -139,11 +155,28 @@ const errorSentence = computed(() => {
 // ---------------------------------------------------------------- bans
 
 async function unban(ip) {
+  unbanError.value = null
   try {
-    await api.del(`/api/bans/${encodeURIComponent(ip)}`)
+    const res = await api.del(`/api/bans/${encodeURIComponent(ip)}`)
     notify(ip === '*' ? t('ips.allLifted') : t('ips.lifted', { ip }))
     await load()
+    // "queued" is the kernel release being handed to the agent, not the agent
+    // having done it. The row is correct now and will be correct again shortly;
+    // one late refresh is what makes the two agree without claiming the second
+    // state before it exists.
+    if (res?.kernel_release === 'queued') {
+      clearTimeout(refreshTimer)
+      refreshTimer = setTimeout(() => load(), 2500)
+    }
   } catch (e) {
+    // A refusal is not half a release. The ban is intact, the address is still
+    // being dropped, and the row stays exactly where it was - no optimistic
+    // removal, nothing struck through, nothing that reads as "done, with a
+    // warning". still_blocked is the server saying so in as many words.
+    if (e.body?.code === 'kernel_unban_failed') {
+      unbanError.value = { ip: e.body.ip || ip, message: e.body.error || e.message }
+      return
+    }
     notify(e.message, true)
   }
 }
@@ -164,7 +197,7 @@ onMounted(() => {
   load(true)
   timer = setInterval(() => load(false), 10000)
 })
-onUnmounted(() => clearInterval(timer))
+onUnmounted(() => { clearInterval(timer); clearTimeout(refreshTimer) })
 </script>
 
 <template>
@@ -243,6 +276,39 @@ onUnmounted(() => clearInterval(timer))
       <button type="button" class="btn btn-sm btn-danger" :disabled="!bans.length" @click="unban('*')">{{ t('ips.liftAll') }}</button>
     </div>
 
+    <!-- Addresses the kernel is still dropping with no ban behind them. Normally
+         this list does not exist. When it does, the people on it cannot reach
+         the site and appear in no table, so it gets a band of its own rather
+         than a column nobody would look at. -->
+    <div v-if="kernelOrphans.length" class="alert alert-warn" style="margin-bottom:14px">
+      <Icon name="alert" />
+      <div class="alert-body">
+        <b>{{ t('kban.orphans', { n: kernelOrphans.length }) }}</b> {{ t('kban.orphansHint') }}
+        <div class="mono orphan-list">{{ kernelOrphans.join(', ') }}</div>
+      </div>
+    </div>
+
+    <!-- The agent's own state. Only ever rendered when there is an agent: on a
+         machine without one this whole feature is silent, because "not
+         installed" is the ordinary case and a warning would report every
+         normal installation as broken. -->
+    <div v-if="kernelAgent?.failing" class="alert alert-warn" style="margin-bottom:14px">
+      <Icon name="alert" />
+      <div class="alert-body"><b>{{ t('kban.failing') }}</b> {{ t('kban.failingHint') }}</div>
+    </div>
+    <div v-else-if="kernelAgent?.stale" class="alert alert-warn" style="margin-bottom:14px">
+      <Icon name="clock" />
+      <div class="alert-body"><b>{{ t('kban.stale') }}</b> {{ t('kban.staleHint', { every: kernelAgent.resync_every }) }}</div>
+    </div>
+
+    <div v-if="unbanError" class="alert alert-critical" style="margin-bottom:14px">
+      <Icon name="alert" />
+      <div class="alert-body">
+        <b>{{ t('kban.unbanFailed', { ip: unbanError.ip }) }}</b> {{ t('kban.unbanFailedHint') }}
+        <div class="dim" style="margin-top:4px">{{ unbanError.message }}</div>
+      </div>
+    </div>
+
     <div v-if="loading" class="skel-list"><div v-for="i in 3" :key="i" class="skel skel-line"></div></div>
     <div v-else-if="!bans.length" class="empty">
       <Icon name="shieldOk" />
@@ -256,6 +322,7 @@ onUnmounted(() => clearInterval(timer))
             <th>{{ t('ips.col.ip') }}</th>
             <th>{{ t('ips.col.reason') }}</th>
             <th>{{ t('ratelimit.bans.action') }}</th>
+            <th v-if="kernelAgent">{{ t('kban.col') }}</th>
             <th>{{ t('ips.col.timeLeft') }}</th>
             <th></th>
           </tr>
@@ -265,6 +332,12 @@ onUnmounted(() => clearInterval(timer))
             <td class="mono">{{ b.ip }}</td>
             <td><span class="tag tag-deny"><span class="dot"></span>{{ reasonLabel(b.reason) }}</span></td>
             <td class="sub">{{ t('ratelimit.bans.blockedFor', { seconds: fmtNumber(settings?.ban_seconds ?? 0) }) }}</td>
+            <td v-if="kernelAgent">
+              <span class="tag" :class="enforcementTone(b)">
+                <span class="dot"></span>{{ enforcementLabel(b) }}
+              </span>
+              <div v-if="enforcementNote(b)" class="dim enforce-note">{{ enforcementNote(b) }}</div>
+            </td>
             <td class="sub nowrap">{{ fmtTTL(b.ttl) }}</td>
             <td class="actions">
               <button type="button" class="btn btn-sm" @click="unban(b.ip)">{{ t('ips.liftBan') }}</button>
@@ -272,6 +345,13 @@ onUnmounted(() => clearInterval(timer))
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="kernelAgent && !loading" class="card-foot">
+      <Icon name="server" style="width:14px;height:14px" />
+      <span>{{ kernelAgent.applied === undefined || kernelAgent.applied === null
+        ? t('kban.agentNoCount')
+        : t('kban.agent', { n: fmtNumber(kernelAgent.applied), every: kernelAgent.resync_every }) }}</span>
     </div>
 
     <div v-if="!loading && bans.length" class="card-foot">
@@ -344,4 +424,6 @@ onUnmounted(() => clearInterval(timer))
 .rule-text { margin: 0; color: var(--ink-2); font-size: 13px; line-height: 1.6; flex: 1; min-height: 42px; }
 .rule-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
 .skel-list { display: flex; flex-direction: column; gap: 12px; padding: 6px 0; }
+.enforce-note { font-size: 11px; margin-top: 3px; }
+.orphan-list { font-size: 11.5px; margin-top: 6px; word-break: break-all; }
 </style>
