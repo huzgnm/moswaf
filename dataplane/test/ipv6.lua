@@ -280,6 +280,7 @@ for _, ip in ipairs({
     "fe80::1", "febf::1",                 -- IPv6 link local
     "fc00::1", "fd00::1",                 -- IPv6 unique local
     "224.0.0.1", "239.255.255.255",       -- multicast is not a visitor
+    "ff02::1", "ff00::1", "ff0e::1",      -- and neither is its IPv6 spelling
     "0.0.0.0", "0.255.255.255",
     "::ffff:10.0.0.5",                    -- and the mapped spelling of a private one
 }) do

@@ -28,6 +28,10 @@ func TestTheManagementAddressCanNeverBeDropped(t *testing.T) {
 		"169.254.1.1",     // link local, which is what an address means when DHCP failed
 		"224.0.0.1",       // multicast
 		"fe80::1", "fd00::1",
+		// Multicast. Nothing with a multicast source can be a visitor - no unicast
+		// reply could reach it - and the IPv4 side already refused 224/4. Catching
+		// one and not the other was an asymmetry rather than a decision.
+		"ff02::1", "ff00::1",
 		"172.18.0.4",      // the container network the WAF talks to its own database over
 		"::ffff:59.153.228.62", // and the management address written as IPv6
 	}

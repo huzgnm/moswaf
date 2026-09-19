@@ -44,6 +44,7 @@ var infrastructure = []string{
 	"192.168.0.0/16", // private
 	"224.0.0.0/4",    // multicast
 	"240.0.0.0/4",    // reserved
+	"ff00::/8",       // multicast - the IPv6 side of 224/4 above
 	"::1/128",        // loopback
 	"::/128",         // unspecified
 	"fc00::/7",       // unique local

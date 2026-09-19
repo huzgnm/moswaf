@@ -250,6 +250,11 @@ function _M.is_private_ip(ip)
     end
     if all_zero and (g[8] == 0 or g[8] == 1) then return true end
 
+    -- ff00::/8, multicast. The IPv4 side already refused 224/4 and this is the
+    -- same category: nothing with a multicast source address is a visitor, because
+    -- no unicast reply could ever reach it. Missing it here while catching it
+    -- there was an asymmetry rather than a decision.
+    if g[1] >= 0xff00 then return true end
     if g[1] >= 0xfe80 and g[1] <= 0xfebf then return true end   -- fe80::/10 link local
     if g[1] >= 0xfc00 and g[1] <= 0xfdff then return true end   -- fc00::/7  unique local
     return false
