@@ -208,6 +208,10 @@ function _M.unban()
         return json(200, { unbanned = "all" })
     end
     ipset.unban(ip)
+    -- And stop the kernel dropping it, if it ever got that far. Lifting a ban in
+    -- one place and leaving it in the other is the failure the dashboard cannot
+    -- see: it reports the ban gone while the packets are still being discarded.
+    require("moswaf.kernelban").request_release(ip)
     ngx.log(ngx.NOTICE, "moswaf: lifted the ban for ", ip)
     return json(200, { unbanned = ip })
 end

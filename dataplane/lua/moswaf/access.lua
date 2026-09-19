@@ -24,6 +24,7 @@ local challenge = require "moswaf.challenge"
 local auth      = require "moswaf.auth"
 local geo       = require "moswaf.geo"
 local rulesets  = require "moswaf.accessrules"
+local kernelban = require "moswaf.kernelban"
 
 local _M = {}
 
@@ -300,8 +301,16 @@ function _M.run()
     end
 
     -- 3. currently banned, or on the blocklist
-    local banned, breason = ipset.is_banned(ip)
+    local banned, breason, bttl = ipset.is_banned(ip)
     if banned then
+        -- Count this one, and if it is the request that crosses the threshold,
+        -- ask the host to drop the address in the kernel from here on.
+        --
+        -- Counted rather than acted on immediately because being banned is not
+        -- the same as being a problem: most banned addresses are refused once and
+        -- go away. The ones worth a kernel rule are the ones still knocking after
+        -- being told no, and that is a thing you can only learn by counting.
+        kernelban.note_and_maybe_escalate(ipset, ip, bttl)
         return block(ctx, mode, "banned:" .. tostring(breason), nil, 403)
     end
     if ipset.is_blacklisted(ip) then

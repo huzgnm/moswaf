@@ -76,6 +76,7 @@ jobs:
           luajit dataplane/test/auth.lua
           luajit dataplane/test/geo.lua
           luajit dataplane/test/accessrules.lua
+          luajit dataplane/test/kernelban.lua
           luajit dataplane/test/bans.lua
           luajit dataplane/test/flood.lua
       - name: Check shell syntax

@@ -264,6 +264,46 @@ do
     check("a zero octet is not a padded one", util.ipv4_to_int("0.0.0.1") == 1)
 end
 
+-- "Could a real visitor legitimately be arriving from this address?"
+--
+-- It used to cover four IPv4 ranges and answer "no, not private" to every IPv6
+-- address there is, because it parsed as IPv4 and gave up when that failed. That
+-- was harmless while nothing depended on it. It stopped being harmless the moment
+-- something had to decide what may be dropped in the kernel, where "::1 is not
+-- private" means the machine's own loopback can be queued for a drop.
+for _, ip in ipairs({
+    "127.0.0.1", "127.255.255.254",      -- loopback
+    "::1", "::",                          -- and its IPv6 spellings
+    "10.0.0.5", "172.16.4.2", "192.168.1.10",
+    "169.254.1.1",                        -- link local, an address that means "no DHCP"
+    "100.64.0.1", "100.127.255.254",      -- carrier NAT: shared, never one visitor
+    "fe80::1", "febf::1",                 -- IPv6 link local
+    "fc00::1", "fd00::1",                 -- IPv6 unique local
+    "224.0.0.1", "239.255.255.255",       -- multicast is not a visitor
+    "0.0.0.0", "0.255.255.255",
+    "::ffff:10.0.0.5",                    -- and the mapped spelling of a private one
+}) do
+    check("not a public address: " .. ip, util.is_private_ip(ip),
+        "an address no stranger can arrive from was treated as an ordinary " ..
+        "visitor. What that costs depends on the caller; for the kernel drop " ..
+        "queue it is the machine locking out something it needs")
+end
+
+for _, ip in ipairs({
+    "8.8.8.8", "1.1.1.1", "203.0.113.5", "46.203.233.214",
+    "2001:db8::1", "2606:4700::1", "2401:d800::5",
+    "100.63.255.255", "100.128.0.0",     -- either side of carrier NAT
+    "169.253.255.255", "169.255.0.0",    -- either side of link local
+    "9.255.255.255", "11.0.0.0",         -- either side of 10/8
+    "fbff::1",                            -- just below unique local
+    "::ffff:8.8.8.8",
+}) do
+    check("a public address is not mistaken for a private one: " .. ip,
+        not util.is_private_ip(ip),
+        "a real visitor treated as infrastructure is a visitor nothing will act " ..
+        "on - which for a ban is a ban that silently does nothing")
+end
+
 -- ------------------------------------------------------------ report
 
 io.write("\n\n")
