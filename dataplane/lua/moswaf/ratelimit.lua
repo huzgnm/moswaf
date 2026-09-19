@@ -124,9 +124,25 @@ end
 -- crowd behind one carrier NAT, or by somebody clicking quickly - every one of
 -- those solves the first challenge and stops being counted.
 --
--- Thirty is deliberately far above what a browser can reach: it answers on the
--- first one.
-local CHALLENGE_BAN_AT     = 30
+-- Six hundred in a minute - ten a second, sustained, never once answering.
+--
+-- The number is not chosen to catch every bot. It is chosen to answer one
+-- question: is this address worth a rule in the kernel? A ban here is the only
+-- door to that, and a kernel rule is worth placing on traffic that is genuinely
+-- expensive and worth nothing on traffic that is merely rude.
+--
+-- Thirty was the first number here and it was wrong in a way worth writing down.
+-- Half a request a second is something one idle scraper produces - and because
+-- this counter is keyed on the address, one scraper sitting behind a carrier NAT
+-- would drag the two hundred people sharing that address over the line with it.
+-- The threshold has to sit above what a single misbehaving machine can reach on
+-- its own, or it punishes its neighbours.
+--
+-- It does not remove that problem, it only moves it further away: a determined
+-- client inside a shared address can still reach any per-address threshold by
+-- going faster. Telling one machine from another behind the same address needs
+-- something other than the address, and that is a different piece of work.
+local CHALLENGE_BAN_AT     = 600
 local CHALLENGE_BAN_WINDOW = 60
 
 _M.CHALLENGE_BAN_AT = CHALLENGE_BAN_AT

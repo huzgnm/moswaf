@@ -209,10 +209,15 @@ do
     n = ratelimit.mark_challenge(ip)
     check("reaching it is", n >= ratelimit.CHALLENGE_BAN_AT)
 
-    check("and the threshold sits far above what a browser can reach",
-        ratelimit.CHALLENGE_BAN_AT >= 20,
-        "a browser answers the first challenge and is never asked again; a " ..
-        "threshold near one would ban whoever was slow to solve it")
+    -- The threshold has to sit above what ONE misbehaving machine produces, not
+    -- merely above what a browser produces. This counter is keyed on the address,
+    -- and behind a carrier NAT an address is two hundred people - so a threshold a
+    -- single idle scraper can reach is a threshold that bans its neighbours.
+    check("the threshold sits above what one machine can reach on its own",
+        ratelimit.CHALLENGE_BAN_AT >= 300,
+        "the threshold is " .. ratelimit.CHALLENGE_BAN_AT .. " a minute. One " ..
+        "scraper at a couple of requests a second reaches that, and because the " ..
+        "count is per address it takes everyone sharing that address with it")
 end
 
 -- 3. And the counter that used to ban is gone. How often an address went over a
