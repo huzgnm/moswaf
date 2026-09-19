@@ -130,9 +130,19 @@ local function do_challenge(ctx, mode, reason)
     -- a lot proves nothing about anybody; being asked a lot and never replying
     -- does.
     local st = config.get().settings
-    local unsolved = ratelimit.mark_challenge(ctx.ip)
-    if unsolved >= ratelimit.CHALLENGE_BAN_AT then
-        ipset.ban_ip(ctx.ip, st.ban_seconds, "unsolved_challenges:" .. unsolved)
+    -- Somebody holding a solved challenge is never counted, wherever this was
+    -- called from.
+    --
+    -- The accusation is "asked and never answered". A visitor carrying a valid
+    -- cookie has answered, and counting them would turn the one signal a real
+    -- person cannot produce into one they produce by being busy. Checked here
+    -- rather than only at the call sites so that the sentence above this function
+    -- is true of the function, and not merely true of the places that remembered.
+    if not challenge.has_valid_cookie(ctx.ip, ctx.ua) then
+        local unsolved = ratelimit.mark_challenge(ctx.ip)
+        if unsolved >= ratelimit.CHALLENGE_BAN_AT then
+            ipset.ban_ip(ctx.ip, st.ban_seconds, "unsolved_challenges:" .. unsolved)
+        end
     end
 
     ctx.action = "challenge"
@@ -425,7 +435,18 @@ function _M.run()
         -- The counters are unusable (shared dict exhausted). Challenge everyone
         -- rather than pass them through, but never escalate to a ban: the count
         -- that a ban would be based on does not mean anything right now.
+        -- Has this visitor already proved they are a browser?
+        --
+        -- The rate limit is counted per address, and an address is not a person:
+        -- behind a carrier NAT it is two hundred of them. So exceeding it says
+        -- nothing about whoever sent this particular request, and if they have
+        -- already solved a challenge it says nothing about them at all.
+        local solved = challenge.has_valid_cookie(ip, ua)
+
         if rreason == ratelimit.DICT_FULL then
+            if solved then
+                return block(ctx, mode, "counters_unavailable", nil, 429)
+            end
             return do_challenge(ctx, mode, "counters_unavailable")
         end
 
@@ -444,9 +465,21 @@ function _M.run()
         -- A ban is reserved for the signature engine, below, where being refused
         -- ten times in a minute means somebody is trying things rather than
         -- browsing.
-        if site.challenge ~= "off" then
+        if site.challenge ~= "off" and not solved then
             return do_challenge(ctx, mode, "flood:" .. rreason)
         end
+
+        -- Already solved, and still over the shared limit. Refused for this
+        -- request and nothing more: no second proof of work - they have done it -
+        -- and nothing counted against them, because the thing being counted is
+        -- never answering, and they answered.
+        --
+        -- Without this, two hundred people sharing one carrier address would each
+        -- be re-challenged on every over-limit request, and the address would
+        -- collect thirty "unanswered" challenges in seconds - banning all two
+        -- hundred of them for the crime of having solved it already. That is the
+        -- same collective punishment this change exists to remove, reached by a
+        -- different counter.
         -- The site has switched the challenge off, which is what an API-only site
         -- does - a client that cannot run JavaScript is not helped by being asked
         -- to. It is refused for this request and nothing more; as soon as the rate
