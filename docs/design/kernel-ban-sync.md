@@ -65,9 +65,22 @@ layer **and keeps sending anyway**. Three tiers:
    at Lua.
 3. **Banned but still hammering → kernel drop** (new). While an IP is banned,
    every request from it that still arrives is a "post-ban hit" — the IP is
-   ignoring the ban. Count those hits (`bh:<ip>` in a shared dict); when the
-   count crosses a threshold `K` within the ban window, emit the ban event with a
-   `kernel` flag and only then does the agent add it to `ban4/ban6`.
+   ignoring the ban. Count those hits; when the count crosses a threshold `K`
+   within the ban window, emit the ban event with a `kernel` flag and only then
+   does the agent add it to `ban4/ban6`.
+
+   **The counter must NOT live in `moswaf_ban`.** That dict currently holds
+   exactly one key shape (`b:<ip>`, written only at `ipset.lua:30`), and two
+   readers depend on that invariant: `ipset.banned_count()` (`ipset.lua:53`) does
+   `#ban:get_keys(0)` with **no prefix filter** — a `bh:` key would inflate the
+   `/metrics` ban gauge, and `api.lua` bans list does `get_keys(1000)` filtered to
+   `^b:` — a mix of `b:`+`bh:` keys makes 800 bans = 1600 keys and truncates the
+   list at 1000, order-dependent. (This is precisely the `get_keys(1000)` hazard
+   raised — and correctly dismissed — before `bh:` existed; adding the counter to
+   `moswaf_ban` would make it real. Don't.) Put the counter in the existing
+   `moswaf_cnt` dict (already holds `v:`/`nf:` counters) or a dedicated dict, with
+   **TTL = the ban's remaining TTL** so a banned IP that goes quiet does not leave
+   a counter alive forever.
 
 Why this shape:
 - **Fewer false-positive lockouts.** A legitimate client that trips one rule is
@@ -82,7 +95,10 @@ Why this shape:
 
 `K` and the window are config (sensible default e.g. `K=50` over the ban TTL).
 The post-ban hit counter is incremented on the ban-check path that already runs;
-it adds one `incr` per already-banned request, no new scan.
+it adds one `incr` per already-banned request, no new scan. Note the cost
+direction: escalation makes the ban-check path **more** expensive (one `incr` per
+post-ban request under flood) *before* the kernel drop makes it free — a bounded
+trade that buys permanent silence past `K`.
 
 ### Ban state is now two-valued — `/api/bans` contract + unban propagation
 
@@ -97,18 +113,36 @@ The dashboard reads `GET /api/bans` (today a flat list) and unbans via
 `DELETE /api/bans/{ip}`. Two requirements so the UI neither misleads nor fails
 silently (raised by the UI session, which owns the dashboard):
 
-1. **`/api/bans` must expose the state** — an *additive* field
-   (e.g. `enforcement: "lua" | "kernel"`) so the dashboard can show which IPs are
-   still eating CPU versus already silenced. During a flood that is the exact
-   question the operator opens the page to answer. The firewall project owns the
-   `/api/bans` contract and has committed to keeping it stable, so this field is
-   **agreed between firewall + UI before either writes** — not sprung at deploy.
+1. **`/api/bans` must expose the state, and it must reflect the kernel's reality,
+   not merely intent** — an *additive* field so the dashboard can show which IPs
+   are still eating CPU versus already silenced. Intent and reality diverge: the
+   control plane decides to escalate an IP, but the **agent** is what actually
+   programs nft, and it can lag, die, or still have the event queued. So a
+   two-value `"lua" | "kernel"` is not enough — reporting `"kernel"` before the
+   nft element exists lies in the opposite direction (UI shows silenced while the
+   IP is still hitting Lua). At least three states:
+   - `lua` — banned, enforced at Lua only;
+   - `kernel_pending` — escalation crossed / removal requested, but the agent has
+     not confirmed the nft change yet;
+   - `kernel` — the agent has **confirmed** the element is programmed in nft.
+
+   This requires an **agent → control-plane ack path**: the agent publishes its
+   actually-applied set (e.g. a `moswaf:kernel_applied` key it rewrites each
+   reconcile) and `/api/bans` joins against it, so `"kernel"` is only ever
+   reported for IPs the agent has confirmed. During a flood, or if the agent is
+   down, IPs correctly show `kernel_pending` rather than a false `kernel`.
+   The firewall project owns the `/api/bans` contract and has committed to keeping
+   it stable, so this field (and the ack mechanism) is **agreed between firewall +
+   UI before either writes** — not sprung at deploy.
 2. **unban must propagate to the kernel** — `DELETE /api/bans/{ip}` on a
    kernel-dropped IP must remove the nft element too (emit an unban tombstone the
    agent applies), not only delete the shared-dict key. Otherwise the UI reports
    "unbanned" while the kernel still drops the IP — a silent failure, the worst
-   kind. The DELETE should not report success until the tombstone is enqueued (or
-   the UI must show "pending kernel removal").
+   kind. The DELETE must not report success until the removal is *confirmed
+   applied* (not merely enqueued); if it cannot be applied (agent down, nft
+   error) the API must **return a failure**, not `200` — telling the operator
+   "couldn't remove it" is far better than claiming it was removed while the
+   kernel still drops the IP.
 
 ### Sync source — prefer push over `get_keys`
 
